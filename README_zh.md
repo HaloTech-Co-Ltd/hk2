@@ -1,0 +1,497 @@
+# hk2
+
+一个由知识库（KB）驱动的编码代理。将交互式 REPL 与工具调用相结合，并以每个项目的知识库作为唯一可信来源。
+
+[English](README.md) | 简体中文
+
+## 核心理念
+
+- **Tree-sitter AST 解析**：hk2 使用原生 tree-sitter 语法对 13+ 种语言精确提取符号。若未安装对应语法，则回退到基于正则的解析器。
+- **代码知识图谱**：调用链、类继承关系、导入与继承关系以图谱形式存储于 `~/.hk2/kb/<projectId>/graph/` 之下，可通过 `kb_callchain`、`kb_class`、`kb_refs`、`kb_implements` 遍历。
+- **三空间知识库**：每个项目的知识库被划分为 Holy Space（稳定的设计知识）、Eden Space（频繁更新的目录/模式）与 Index Space（BM25 + 图谱 + 各空间索引）。
+- **文档解析**：Markdown、JSON、YAML、HTML、纯文本使用标准库解析；PDF 与 Word（.docx）通过可选的 `pdf-parse` 与 `mammoth` 支持。文档以 `doc:<relpath>` 条目形式归入 Eden Space。
+- **按请求构建知识图谱**：对每条用户消息，hk2 会从知识库中检索相关符号、调用链、类成员、知识条目与文档，并在 LLM 响应前将其作为上下文注入。
+- **知识库优先策略**：代理总是优先使用知识库工具（`kb_search`、`kb_symbol`、`kb_callchain`、`kb_class`、`kb_refs`、`kb_implements`、`kb_knowledge` 等），再回退到 `bash grep`/`find`。中途的守卫逻辑会检测违规行为并将代理引导回知识库。
+- **可恢复构建**：`/kb init` 每处理 100 个文件保存一次检查点（可配置）。若被中断，重新运行会从检查点恢复，无需重新解析。
+- **自动生成摘要**：在 `/kb init` 结束时，LLM 会撰写三个 Eden 条目：`project-overview`、`api-docs`、`architecture-decisions`，始终可通过 `kb_knowledge` 获取。
+- **多项目、多模型**：一份 `~/.hk2/` 安装可管理不限数量的项目（以 UUID 隔离的知识库）与不限数量的 LLM 提供商/模型。
+- **支持任意语言**：C/C++、C#、JavaScript/TypeScript、Python、Go、Rust、Java、Kotlin、Scala、Ruby、PHP、Swift、Bash/Zsh、lex/yacc。
+
+## 环境要求
+
+- Node.js >= 18（推荐 Node 20 LTS，以获得最佳的 tree-sitter 原生兼容性）
+- 运行 `npm install` 以安装 tree-sitter 原生绑定（15 个语言包）
+
+> **Tree-sitter 兼容性提示**：过新的 Node 版本（如 Node 25+）
+> 在某些平台上可能与预编译的 tree-sitter 二进制存在 N-API / V8 ABI 不匹配。
+> 若 `/kb init` 日志出现 `tree-sitter parse failed`，hk2 会透明地回退到
+> 基于正则的解析器——符号覆盖率会略低，但系统功能完全正常。如需最高精度，
+> 请在 Node 20 LTS 上安装，或运行 `npm rebuild` 从源码重新编译。
+
+## 安装
+
+hk2 未发布到 npm。请从源码安装：
+
+### 方式 A——install.sh（推荐）
+
+在 `~/.hk2cli` 创建一份自包含副本，把 `hk2` 通过符号链接加入 PATH，并运行 `npm install` 构建 tree-sitter 原生绑定。
+
+```bash
+git clone <repo-url> hk2 && cd hk2
+./install.sh
+```
+
+自定义安装前缀或安装位置：
+
+```bash
+./install.sh --prefix=$HOME/.local
+./install.sh --prefix /usr/local          # 等同于默认值
+HK2_INSTALL_DIR=/opt/hk2 ./install.sh
+./install.sh --no-npm-install             # 跳过 tree-sitter（使用正则回退）
+```
+
+可选的 PDF / Word 解析：
+
+```bash
+cd ~/.hk2cli && npm install               # 安装 pdf-parse + mammoth
+```
+
+卸载：`rm -rf ~/.hk2cli /usr/local/bin/hk2`
+
+### 方式 B——npm link（面向开发者）
+
+创建指向工作目录的实时符号链接。如果你正在修改 hk2 本身并希望改动立即生效，这种方式比较方便。
+
+```bash
+git clone <repo-url> hk2 && cd hk2
+npm link
+```
+
+卸载：`npm unlink -g hk2`
+
+### 验证
+
+```bash
+hk2 --help
+```
+
+## 快速开始
+
+```bash
+# 进入交互式 REPL
+hk2
+```
+
+在 REPL 中：
+
+```
+# 1. 注册一个项目
+/project init --name=myapp --source=/path/to/repo --source-root=src
+
+# 2. 构建代码索引（Index Space）
+/kb init
+
+# 3. 深度研读整个项目 -> 自动生成 Eden 知识条目
+/kb knowledge init
+
+# 4. 提问（代理会自动检索知识库上下文并调用工具）
+登录是如何校验密码的？
+
+# 5. 显式知识库查询
+/kb search password verification
+/kb symbol login
+/kb neighbors 12:345
+/kb knowledge list
+/kb knowledge show spi-extension-pattern
+
+# 6. 切换项目 / 模型
+/model list
+/model use local/gpt-4o
+/project list
+/quit
+```
+
+## 三空间知识库模型
+
+| 空间 | 内容 | 更新策略 |
+|---|---|---|
+| **Holy** | 稳定的设计知识（架构、算法、关键模式）。由人工撰写或从权威来源导入。 | **始终需要用户明确批准**，即便设置了 `HK2_ENABLE_AUTOUPDATEKB=1` 或 `HK2_ENABLE_AUTO_LEARN=1`。 |
+| **Eden** | 频繁更新的知识（函数目录、命令列表、观察到的模式、模块摘要、**解析的文档**、**自动生成的摘要**）。 | 当 `HK2_ENABLE_AUTO_LEARN=1` 时可自动更新；否则提示 y/N 确认。 |
+| **Index** | 代码索引（基于符号的 BM25）、知识图谱（调用链 / 类继承 / 导入 / 继承），以及 Holy/Eden 条目的各空间索引。 | 当 `HK2_ENABLE_AUTOUPDATEKB=1` 时可自动更新；否则提示 y/N 确认。 |
+
+### 知识图谱
+
+在 `/kb init` 时，hk2 会基于 AST 构建代码知识图谱：
+
+```
+~/.hk2/kb/<projectId>/graph/
+  nodes.json            id -> 节点记录（函数 / 方法 / 类 / 接口 / 结构体 / 字段）
+  edges.calls.json      srcId -> [calleeIds, ...]
+  edges.imports.json    srcId -> [被导入文件节点 ids, ...]
+  edges.inherits.json   srcId -> [基类 ids, ...]
+  edges.contains.json   srcId -> [成员 ids, ...]
+  by_kind.json          kind -> [nodeIds, ...]
+  by_qual.json          qualName -> nodeId
+  meta.json             计数 + 版本
+```
+
+可通过以下方式查询图谱：
+
+- **kb_callchain**——对调用图做有界 DFS（前向、后向、双向）
+- **kb_class**——类 / 接口 / 结构体查询，含成员与实现
+- **kb_refs**——谁调用了 / 导入了 / 继承了某符号
+- **kb_implements**——查找实现某接口的所有类
+
+### 自动生成的 Eden 条目
+
+`/kb init` 与 `/kb knowledge init` 会生成互补的、由 LLM 撰写的 Eden 条目集合。两者均无需手写——每次运行都会覆盖之前的版本。
+
+**`/kb init`** 写入 3 个高层结构条目（可用 `--skip-summary` 跳过）：
+
+| 条目 id | 内容 |
+|---|---|
+| `project-overview` | 600–900 字的散文摘要：项目用途、高层架构、关键模块、显著模式。 |
+| `architecture-diagram` | 模块 / 层级关系的 Mermaid 流程图，附带简短图例。 |
+| `architecture-decisions` | 基于检测到的技术推断出的 4–8 条 ADR 风格条目，每条附带具体的修改建议。 |
+
+**`/kb knowledge init`** 在 Phase 0 写入 3 个项目级概览条目，随后在 Phase 2 写入 N 个主题相关条目：
+
+| 条目 id | 阶段 | 内容 |
+|---|---|---|
+| `api-docs` | 0 | 对全项目最重要的公开 / 导出符号的编号参考。 |
+| `code-walkthrough` | 0 | 4–8 个章节，逐步剖析最核心的抽象。 |
+| `usage-examples` | 0 | 3–5 个使用真实公开符号的编号快速上手示例。 |
+| `<topic-id>`（动态） | 2 | 每个 LLM 规划的主题一个条目（5–30 个），每个聚焦一个连贯的子系统（如 `buffer-pool`、`transaction-mgmt`、`wal-replay`）。 |
+
+可通过 `kb_knowledge("<id>")` 或 `kb_search_knowledge("overview")` 检索其中任意条目。
+
+### 知识命令
+
+| 命令 | 说明 |
+|---|---|
+| `/kb knowledge list [--space=holy\|eden]` | 列出知识条目 |
+| `/kb knowledge show <id>` | 显示条目全文（同时检索两个空间） |
+| `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | 手动添加条目 |
+| `/kb knowledge init [--per-batch-chars=N] [--dry-run]` | 两阶段深度研读：LLM 根据全项目图谱规划研读批次，随后执行每个批次以自动生成 Eden 条目。会与 Holy 交叉校验；冲突时以 Holy 为准。 |
+| `/kb knowledge export <eden\|holy\|all> <path>` | 将条目导出为 JSON 文件（版本 2 格式，每个条目带 `space` 标签） |
+| `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 从 JSON 导入条目。`adaptive` 会按条目原始空间路由。导入到 Holy 始终提示 y/N。 |
+| `/kb knowledge housekeep <eden\|holy\|all>` | 移除缺失字段、重复 id 或标题/关键词近似的条目。Holy 始终提示确认。 |
+| `/kb knowledge empty <eden\|holy\|all>` | 删除指定空间（们）的全部条目。不可逆，始终提示 y/N。 |
+| `/kb knowledge del <id>` | 删除条目（需确认） |
+| `/kb transform <id> <from> <to>` | 在 Holy 与 Eden 之间移动条目（需确认） |
+
+## REPL 命令参考
+
+输入 `/help` 查看完整列表。常用命令：
+
+| 命令 | 说明 |
+|---|---|
+| `/model list` | 列出所有提供商 / 模型 |
+| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N]` | 添加模型 |
+| `/model use <prov>/<id>` | 设为默认 |
+| `/model del <prov>/<id>` | 删除 |
+| `/model show` | 显示当前默认模型详情 |
+| `/project init --name=... --source=... [--source-root=...]` | 注册新项目 |
+| `/project list` | 列出所有项目 |
+| `/project set current <id\|name>` | 切换当前项目 |
+| `/project set name <new-name>` | 重命名 |
+| `/project show` | 当前项目详情 |
+| `/project drop <id\|name>` | 移除项目（保留知识库） |
+| `/kb init [--full] [--checkpoint-interval=N] [--no-resume] [--no-checkpoint] [--skip-summary]` | 为当前项目构建知识库（可恢复，自动生成摘要） |
+| `/kb update` | 增量更新（Index Space） |
+| `/kb status` | 知识库统计（各空间计数） |
+| `/kb search <query> [--top-k=N]` | BM25 + 重排序的符号搜索 |
+| `/kb symbol <name>` | 按精确名称查找符号 |
+| `/kb neighbors <symbol_id>` | 调用图谱邻居 |
+| `/kb knowledge list` | 列出 Holy + Eden 条目 |
+| `/kb knowledge show <id>` | 显示条目全文 |
+| `/kb knowledge add [...]` | 手动添加条目 |
+| `/kb knowledge init [--dry-run]` | 深度研读项目 -> 自动生成 Eden |
+| `/kb knowledge export <scope> <path>` | 将条目导出为 JSON |
+| `/kb knowledge import <path> [adaptive]` | 导入条目（adaptive 按原始空间路由） |
+| `/kb knowledge housekeep <scope>` | 移除重复与无效条目 |
+| `/kb knowledge empty <scope>` | 删除指定空间（们）的全部条目 |
+| `/kb knowledge del <id>` | 删除条目 |
+| `/kb transform <id> <from> <to>` | 在 Holy 与 Eden 之间移动 |
+| `/kb drop` | 删除知识库（需确认） |
+| `/session info` | 当前会话 id、项目、消息数 |
+| `/session list` | 最近的会话 |
+| `/session new` | 开始新会话 |
+| `/session resume <id>` | 恢复之前的会话 |
+| `/clear` | 清空对话上下文 |
+| `/compact` | 摘要压缩早期消息 |
+| `/help` `/quit` `/exit` | 帮助 / 退出 |
+
+## 代理工具
+
+代理可在每轮中途调用以下工具（OpenAI/Anthropic 原生工具调用）：
+
+| 工具 | 说明 |
+|---|---|
+| `read` | 读取文件内容（带行号、offset/limit）。知识库已知的代码文件会在内容前附带 `## Outline (from KB)` 章节，并返回 `tag` 字段用于陈旧锚点保护。 |
+| `write` | 创建或覆盖文件 |
+| `edit` | 精确字符串替换（支持多组互不相交的编辑）。可选 `tag` 拒绝陈旧锚点编辑。 |
+| `bash` | 执行 shell 命令（沙箱限制在工作区） |
+| `find` | 基于 glob 模式的文件搜索 |
+| `grep` | 正则内容搜索 |
+| `ast_grep` | 使用 `$$$IDENT` / `$IDENT` / `$_` 元变量的结构化代码搜索（ast-grep 风格）。当模式为知识库已知的单个精确标识符时，会前置一条引导至 `kb_symbol` 的知识库优先提示。 |
+| `ast_edit` | 跨文件结构化重写。返回统一 diff 预览 + `proposalId`；自身不写入。可选 `tag` 在预览时校验目标文件。 |
+| `resolve` | 应用或丢弃先前预览的 `ast_edit` 提案。应用时重新校验 tag，任一失败则回滚。 |
+| `kb_search` | BM25 符号搜索（默认用 LLM 重写查询） |
+| `kb_symbol` | 按精确名称查找符号 |
+| `kb_outline` | 来自知识库索引的文件大纲——每个符号的名称 / 类型 / 行号 / 签名。对“这个文件里有什么？”这类问题比 `read` 更轻量。返回 `tag` 供后续编辑安全使用。 |
+| `kb_neighbors` | 调用图谱 1 跳邻居（旧版） |
+| `kb_callchain` | 对调用图做有界 DFS（前向 / 后向 / 双向） |
+| `kb_class` | 类 / 接口 / 结构体查询，含成员、父类、实现 |
+| `kb_refs` | 查找某符号的调用者、导入者、派生类 |
+| `kb_implements` | 查找实现某接口或继承某基类的所有类 |
+| `kb_knowledge` | 按 id 查找知识条目（Holy + Eden） |
+| `kb_search_knowledge` | 按自然语言查询搜索知识条目 |
+| `kb_save_knowledge` | 将新的知识条目保存到 Holy 或 Eden |
+
+### 知识库优先策略
+
+每条代码发现路径都优先使用知识库索引而非重新解析：
+
+- `kb_outline`、`kb_symbol`、`kb_search` 及图谱工具直接读取索引——无文件系统访问，无重新解析。
+- 对代码文件调用 `read` 会前置知识库大纲，使代理在查看内容前先了解结构。
+- 若未先使用知识库工具就调用 `bash grep/find/cat` 或直接 `read`，会得到一次性的 `[kb-first policy hint]` 前置提示；当代理使用任意知识库工具后，该提示停止出现，表明后续的 bash/read 回退是有意为之。
+- 当 `ast_grep` 的模式为单个精确标识符时，会发出同样的提示引导至 `kb_symbol`。
+
+### 模式语法（ast_grep / ast_edit）
+
+| 记号 | 含义 |
+|---|---|
+| `$$$IDENT` | 多通配符捕获——匹配任意文本（多行、非贪婪）。`IDENT` 会被捕获到 `meta.IDENT` 以便替换。 |
+| `$IDENT` | 单标识符捕获——匹配 `[A-Za-z_][A-Za-z0-9_]*`。 |
+| `$_` | 匿名单 token 通配符（不捕获）。 |
+| 其他 | 字面文本，按正则转义。 |
+
+示例：
+
+- `ast_grep("console.log($$$)")`——任意 console.log 调用
+- `ast_grep("function $NAME($$$)", path="src")`——捕获函数名
+- `ast_edit({ops:[{pat:"console.log($$$ARGS)", out:"logger.info($$$ARGS)"}], paths:["src"]})`——将所有 console.log 批量改为 logger.info，参数保留（具名捕获可往返；匿名 `$$$` 不可）
+
+### Hashline 风格的锚定编辑
+
+`read` 与 `kb_outline` 的结果包含一个 `tag`（文件内容哈希的前 8 位十六进制字符）。将其回传到后续的 `edit` 或 `ast_edit` 调用中，若文件自 tag 生成以来已被修改，工具将拒绝该变更：
+
+```
+read({path:"src/foo.js"}) -> {tag:"a1b2c3d4", ...}
+edit({path:"src/foo.js", old_string:..., new_string:..., tag:"a1b2c3d4"})
+  -> 匹配则通过；不匹配则报错："stale tag: file changed since read..."
+```
+
+### 暂缓的能力
+
+以下能力**尚未**实现，因为它们缺乏清晰的知识库优先方案，且需要数千行的集成工作：
+
+- **LSP 集成**——需要启动语言服务器、JSON-RPC 能力协商与诊断流。知识库符号索引已覆盖大多数“IDE 知道什么？”类查询；LSP 仅对实时诊断与跨未索引文件的重命名重构有额外价值。待该缺口成为阻碍时再做。
+- **DAP 调试**——需要启动调试适配器（gdb、lldb-dap、debugpy、dlv）、断点/单步/变量协议。范围与 LSP 相当。待出现具体调试工作流需求时再做。
+- **完整的 hashline 语法**（`SWAP.BLK`、`INS.PRE/POST/HEAD/TAIL`、`MV`、`REM`）——v1 仅提供 `tag` 安全机制。完整的行锚定语法将在预览/接受流程验证成熟后作为后续补充。
+- **AST 感知的 ast_grep 匹配**——v1 使用正则近似（将元变量转换为捕获组）。完全对齐 ast-grep 模式（真正的 AST 边界匹配）将逐步迭代。
+
+## 状态栏
+
+终端底部固定一条状态栏（仅 TTY 模式）：
+
+```
+streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
+```
+
+- `↑1.4k`——最近一次 LLM 调用的输入 token 数
+- `↓120`——最近一次 LLM 调用的输出 token 数
+- `0.1%`——当前上下文使用率（最近输入 / 上下文窗口）
+- `1.0M`——上下文窗口大小
+
+在流式输出、工具调用与阶段切换期间实时更新。
+
+## 配置布局
+
+```
+~/.hk2/
+├── models.json                       # 多提供商模型注册表
+├── projects.json                     # 项目注册表 + 当前指针
+├── kb/
+│   └── <projectId>/                  # 每个项目的知识库
+│       ├── meta.json                 # 知识库元数据
+│       ├── holy/                     # Holy Space —— 稳定的知识条目
+│       │   └── <entry-id>.json
+│       ├── eden/                     # Eden Space —— 频繁更新的知识
+│       │   └── <entry-id>.json
+│       ├── graph/                    # 知识图谱（Index Space）
+│       │   ├── nodes.json
+│       │   ├── edges.calls.json
+│       │   ├── edges.imports.json
+│       │   ├── edges.inherits.json
+│       │   ├── edges.contains.json
+│       │   ├── by_kind.json
+│       │   ├── by_qual.json
+│       │   └── meta.json
+│       ├── files.json                # Index Space —— 文件注册表
+│       ├── inverted.json             # Index Space —— BM25 倒排索引
+│       ├── callgraph.json            # Index Space —— 旧版调用图（由 graph 派生）
+│       ├── symbols.0000.json         # Index Space —— 分片符号表
+│       ├── stats.json                # Index Space —— 构建统计
+│       ├── checkpoint.json           # 可恢复构建状态（临时）
+│       └── summaries/                # 每符号摘要（按需）
+├── sessions/
+│   └── <projectId>/
+│       └── <sessionId>.jsonl         # 会话记录（JSONL）
+└── logs/
+```
+
+### models.json 结构
+
+```json
+{
+  "providers": {
+    "local": {
+      "api": "openai",
+      "baseUrl": "http://10.16.6.162:18000",
+      "apiKey": "sk-glm4-local",
+      "models": [
+        {
+          "id": "glm-4.7",
+          "name": "GLM 4.7",
+          "contextWindow": 131072,
+          "maxTokens": 32768,
+          "temperature": 0.2,
+          "reasoning": true
+        }
+      ]
+    },
+    "anthropic": {
+      "api": "anthropic",
+      "apiKey": "...",
+      "models": [
+        { "id": "claude-opus-4-7", "name": "Claude Opus 4.7", "contextWindow": 200000, "maxTokens": 32000, "reasoning": true }
+      ]
+    }
+  },
+  "default": "local/glm-4.7"
+}
+```
+
+### projects.json 结构
+
+```json
+{
+  "current": "8ce5c38d-214c-4e0d-8ed1-30045dd3c99d",
+  "projects": {
+    "8ce5c38d-214c-4e0d-8ed1-30045dd3c99d": {
+      "id": "8ce5c38d-214c-4e0d-8ed1-30045dd3c99d",
+      "name": "myapp",
+      "sourcePath": "/path/to/repo",
+      "sourceRoot": "src",
+      "includeGlobs": ["**/*.js", "**/*.ts", "**/*.py", "..."],
+      "excludeGlobs": ["**/node_modules/**", "..."],
+      "extraRoots": [],
+      "kbBuiltAt": "2026-07-24T16:41:44.248Z",
+      "createdAt": "2026-07-24T16:41:43.000Z"
+    }
+  }
+}
+```
+
+## 环境变量
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `HK2_HOME` | 覆盖 `~/.hk2` 位置 | `~/.hk2` |
+| `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
+| `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
+| `HK2_PROJECT_SOURCE` | 工具沙箱的项目源码根（交互模式下自动设置） | - |
+| `HK2_ENABLE_QUERYREWRITE` | 为 1 时，hk2 会在 BM25 检索前（每轮开始及每次 `kb_search` 工具调用时）用一次 LLM 调用将用户查询重写为英文函数名 + 关键词。 | `1` |
+| `HK2_ENABLE_AUTO_UPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
+| `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden Space。无论此标志如何，Holy Space 始终提示 y/N。 | `0` |
+| `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
+| `HK2_KB_RESUME` | 为 1 时，`/kb init` 从已有检查点恢复 | `1` |
+| `HK2_DEBUG` | 打印错误堆栈 | - |
+| `ANTHROPIC_API_KEY` | 首次初始化时自动创建 `anthropic` 提供商 | - |
+| `OPENAI_API_KEY` | 首次初始化时自动创建 `openai` 提供商 | - |
+
+## 一次性模式（CLI）
+
+```bash
+# 从 CLI 注册项目（等价于 REPL 中的 /project init）
+hk2 --mode=project-init --name=myapp --source=/path/to/repo --source-root=src
+
+# 为当前项目构建知识库
+hk2 --mode=build-kb
+
+# 增量更新知识库
+hk2 --mode=update-kb
+
+# 旧版 REPL（命令式，无代理循环）
+hk2 --run-mode=serve
+```
+
+## 支持的语言
+
+知识库索引器对 C/C++ 与 lex/yacc 源码使用专用解析器，对其余语言使用通用正则解析器：
+
+- Python、JavaScript、TypeScript、JSX/TSX
+- Go、Rust、Java、Kotlin、Scala
+- Ruby、PHP、Swift
+- Shell（bash、zsh）
+
+## 目录结构
+
+```
+hk2/
+├── bin/
+│   └── hk2                    # 单一入口（#!/usr/bin/env node）
+├── install.sh                 # 安装脚本（复制目录树、符号链接 bin、运行 npm install）
+├── src/
+│   ├── cli.js                 # 参数解析 + 分发（默认进入交互模式）
+│   ├── commands/
+│   │   ├── interactive.js     # 默认交互式 REPL（代理循环 + 状态栏）
+│   │   ├── build_kb.js        # --mode=build-kb
+│   │   ├── update_kb.js       # --mode=update-kb
+│   │   ├── search.js          # 旧版 serve 模式代码搜索辅助
+│   │   ├── explain.js         # 旧版 serve 模式解释辅助
+│   │   └── serve.js           # --run-mode=serve（旧版 REPL）
+│   └── slash/
+│       ├── index.js           # 斜杠命令分发器（引号感知分词器）
+│       ├── model.js           # /model
+│       ├── project.js         # /project
+│       ├── kb.js              # /kb（含 knowledge init/export/import/transform）
+│       └── session.js         # /session
+├── lib/
+│   ├── config/
+│   │   └── home.js            # $HOME/.hk2 配置层
+│   ├── agent/
+│   │   ├── loop.js            # 代理轮次循环（卡死检测、工具缓存）
+│   │   ├── tools.js           # 工具注册表 + KbFirstGuard（含图谱工具）
+│   │   ├── system_prompt.js   # 系统提示构建器 + 知识库策略
+│   │   ├── graph.js           # 按请求构建知识图谱
+│   │   ├── statusbar.js       # 底部常驻状态栏
+│   │   └── transcript.js      # JSONL 会话记录
+│   ├── parser/
+│   │   ├── ast.js             # AST 分发器（tree-sitter -> 正则回退）
+│   │   ├── ts_parser.js       # tree-sitter 多语言解析器
+│   │   ├── doc_parser.js      # 文档解析器（md/json/yaml/html/pdf/docx）
+│   │   ├── c_parser.js        # 旧版 C 解析器（回退）
+│   │   ├── ylex_parser.js     # 旧版 Y/L 解析器（回退）
+│   │   └── generic_parser.js  # 其他语言的旧版正则解析器（回退）
+│   ├── graph/
+│   │   ├── builder.js         # 从 Symbol[] 构建节点 + 边
+│   │   └── traverse.js        # 纯 BFS / 调用链辅助函数
+│   ├── index/
+│   │   ├── indexer.js         # 遍历 -> 解析 -> BM25 + 调用图 + 图谱 + Eden 文档
+│   │   ├── walker.js          # glob 遍历器（include/exclude + .gitignore）
+│   │   ├── gitignore.js       # .gitignore 加载器
+│   │   ├── checkpoint.js      # 可恢复构建检查点
+│   │   ├── summarize.js       # LLM 撰写的 Eden 摘要
+│   │   ├── bm25.js            # BM25 索引
+│   │   ├── callgraph.js       # 旧版调用图（由图谱派生）
+│   │   ├── text_tokenizer.js  # BM25 分词器
+│   │   └── registry.js        # 知识库注册 + PARSER_VERSION
+│   ├── retrieval/             # 知识库检索 + 运行时缓存（code_search、kb_runtime）
+│   ├── llm/                   # LLM 客户端（OpenAI / Anthropic，工具调用 + 用量）
+│   ├── store/                 # 知识库存储（holy/eden/index/graph 路径）
+│   └── util/
+└── package.json
+```

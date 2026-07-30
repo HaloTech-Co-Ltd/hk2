@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+/**
+ * hk2 — single-file entry point.
+ *
+ * Node treats the shebang line as a comment, so this file is both:
+ *   - the executable invoked via the `hk2` / `hk2cli` bin names, and
+ *   - the JS module imported by install.sh / npm-link / direct invocation.
+ */
+import { run } from '../src/cli.js';
+
+run().catch(err => {
+  console.error('fatal:', err.message);
+  if (process.env.HK2_DEBUG) console.error(err.stack);
+  process.exit(1);
+});
