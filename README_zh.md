@@ -172,7 +172,7 @@ hk2
 | `/kb knowledge list [--space=holy\|eden]` | 列出知识条目 |
 | `/kb knowledge show <id>` | 显示条目全文（同时检索两个空间） |
 | `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | 手动添加条目 |
-| `/kb knowledge init [--per-batch-chars=N] [--dry-run]` | 两阶段深度研读：LLM 根据全项目图谱规划研读批次，随后执行每个批次以自动生成 Eden 条目。会与 Holy 交叉校验；冲突时以 Holy 为准。 |
+| `/kb knowledge init [--per-batch-chars=N] [--dry-run] [--base-dir=PATH]` | 两阶段深度研读：LLM 根据全项目图谱规划研读批次，随后执行每个批次以自动生成 Eden 条目。会与 Holy 交叉校验；冲突时以 Holy 为准。`--base-dir=PATH` 限定仅研读该子目录下的文件，并跳过三个全项目级概览条目。 |
 | `/kb knowledge export <eden\|holy\|all> <path>` | 将条目导出为 JSON 文件（版本 2 格式，每个条目带 `space` 标签） |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 从 JSON 导入条目。`adaptive` 会按条目原始空间路由。导入到 Holy 始终提示 y/N。 |
 | `/kb knowledge housekeep <eden\|holy\|all>` | 移除缺失字段、重复 id 或标题/关键词近似的条目。Holy 始终提示确认。 |
@@ -206,7 +206,7 @@ hk2
 | `/kb knowledge list` | 列出 Holy + Eden 条目 |
 | `/kb knowledge show <id>` | 显示条目全文 |
 | `/kb knowledge add [...]` | 手动添加条目 |
-| `/kb knowledge init [--dry-run]` | 深度研读项目 -> 自动生成 Eden |
+| `/kb knowledge init [--dry-run] [--base-dir=PATH]` | 深度研读项目（或通过 `--base-dir` 限定单个子目录）-> 自动生成 Eden |
 | `/kb knowledge export <scope> <path>` | 将条目导出为 JSON |
 | `/kb knowledge import <path> [adaptive]` | 导入条目（adaptive 按原始空间路由） |
 | `/kb knowledge housekeep <scope>` | 移除重复与无效条目 |

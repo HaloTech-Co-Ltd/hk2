@@ -174,7 +174,7 @@ Retrieve any of them via `kb_knowledge("<id>")` or `kb_search_knowledge("overvie
 | `/kb knowledge list [--space=holy\|eden]` | List knowledge entries |
 | `/kb knowledge show <id>` | Show full entry (searches both spaces) |
 | `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | Manually add an entry |
-| `/kb knowledge init [--per-batch-chars=N] [--dry-run]` | Two-phase deep-study: LLM plans study batches from the full project map, then executes each batch to auto-generate Eden entries. Cross-checks against Holy; conflicts follow Holy. |
+| `/kb knowledge init [--per-batch-chars=N] [--dry-run] [--base-dir=PATH]` | Two-phase deep-study: LLM plans study batches from the full project map, then executes each batch to auto-generate Eden entries. Cross-checks against Holy; conflicts follow Holy. `--base-dir=PATH` restricts the study to files under one subdirectory and skips the three project-wide survey entries. |
 | `/kb knowledge export <eden\|holy\|all> <path>` | Export entries to a JSON file (version 2 format with per-entry `space` tags) |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | Import entries from JSON. `adaptive` routes each entry to its original space. Holy imports always prompt y/N. |
 | `/kb knowledge housekeep <eden\|holy\|all>` | Remove entries with missing fields, duplicate ids, or near-duplicate titles/keywords. Holy always prompts. |
@@ -208,7 +208,7 @@ Type `/help` for the full list. Common commands:
 | `/kb knowledge list` | List Holy + Eden entries |
 | `/kb knowledge show <id>` | Show full entry |
 | `/kb knowledge add [...]` | Manually add an entry |
-| `/kb knowledge init [--dry-run]` | Deep-study project → auto-generate Eden |
+| `/kb knowledge init [--dry-run] [--base-dir=PATH]` | Deep-study project (or one subdirectory via `--base-dir`) → auto-generate Eden |
 | `/kb knowledge export <scope> <path>` | Export entries to JSON |
 | `/kb knowledge import <path> [adaptive]` | Import entries (adaptive routes by original space) |
 | `/kb knowledge housekeep <scope>` | Remove duplicates and invalid entries |

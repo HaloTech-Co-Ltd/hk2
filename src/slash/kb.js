@@ -437,10 +437,17 @@ async function knowledgeShowKb(rest, ctx) {
  *     send to LLM for focused Eden extraction, cross-check against Holy, save.
  *
  * Usage:
- *   /kb knowledge init [--per-batch-chars=N] [--dry-run]
+ *   /kb knowledge init [--per-batch-chars=N] [--dry-run] [--base-dir=PATH]
  *
  * --per-batch-chars: LLM context budget per execution batch (default 100000).
  * --dry-run: show proposed entries but do NOT write.
+ * --base-dir=PATH: restrict the deep-study to files under this subdirectory
+ *   (relative to the project source root, the same coordinate system used by
+ *   indexed file paths, e.g. "src/slash" or "lib/index"). The three Phase 0
+ *   project-wide survey entries are SKIPPED in this mode (they are whole-
+ *   project by design); only Phase 1 planning + Phase 2 execution run, scoped
+ *   to the chosen directory. Useful when you want to deep-study one module
+ *   without disturbing the rest of the KB.
  */
 async function knowledgeInitKb(rest, ctx) {
   const p = await getProjectOrFail(ctx);
@@ -453,11 +460,39 @@ async function knowledgeInitKb(rest, ctx) {
   const perBatchChars = parseInt(flags['per-batch-chars'], 10) || parseInt(flags['per-module-chars'], 10) || 100000;
   const dryRun = !!flags['dry-run'];
   const userPrompt = flags.positionalText || '';
+  const baseDirRaw = typeof flags['base-dir'] === 'string' ? flags['base-dir'] : '';
+
+  // Normalize --base-dir into the indexed-file coordinate system (paths are
+  // stored relative to sourcePath + sourceRoot, forward-slash separated).
+  const baseDir = baseDirRaw
+    ? baseDirRaw.replace(/^\.?\/+/, '').replace(/\/+$/, '').split(path.sep).join('/')
+    : '';
 
   ctx.print(`[kb knowledge init] Deep-studying project: ${p.name}`);
   ctx.print(`  source: ${p.sourcePath}`);
   if (p.sourceRoot) ctx.print(`  sourceRoot: ${p.sourceRoot}`);
+  if (baseDir) ctx.print(`  base-dir: ${baseDir} (subdirectory scope)`);
   if (userPrompt) ctx.print(`  user instructions: ${userPrompt}`);
+
+  // When --base-dir is set, build a scoped runtime view so Phase 1 / Phase 2
+  // only see files under the chosen directory. Without --base-dir this is a
+  // no-op alias of ctx.rt (identical behavior to before).
+  const scopedRt = baseDir ? buildScopedRt(ctx.rt, baseDir) : ctx.rt;
+  if (baseDir) {
+    const scopedFiles = scopedRt?.files?.byId ? Object.keys(scopedRt.files.byId).length : 0;
+    ctx.print(`  scoped files under ${baseDir}/: ${scopedFiles}`);
+    if (scopedFiles === 0) {
+      ctx.print(`  (no indexed files under "${baseDir}" - aborting. Top-level dirs:`);
+      const tops = new Set();
+      if (ctx.rt?.files?.byId) {
+        for (const f of Object.values(ctx.rt.files.byId)) {
+          if (f.path) tops.add(f.path.split('/')[0] || '(root)');
+        }
+      }
+      ctx.print(`   ${[...tops].sort().join(', ')})`);
+      return;
+    }
+  }
 
   // Load existing entries for conflict checking
   const existingHoly = await listKnowledge(p.id, 'holy').catch(() => []);
@@ -468,7 +503,10 @@ async function knowledgeInitKb(rest, ctx) {
   // Generates three fixed-id Eden entries (api-docs, code-walkthrough,
   // usage-examples) that survey the WHOLE project. These complement the
   // per-topic batches that Phase 2 produces.
-  if (!dryRun) {
+  //
+  // SKIPPED under --base-dir: survey entries are project-wide by design and
+  // must not be overwritten with a single subdirectory's contents.
+  if (!dryRun && !baseDir) {
     ctx.setPhase?.('project survey');
     ctx.print('');
     ctx.print('[Phase 0: Project-wide survey] Generating api-docs / code-walkthrough / usage-examples...');
@@ -501,7 +539,7 @@ async function knowledgeInitKb(rest, ctx) {
   ctx.print('');
   ctx.print('[Phase 1: Planning] Building project map for the model...');
 
-  const projectMap = buildProjectMap(ctx.rt);
+  const projectMap = buildProjectMap(scopedRt);
   ctx.print(`  project map: ${projectMap.fileCount} files across ${projectMap.dirCount} directories, ${projectMap.text.length} chars`);
 
   // Truncate existing entries to keep the planning prompt manageable
@@ -565,8 +603,8 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
   // planned paths resolve to actual files, the model hallucinated paths or
   // the parser picked up prose (topics like "files", "hmm", etc.). In that
   // case, discard the plan and fall back to directory grouping.
-  if (plan && plan.length > 0 && ctx.rt?.files?.byId) {
-    const realPaths = new Set(Object.values(ctx.rt.files.byId).map(f => f.path).filter(Boolean));
+  if (plan && plan.length > 0 && scopedRt?.files?.byId) {
+    const realPaths = new Set(Object.values(scopedRt.files.byId).map(f => f.path).filter(Boolean));
     let plannedTotal = 0;
     let resolved = 0;
     for (const b of plan) {
@@ -596,7 +634,7 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
       ctx.print('[Phase 1] Could not parse LLM study plan.');
     }
     ctx.print('[Phase 1] Using directory-based grouping as fallback.');
-    const modules = groupFilesByModule(ctx.rt);
+    const modules = groupFilesByModule(scopedRt);
     plan = modules.map(mod => ({
       topic: mod.name,
       description: `${mod.name}/ module (${mod.files.length} files, ${mod.symbolCount} symbols)`,
@@ -623,8 +661,8 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
 
   // Build a lookup of file paths for reading
   const fileIndex = new Map();
-  if (ctx.rt?.files?.byId) {
-    for (const f of Object.values(ctx.rt.files.byId)) {
+  if (scopedRt?.files?.byId) {
+    for (const f of Object.values(scopedRt.files.byId)) {
       if (f.path) fileIndex.set(f.path, f);
     }
   }
@@ -818,18 +856,59 @@ function parsePlanText(text) {
 
 function buildProjectMap(rt) {
   if (!rt || !rt.files) return { text: '', fileCount: 0, dirCount: 0 };
-  const files = Object.values(rt.files.byId || {}).sort((a, b) => (a.path || '').localeCompare(b.path || ''));
+  // Iterate entries (not values) so we retain the fileId key: file objects in
+  // rt.files.byId carry {path,hash,...} but NO `id` field, and symbolsByFile is
+  // keyed by the numeric fileId. Using f.id (undefined) silently dropped all
+  // per-file symbol names from the planner map.
+  const entries = Object.entries(rt.files.byId || {}).sort((a, b) => (a[1].path || '').localeCompare(b[1].path || ''));
   const lines = [];
   const dirs = new Set();
-  for (const f of files) {
+  for (const [id, f] of entries) {
     if (!f.path) continue;
     const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '(root)';
     dirs.add(dir);
-    const syms = rt.symbolsByFile?.get(f.id) || [];
+    const syms = rt.symbolsByFile?.get(Number(id)) || rt.symbolsByFile?.get(id) || [];
     const symNames = syms.slice(0, 8).map(s => s.name).filter(Boolean).join(', ');
     lines.push(`${f.path} (${f.symbolCount || syms.length || 0} syms${symNames ? ': ' + symNames : ''})`);
   }
-  return { text: lines.join('\n'), fileCount: files.length, dirCount: dirs.size };
+  return { text: lines.join('\n'), fileCount: entries.length, dirCount: dirs.size };
+}
+
+/**
+ * Build a scoped runtime view containing only files under `baseDir` (a path
+ * in the indexed-file coordinate system: relative to sourcePath + sourceRoot,
+ * forward-slash separated). Used by `/kb knowledge init --base-dir=PATH` so
+ * that Phase 1 planning + Phase 2 execution only see the chosen subdirectory.
+ *
+ * Returns an object shaped like ctx.rt with `files`, `symbolsByFile`, and
+ * `callgraph` references filtered to the scoped file ids. The original runtime
+ * (ctx.rt) is never mutated; we only construct shallow filtered containers.
+ */
+function buildScopedRt(rt, baseDir) {
+  if (!rt || !rt.files || !baseDir) return rt;
+  const prefix = baseDir.endsWith('/') ? baseDir : baseDir + '/';
+  // Match files whose path equals baseDir (a file) or sits under baseDir/.
+  const matchPath = (fp) => !!fp && (fp === baseDir || fp.startsWith(prefix));
+
+  const scopedById = {};
+  const scopedByPath = {};
+  const scopedSymbolsByFile = new Map();
+  for (const [id, f] of Object.entries(rt.files.byId || {})) {
+    if (!matchPath(f.path)) continue;
+    scopedById[id] = f;
+    scopedByPath[f.path] = Number(id);
+    const syms = rt.symbolsByFile?.get(Number(id)) || rt.symbolsByFile?.get(id) || [];
+    if (syms.length) scopedSymbolsByFile.set(Number(id), syms);
+  }
+  return {
+    ...rt,
+    files: { byId: scopedById, byPath: scopedByPath, nextId: rt.files.nextId },
+    symbolsByFile: scopedSymbolsByFile,
+    // Keep the callgraph reference; it is only consulted for symbols that
+    // belong to scoped files, and the surrounding code tolerates edges that
+    // point outside the scope.
+    callgraph: rt.callgraph,
+  };
 }
 
 /**
@@ -849,15 +928,20 @@ async function readPlannedFiles(project, plannedPaths, fileIndex, maxChars) {
         }
       }
     }
-    const actualPath = fileMeta?.path || cleanPath;
-    const abs = path.join(project.sourcePath, project.sourceRoot || '', actualPath);
+    // fileIndex is the scope authority: under --base-dir it only contains
+    // files under the chosen directory, so skipping unknown paths prevents the
+    // LLM plan from pulling in out-of-scope files via disk reads. Without
+    // --base-dir, fileIndex holds all indexed files, so hallucinated paths
+    // are skipped too.
+    if (!fileMeta) continue;
+    const abs = path.join(project.sourcePath, project.sourceRoot || '', fileMeta.path);
     try {
       const content = await fs.readFile(abs, 'utf8');
       const remaining = maxChars - totalChars;
       const trimmed = content.length > remaining
         ? content.slice(0, remaining) + '\n/* ... truncated ... */'
         : content;
-      collected.push({ path: actualPath, content: trimmed, symbolCount: fileMeta?.symbolCount || 0 });
+      collected.push({ path: fileMeta.path, content: trimmed, symbolCount: fileMeta.symbolCount || 0 });
       totalChars += trimmed.length;
     } catch {}
   }

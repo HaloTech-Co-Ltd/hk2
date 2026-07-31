@@ -7,6 +7,7 @@
  *   hk2                                     Enter interactive REPL (default)
  *   hk2 --project=<name>                    Enter REPL with the named project
  *   hk2 --project-id=<id>                   Enter REPL with the project whose id matches
+ *   hk2 --project-list                      List all registered projects (name, id) and exit
  *   hk2 --mode=project-init --name=... --source=... [--source-root=...]
  *                                           Register a project from CLI
  *   hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
@@ -20,7 +21,7 @@ import { ensureHome, loadProjects, setCurrentProject } from '../lib/config/home.
 const VALID_MODES = new Set(['project-init', 'build-kb', 'update-kb']);
 const VALID_RUN_MODES = new Set(['once', 'serve']);
 
-const BOOL_FLAGS = new Set(['help', 'h']);
+const BOOL_FLAGS = new Set(['help', 'h', 'project-list']);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -65,6 +66,10 @@ Usage:
       of the two flags may be given. Only meaningful with the default
       interactive mode (no --mode).
 
+  hk2 --project-list
+      List all registered projects (name and id) and exit. The current
+      project is marked with '*'. One-shot; does not enter the REPL.
+
   hk2 --mode=project-init --name=<name> --source=<path> [--source-root=<rel>]
       Register a new project from the command line (generates UUID, writes projects.json).
       Equivalent to: /project init inside the REPL.
@@ -108,6 +113,24 @@ export async function run() {
 
   if (flags.help || flags.h) {
     printHelp();
+    return;
+  }
+
+  // --project-list: one-shot listing of all registered projects (name, id).
+  // Resolved here (before the REPL) so it prints and exits cleanly.
+  if (flags['project-list']) {
+    await ensureHome();
+    const { current, projects } = await loadProjects();
+    const list = Object.values(projects || {});
+    if (list.length === 0) {
+      console.log('(no projects registered. Use: hk2 --mode=project-init --name=... --source=...)');
+      return;
+    }
+    console.log(`Projects (current: ${current || '(none)'})`);
+    for (const p of list) {
+      const marker = p.id === current ? '* ' : '  ';
+      console.log(`${marker}${p.name}  ${p.id}`);
+    }
     return;
   }
 

@@ -26,6 +26,7 @@ import { ProgressIndicator } from '../progress.js';
 import Transcript from '../../lib/agent/transcript.js';
 import { StatusBar } from '../../lib/agent/statusbar.js';
 import { PasteHandler } from '../../lib/agent/paste.js';
+import { MultiLineCollector } from '../../lib/agent/multiline.js';
 import * as style from '../../lib/agent/style.js';
 import { renderLogo } from '../../lib/agent/logo.js';
 import { MarkdownStream } from '../../lib/agent/markdown.js';
@@ -155,6 +156,17 @@ export async function interactive(opts = {}) {
   paste.onFlush = (text) => { void enqueue(text); };
   paste.start();
 
+  // Heuristic fallback for terminals WITHOUT bracketed-paste support (older
+  // emulators, some IDE consoles, multiplexers that strip the mode, non-TTY
+  // piped input): coalesce a rapid burst of 'line' events into one message.
+  // Defers entirely to PasteHandler while a real bracketed paste is in flight.
+  const ml = new MultiLineCollector({
+    isPasting: () => paste.isPasting(),
+    rl: session.rl,
+    onFlush: (text) => { void enqueue(text); },
+  });
+  session.ml = ml;
+
   if (isInteractive) session.rl.prompt();
   session.rl.on('line', (line) => {
     // If we're mid-paste, buffer the line and wait for paste-end. Pasted
@@ -167,9 +179,14 @@ export async function interactive(opts = {}) {
       cb(line);
       return;
     }
+    // Coalesce rapid multi-line bursts (paste fallback) into one message.
+    // ingest() returns true when it buffered/flushed the line; false when the
+    // caller should handle it directly (e.g. slash commands).
+    if (ml.ingest(line)) return;
     void enqueue(line);
   });
   session.rl.on('close', () => {
+    ml.flush();
     if (!session.processing) session.exitResolve?.();
   });
 
@@ -189,11 +206,34 @@ function buildCtx(session) {
     print: (text) => console.error(text),
     confirm: async (promptText) => {
       if (!session.rl) return false;
+      // Loop until we get a recognizable yes/no answer. This fixes the bug
+      // where typing a wrong answer (e.g. "N") and pressing Backspace to
+      // correct it would submit an empty line and silently resolve to the
+      // default (false), quitting the KB update with no chance to re-answer.
+      // Empty input (just Enter, or Backspace-to-empty + Enter) now re-prompts.
+      // Explicit y/yes -> true; n/no -> false.
+      // Ctrl+D / rl close -> false (treated as decline / cancel).
       return await new Promise((resolve) => {
-        process.stderr.write(promptText);
-        session.consumeNext = (ans) => {
-          resolve(/^[yj](es)?$/i.test((ans || '').trim()));
+        const onClose = () => resolve(false);
+        session.rl.once('close', onClose);
+        const done = (val) => {
+          session.rl.off('close', onClose);
+          resolve(val);
         };
+        const ask = () => {
+          process.stderr.write(promptText);
+          session.consumeNext = (ans) => {
+            const v = (ans || '').trim().toLowerCase();
+            if (v === 'y' || v === 'yes') { done(true); return; }
+            if (v === 'n' || v === 'no') { done(false); return; }
+            // Empty or unrecognized (e.g. user backspaced to nothing, or typed
+            // garbage): re-prompt so they get another chance instead of being
+            // silently dropped.
+            process.stderr.write('Please answer y or n. ');
+            ask();
+          };
+        };
+        ask();
       });
     },
     get lastAnswer() { return session.lastAnswer; },
