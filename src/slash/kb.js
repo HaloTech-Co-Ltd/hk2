@@ -453,7 +453,7 @@ async function knowledgeInitKb(rest, ctx) {
   const p = await getProjectOrFail(ctx);
   if (!p) return;
   if (!ctx.llm) {
-    ctx.print(`No LLM configured. Run /model add + /model use first.`);
+    ctx.print(`No LLM configured. Run /model add + /model set-default first.`);
     return;
   }
   const flags = parseFlags(rest);

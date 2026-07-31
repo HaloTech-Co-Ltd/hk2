@@ -13,7 +13,7 @@
  * Reload: project / model / KB changes flag a reload; next prompt redraws state.
  */
 import readline from 'node:readline';
-import { ensureHome, getCurrentProject, resolveDefaultModel } from '../../lib/config/home.js';
+import { ensureHome, getCurrentProject, resolveDefaultModel, resolveModelRef } from '../../lib/config/home.js';
 import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
@@ -43,6 +43,7 @@ export async function interactive(opts = {}) {
     rt: null,
     llm: null,
     modelCfg: null,
+    sessionModelRef: null,
     transcript: null,
     messages: [],
     lastAnswer: null,
@@ -173,6 +174,15 @@ export async function interactive(opts = {}) {
     // content otherwise arrives as one 'line' event per line and each would
     // fire as a separate agent turn.
     if (paste.bufferIfPasting(line)) return;
+    // A multi-line paste is never auto-submitted; it is held as a pending
+    // draft until the user presses Enter. Drain it here: an empty Enter
+    // submits the pasted block; if the user typed something fresh on the
+    // cleared prompt instead, that typed text wins and the draft is dropped.
+    const draft = paste.consumePendingDraft(line);
+    if (draft !== null) {
+      void enqueue(draft);
+      return;
+    }
     if (session.consumeNext) {
       const cb = session.consumeNext;
       session.consumeNext = null;
@@ -186,6 +196,10 @@ export async function interactive(opts = {}) {
     void enqueue(line);
   });
   session.rl.on('close', () => {
+    // Discard any pending multi-line paste draft on REPL exit - the user is
+    // leaving, so an unconfirmed paste (never auto-submitted) is dropped
+    // rather than fired off mid-shutdown.
+    paste.discardPendingDraft?.();
     ml.flush();
     if (!session.processing) session.exitResolve?.();
   });
@@ -240,6 +254,22 @@ function buildCtx(session) {
     get llm() { return session.llm; },
     get modelCfg() { return session.modelCfg; },
     get rt() { return session.rt; },
+    /**
+     * Hot-swap the session's active model (session-only, not persisted).
+     * Used by /model use and /model set (when editing the active model) so the
+     * change takes effect immediately without reloading from models.json.
+     */
+    setModel: (cfg) => {
+      if (!cfg) return;
+      session.modelCfg = cfg;
+      session.sessionModelRef = cfg.ref || null;
+      session.llm = new LLMClient(cfg);
+      session.statusBar?.update();
+    },
+    /** Clear any session-only model override so the next reload falls back to the persisted default. */
+    clearSessionModel: () => {
+      session.sessionModelRef = null;
+    },
     /** Set the status-bar phase string and refresh the bar. */
     setPhase: (p) => {
       session.phase = p;
@@ -383,12 +413,25 @@ async function reloadAll(session, ctx, flags = { project: true, kb: true, model:
     }
   }
   if (flags.model) {
-    const cfg = await resolveDefaultModel();
-    if (cfg) {
-      session.modelCfg = cfg;
-      session.llm = new LLMClient(cfg);
+    // If the session has a session-only model override (set via /model use),
+    // keep it - a models.json reload must not clobber an explicit per-session
+    // choice. Only re-resolve the default when there is no override.
+    if (session.sessionModelRef) {
+      const cfg = await resolveModelRef(session.sessionModelRef);
+      if (cfg) {
+        session.modelCfg = cfg;
+        session.llm = new LLMClient(cfg);
+      } else {
+        session.llm = null;
+      }
     } else {
-      session.llm = null;
+      const cfg = await resolveDefaultModel();
+      if (cfg) {
+        session.modelCfg = cfg;
+        session.llm = new LLMClient(cfg);
+      } else {
+        session.llm = null;
+      }
     }
   }
 }
@@ -581,14 +624,15 @@ function printBanner(session, ctx) {
   if (!session.modelCfg) {
     ctx.print(`${style.warning('⚠ No default model configured.')}`);
     ctx.print(`  ${style.accent('/model add <provider> <model-id> --api-key=... --base-url=...')}`);
-    ctx.print(`  ${style.accent('/model use <provider>/<model-id>')}`);
+    ctx.print(`  ${style.accent('/model set-default <provider>/<model-id>')}`);
+    ctx.print(`  ${style.accent('/model use <provider>/<model-id>')}  (session only)`);
     ctx.print('');
   }
 }
 
 function makeCompleter() {
   const cmds = ['/model', '/project', '/kb', '/session', '/help', '/quit', '/exit', '/clear', '/compact',
-    '/model list', '/model add', '/model use', '/model del', '/model show',
+    '/model list', '/model add', '/model use', '/model set-default', '/model set', '/model del', '/model show',
     '/project init', '/project list', '/project set', '/project show',
     '/kb init', '/kb update', '/kb status', '/kb search', '/kb save-answer',
     '/session info', '/session list', '/session new', '/session resume'];
@@ -640,7 +684,7 @@ async function handleLine(line, session, ctx) {
   }
 
   if (!session.llm) {
-    ctx.print(`No default model configured. Use /model add + /model use before chatting.`);
+    ctx.print(`No default model configured. Use /model add + /model set-default before chatting.`);
     return;
   }
   if (!session.rt) {

@@ -1,12 +1,16 @@
 /**
- * /model command family — manage ~/.hk2/models.json.
+ * /model command family - manage ~/.hk2/models.json.
  *
  * Usage:
- *   /model list                          List all providers / models
- *   /model use <provider>/<model-id>     Set default
- *   /model add <provider> <model-id> [--api=openai|anthropic] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=...]
- *   /model del <provider>/<model-id>
- *   /model show                          Show current default
+ *   /model list                                    List all providers / models
+ *   /model use <provider>/<model-id>               Choose model for current session only
+ *   /model set-default <provider>/<model-id>       Set global default model (persisted)
+ *   /model set <provider>/<model-id> [--name=...] [--api=...] [--base-url=...] [--api-key=...]
+ *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N]
+ *                                                  Modify a model's persisted settings
+ *   /model add <provider> <model-id> [--flags]     Add a new model (creates provider if needed)
+ *   /model del <provider>/<model-id>               Delete a model
+ *   /model show                                    Show current default
  */
 import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
@@ -18,15 +22,19 @@ export async function cmdModel(args, ctx) {
   switch (sub) {
     case 'list': case 'ls': return listModels(ctx);
     case 'use': return useModel(rest, ctx);
+    case 'set-default': return setDefaultModel(rest, ctx);
+    case 'set': return setModel(rest, ctx);
     case 'add': return addModel(rest, ctx);
     case 'del': case 'rm': return delModel(rest, ctx);
     case 'show': return showModel(ctx);
     default:
-      ctx.print(`/model subcommands: list | use | add | del | show`);
+      ctx.print(`/model subcommands: list | use | set-default | set | add | del | show`);
       ctx.print(`Examples:`);
       ctx.print(`  /model list`);
       ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000`);
-      ctx.print(`  /model use openai-local/gpt-4o`);
+      ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
+      ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
+      ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192`);
       ctx.print(`  /model del openai-local/gpt-4o`);
   }
 }
@@ -52,9 +60,45 @@ async function listModels(ctx) {
   }
 }
 
+/**
+ * /model use <provider>/<model-id>
+ * Session-only: switches the active model for the current REPL session without
+ * touching models.json. Falls back to set-default behavior when the host does
+ * not expose ctx.setModel (e.g. non-interactive callers), so the command still
+ * does something useful everywhere.
+ */
 async function useModel(rest, ctx) {
   const ref = rest[0];
-  if (!ref) { ctx.print(`Usage: /model use <provider>/<model-id>`); return; }
+  if (!ref) { ctx.print(`Usage: /model use <provider>/<model-id>  (session only; use /model set-default to persist)`); return; }
+  const split = splitModelRef(ref);
+  if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
+  const { providers } = await loadModels();
+  const prov = providers[split.provider];
+  if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
+  const m = (prov.models || []).find(x => x.id === split.model);
+  if (!m) { ctx.print(`Model not found: ${ref}`); return; }
+  if (typeof ctx.setModel === 'function') {
+    const cfg = await resolveModelRef(ref);
+    if (!cfg) { ctx.print(`Unable to resolve model: ${ref}`); return; }
+    ctx.setModel(cfg);
+    ctx.print(`Session model: ${ref} (session only - not persisted)`);
+    return;
+  }
+  // Fallback for contexts without setModel (e.g. serve / one-shot): persist as default.
+  const data = await loadModels();
+  data.default = ref;
+  await saveModels(data);
+  ctx.print(`Default set: ${ref}`);
+  ctx.noteReloadModels?.();
+}
+
+/**
+ * /model set-default <provider>/<model-id>
+ * Persist the global default model in models.json and signal the REPL to reload.
+ */
+async function setDefaultModel(rest, ctx) {
+  const ref = rest[0];
+  if (!ref) { ctx.print(`Usage: /model set-default <provider>/<model-id>`); return; }
   const split = splitModelRef(ref);
   if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
   const { providers } = await loadModels();
@@ -66,6 +110,74 @@ async function useModel(rest, ctx) {
   data.default = ref;
   await saveModels(data);
   ctx.print(`Default set: ${ref}`);
+  ctx.noteReloadModels?.();
+}
+
+/**
+ * /model set <provider>/<model-id> [--flags]
+ * Modify persisted settings of an existing model (and its provider). The model
+ * must already exist (use /model add to create). Only the flags you pass are
+ * applied; omitted flags keep their current value.
+ *
+ * Flags:
+ *   --name=NAME
+ *   --api=openai|anthropic          (provider-level)
+ *   --base-url=URL                  (provider-level)
+ *   --api-key=KEY                   (provider-level)
+ *   --reasoning=on|off
+ *   --context-window=N
+ *   --max-tokens=N
+ *   --temperature=N
+ */
+async function setModel(rest, ctx) {
+  const ref = rest[0];
+  if (!ref) {
+    ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
+    ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N]`);
+    return;
+  }
+  const split = splitModelRef(ref);
+  if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
+  const flags = parseFlags(rest.slice(1));
+
+  const data = await loadModels();
+  const prov = data.providers[split.provider];
+  if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
+  const entry = (prov.models || []).find(m => m.id === split.model);
+  if (!entry) { ctx.print(`Model not found: ${ref} (use /model add to create it first)`); return; }
+
+  // Provider-level fields.
+  if (flags.api) prov.api = flags.api;
+  if (flags['base-url'] !== undefined) prov.baseUrl = flags['base-url'];
+  if (flags['api-key'] !== undefined) prov.apiKey = flags['api-key'];
+
+  // Model-level fields.
+  if (flags.name) entry.name = flags.name;
+  if (flags['context-window'] !== undefined) {
+    const n = parseInt(flags['context-window'], 10);
+    if (Number.isFinite(n) && n > 0) entry.contextWindow = n;
+  }
+  if (flags['max-tokens'] !== undefined) {
+    const n = parseInt(flags['max-tokens'], 10);
+    if (Number.isFinite(n) && n > 0) entry.maxTokens = n;
+  }
+  if (flags.temperature !== undefined) {
+    const t = parseFloat(flags.temperature);
+    if (Number.isFinite(t)) entry.temperature = t;
+  }
+  if (flags.reasoning !== undefined) {
+    entry.reasoning = parseBoolFlag(flags.reasoning);
+  }
+
+  await saveModels(data);
+  ctx.print(`Updated: ${ref}`);
+  ctx.print(`  contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2}`);
+  // If the session is currently using this model, hot-swap it so the change
+  // takes effect immediately without a full reload.
+  if (typeof ctx.setModel === 'function' && ctx.modelCfg?.ref === ref) {
+    const cfg = await resolveModelRef(ref);
+    if (cfg) ctx.setModel(cfg);
+  }
   ctx.noteReloadModels?.();
 }
 
@@ -107,7 +219,7 @@ async function addModel(rest, ctx) {
   else if (!entry.maxTokens) entry.maxTokens = Math.min(32768, Math.floor((entry.contextWindow || 65536) / 4));
   if (flags.temperature !== undefined) entry.temperature = parseFloat(flags.temperature);
   else if (entry.temperature === undefined) entry.temperature = 0.2;
-  if (flags.reasoning !== undefined) entry.reasoning = !!flags.reasoning;
+  if (flags.reasoning !== undefined) entry.reasoning = parseBoolFlag(flags.reasoning);
   else if (entry.reasoning === undefined) entry.reasoning = false;
 
   await saveModels(data);
@@ -152,7 +264,7 @@ async function delModel(rest, ctx) {
 
 async function showModel(ctx) {
   const { default: def } = await loadModels();
-  if (!def) { ctx.print(`No default model configured. Use /model add then /model use.`); return; }
+  if (!def) { ctx.print(`No default model configured. Use /model add then /model set-default.`); return; }
   ctx.print(`default = ${def}`);
   const cfg = await resolveModelRef(def);
   if (!cfg) { ctx.print(`(unable to resolve)`); return; }
@@ -164,6 +276,12 @@ async function showModel(ctx) {
   ctx.print(`  temperature: ${cfg.temperature}`);
 }
 
+/**
+ * Parse --key=value / --flag tokens into a flat object.
+ * Values are always strings (or `true` for value-less flags). Boolean flags are
+ * normalized later via parseBoolFlag so that "on"/"off"/"true"/"false"/"1"/"0"
+ * all work.
+ */
 function parseFlags(tokens) {
   const out = {};
   for (let i = 0; i < tokens.length; i++) {
@@ -181,4 +299,12 @@ function parseFlags(tokens) {
     }
   }
   return out;
+}
+
+/** Normalize a reasoning flag value to a boolean. Accepts on/off/true/false/1/0. */
+function parseBoolFlag(v) {
+  if (v === true) return true;
+  if (v === false) return false;
+  const s = String(v).trim().toLowerCase();
+  return s === 'on' || s === 'true' || s === '1' || s === 'yes';
 }

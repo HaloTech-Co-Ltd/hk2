@@ -25,7 +25,7 @@ import { resolveKbName } from '../kb_name.js';
 export async function serve() {
   const cfg = await resolveDefaultModel();
   if (!cfg) {
-    console.error('No default model configured. Use /model add + /model use, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.');
+    console.error('No default model configured. Use /model add + /model set-default, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.');
     process.exit(2);
   }
   const { getRuntime } = await import('../../lib/retrieval/kb_runtime.js');

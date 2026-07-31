@@ -106,7 +106,8 @@ hk2
 
 # 6. 切换项目 / 模型
 /model list
-/model use local/gpt-4o
+/model set-default local/gpt-4o
+/model use local/gpt-4o          # 仅当前会话
 /project list
 /quit
 ```
@@ -188,7 +189,9 @@ hk2
 |---|---|
 | `/model list` | 列出所有提供商 / 模型 |
 | `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N]` | 添加模型 |
-| `/model use <prov>/<id>` | 设为默认 |
+| `/model set <prov>/<id> [--name=...] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--api=...] [--base-url=...] [--api-key=...]` | 修改模型配置（持久化） |
+| `/model set-default <prov>/<id>` | 设为全局默认（持久化） |
+| `/model use <prov>/<id>` | 仅当前会话选用模型 |
 | `/model del <prov>/<id>` | 删除 |
 | `/model show` | 显示当前默认模型详情 |
 | `/project init --name=... --source=... [--source-root=...]` | 注册新项目 |

@@ -24,7 +24,7 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
   const kbName = await resolveKbName();
   const rt = providedRt || await (await import('../../lib/retrieval/kb_runtime.js')).getRuntime(kbName);
   const llm = providedLlm || (cfg ? new (await import('../../lib/llm/client.js')).LLMClient(cfg) : null);
-  if (!llm) throw new Error('No default model configured. Use /model add + /model use, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.');
+  if (!llm) throw new Error('No default model configured. Use /model add + /model set-default, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.');
 
   // principle mode: check saved answers first (unless --force)
   if (mode === 'principle' && !force) {

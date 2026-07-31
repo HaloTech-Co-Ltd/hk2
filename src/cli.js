@@ -87,7 +87,7 @@ Usage:
       Print this help.
 
 Interactive REPL commands (full list via /help):
-  /model list | add | use | del | show
+  /model list | add | set | set-default | use | del | show
   /project init | list | set | show | drop
   /kb init | update | status | search | symbol | neighbors | knowledge | transform | drop
   /session info | list | new | resume

@@ -108,7 +108,8 @@ How does login verify the password?
 
 # 6. Switch projects / models
 /model list
-/model use local/gpt-4o
+/model set-default local/gpt-4o
+/model use local/gpt-4o          # session only
 /project list
 /quit
 ```
@@ -190,7 +191,9 @@ Type `/help` for the full list. Common commands:
 |---|---|
 | `/model list` | List all providers / models |
 | `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N]` | Add a model |
-| `/model use <prov>/<id>` | Set default |
+| `/model set <prov>/<id> [--name=...] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings |
+| `/model set-default <prov>/<id>` | Set global default (persisted) |
+| `/model use <prov>/<id>` | Choose model for current session only |
 | `/model del <prov>/<id>` | Delete |
 | `/model show` | Show current default details |
 | `/project init --name=... --source=... [--source-root=...]` | Register a new project |

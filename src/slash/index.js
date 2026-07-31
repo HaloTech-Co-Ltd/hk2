@@ -8,7 +8,10 @@
  *   - print(text)               general output
  *   - confirm(prompt) → boolean synchronous y/N confirmation
  *   - lastAnswer                last LLM text (for /kb save-answer)
- *   - noteReloadModels()        model config changed
+ *   - noteReloadModels()        model config changed (persisted default)
+ *   - setModel(cfg)             hot-swap active model for this session only
+ *   - clearSessionModel()       drop session-only model override
+ *   - modelCfg                  current resolved model config (read)
  *   - noteReloadProject()       project switched
  *   - noteReloadKb()            KB changed
  *   - clearConversation()       clear in-memory message transcript
@@ -21,7 +24,7 @@ import { cmdKb } from './kb.js';
 import { cmdSession } from './session.js';
 
 export const SLASH_COMMANDS = [
-  { name: '/model',   handler: cmdModel,   description: 'Manage models.json (list / use / add / del / show)' },
+  { name: '/model',   handler: cmdModel,   description: 'Manage models.json (list / use / set-default / set / add / del / show)' },
   { name: '/project', handler: cmdProject, description: 'Manage projects.json (init / list / set / show / drop)' },
   { name: '/kb',      handler: cmdKb,      description: 'Current project KB (init / update / status / search ...)' },
   { name: '/session', handler: cmdSession, description: 'Session management (info / new / clear / list / resume)' },
