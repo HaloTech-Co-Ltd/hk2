@@ -954,7 +954,12 @@ async function runAgentTurn(userText, session, ctx) {
   // Any failure (env disabled, LLM error, user cancel, no usable plan) falls
   // through silently to the normal agent loop.
   //
-  // Complexity gating is itself LLM-driven (not a pure regex heuristic):
+  // Complexity gating is itself LLM-driven (not a pure regex heuristic). The
+  // triage call runs UNDER the "waiting for model" phase - the model is already
+  // analyzing the request at that point, so a separate upfront "assessing"
+  // spinner would be redundant and weird. Only when the verdict is complex do we
+  // branch into a distinct "planning" phase (generate + confirm), then return to
+  // "waiting for model" for the real agent loop.
   //   1. isObviouslyTrivial() skips even the assessment for definite-simple tasks.
   //   2. assessComplexity() asks the LLM whether the task genuinely needs a
   //      strategy decision the user should confirm. Regex heuristics cannot
@@ -966,9 +971,11 @@ async function runAgentTurn(userText, session, ctx) {
   const forceAlways = envFlag('HK2_PLAN_ALWAYS', 0);
   let isComplex = forceAlways;
   if (needPlanConfirm && !forceAlways && session.llm) {
+    // Enter the model-wait phase early so the complexity triage runs under it:
+    // the model is analyzing the request, which is exactly what this phase means.
+    progress.nextPhase('waiting for model');
+    setPhase('waiting for model');
     try {
-      progress.nextPhase('assessing');
-      setPhase('assessing');
       const assessment = await assessComplexity(session.llm, userText, {
         signal: abortCtrl.signal,
       });
@@ -980,7 +987,7 @@ async function runAgentTurn(userText, session, ctx) {
       });
     } catch (err) {
       if (abortCtrl.signal.aborted) {
-        // ESC during assessment. Same listener-leak concern as the cancel path.
+        // ESC during triage. Same listener-leak concern as the cancel path.
         if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
         progress.done();
         process.stderr.write(`\n${style.warning(style.ICON.warn + ' interrupted')}${style.dim(' - partial output preserved')}\n`);
@@ -1004,6 +1011,11 @@ async function runAgentTurn(userText, session, ctx) {
         graphSummary,
         signal: abortCtrl.signal,
       });
+      // Stop the planning spinner before the interactive menu, otherwise the
+      // spinner's per-200ms \r refresh overwrites the "Choose [1-k]" prompt.
+      // pause() leaves `stopped` false, so the subsequent "waiting for model"
+      // phase (and its tick() on the first delta) still work normally.
+      progress.pause();
       const planText = await confirmPlan(plan, session);
       if (planText) {
         session.messages.push({
@@ -1044,8 +1056,14 @@ async function runAgentTurn(userText, session, ctx) {
   session.messages.push({ role: 'user', content: userText });
   await session.transcript?.logUser(userText);
 
-  progress.nextPhase('waiting for model');
-  setPhase('waiting for model');
+  // If triage already entered the model-wait phase (simple task), keep flowing
+  // into execution under the same phase instead of ending+restarting the spinner
+  // (which would print a spurious ✓ line for an identical label). Only re-enter
+  // when we came from planning / no-plan paths.
+  if (session.phase !== 'waiting for model') {
+    progress.nextPhase('waiting for model');
+    setPhase('waiting for model');
+  }
 
   let assistantText = '';
   // Per-LLM-call markdown renderer. Streams line-by-line styling so the

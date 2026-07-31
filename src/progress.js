@@ -115,6 +115,26 @@ export class ProgressIndicator {
   }
 
   /**
+   * Temporarily stop the spinner without finalizing the phase, so an
+   * interactive prompt (e.g. the plan-mode "Choose [1-k]" menu) can take
+   * over the line cleanly. Unlike tick(), this does NOT set `stopped`, so a
+   * later nextPhase()/tick()/done() still works normally. Safe to call when
+   * no phase is active (non-TTY or already stopped).
+   */
+  pause() {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    if (this.isTTY) {
+      this.stream.write('\r\x1b[K');
+    } else if (this.phase) {
+      this.stream.write('\n');
+    }
+    this.phase = null;
+  }
+
+  /**
    * Called on each delta: clears the spinner line so stdout streaming is clean.
    * Subsequent deltas just accumulate char count.
    */
