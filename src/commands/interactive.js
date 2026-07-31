@@ -59,7 +59,7 @@ import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { runLoop } from '../../lib/agent/loop.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
-import { generatePlan, needsPlanning } from '../../lib/agent/plan.js';
+import { generatePlan, assessComplexity } from '../../lib/agent/plan.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -954,14 +954,48 @@ async function runAgentTurn(userText, session, ctx) {
   // Any failure (env disabled, LLM error, user cancel, no usable plan) falls
   // through silently to the normal agent loop.
   //
-  // Complexity gating: only complex tasks warrant the plan+confirm round-trip.
-  // needsPlanning() applies lightweight heuristics (sequencing words, multi-file
-  // references, list structure, length, non-trivial verbs) and lets trivial
-  // tasks - greetings, single reads, quick questions - skip straight to the
-  // agent loop. Set HK2_PLAN_ALWAYS=1 to force planning on every task.
+  // Complexity gating is itself LLM-driven (not a pure regex heuristic):
+  //   1. isObviouslyTrivial() skips even the assessment for definite-simple tasks.
+  //   2. assessComplexity() asks the LLM whether the task genuinely needs a
+  //      strategy decision the user should confirm. Regex heuristics cannot
+  //      understand semantic intent (a chained git workflow says "then" but is
+  //      routine), so the model is the real gate. On any LLM failure it falls
+  //      back to the legacy regex heuristic so the user is never blocked.
+  // Set HK2_PLAN_ALWAYS=1 to force planning on every task (bypass assessment).
   const needPlanConfirm = envFlag('HK2_PLAN_NEED_CONFIRM', 1);
   const forceAlways = envFlag('HK2_PLAN_ALWAYS', 0);
-  const isComplex = forceAlways || needsPlanning(userText);
+  let isComplex = forceAlways;
+  if (needPlanConfirm && !forceAlways && session.llm) {
+    try {
+      progress.nextPhase('assessing');
+      setPhase('assessing');
+      const assessment = await assessComplexity(session.llm, userText, {
+        signal: abortCtrl.signal,
+      });
+      isComplex = assessment.complex;
+      await session.transcript?.logMeta('assessment', {
+        complex: assessment.complex,
+        reason: assessment.reason,
+        source: assessment.source,
+      });
+    } catch (err) {
+      if (abortCtrl.signal.aborted) {
+        // ESC during assessment. Same listener-leak concern as the cancel path.
+        if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
+        progress.done();
+        process.stderr.write(`\n${style.warning(style.ICON.warn + ' interrupted')}${style.dim(' - partial output preserved')}\n`);
+        session.phase = 'idle';
+        session.turnStart = 0;
+        session.statusBar?.update();
+        return;
+      }
+      // Assessment failure is non-fatal: warn and let the old isComplex
+      // (false here, since forceAlways is off) fall through - i.e. skip plan
+      // mode and go straight to the agent loop.
+      ctx.print(`[warn] complexity assessment failed, skipping plan mode: ${err.message}`);
+      isComplex = false;
+    }
+  }
   if (needPlanConfirm && isComplex && session.llm) {
     progress.nextPhase('planning');
     setPhase('planning');
