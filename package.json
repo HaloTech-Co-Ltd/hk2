@@ -11,6 +11,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "test": "node --test 'test/**/*.test.js'",
     "install:global": "npm link",
     "uninstall:global": "npm unlink -g hk2"
   },

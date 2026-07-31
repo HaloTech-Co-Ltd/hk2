@@ -59,7 +59,7 @@ import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { runLoop } from '../../lib/agent/loop.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
-import { generatePlan } from '../../lib/agent/plan.js';
+import { generatePlan, needsPlanning } from '../../lib/agent/plan.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -953,8 +953,16 @@ async function runAgentTurn(userText, session, ctx) {
   // injected as a system message so the agent loop executes the chosen approach.
   // Any failure (env disabled, LLM error, user cancel, no usable plan) falls
   // through silently to the normal agent loop.
+  //
+  // Complexity gating: only complex tasks warrant the plan+confirm round-trip.
+  // needsPlanning() applies lightweight heuristics (sequencing words, multi-file
+  // references, list structure, length, non-trivial verbs) and lets trivial
+  // tasks - greetings, single reads, quick questions - skip straight to the
+  // agent loop. Set HK2_PLAN_ALWAYS=1 to force planning on every task.
   const needPlanConfirm = envFlag('HK2_PLAN_NEED_CONFIRM', 1);
-  if (needPlanConfirm && session.llm) {
+  const forceAlways = envFlag('HK2_PLAN_ALWAYS', 0);
+  const isComplex = forceAlways || needsPlanning(userText);
+  if (needPlanConfirm && isComplex && session.llm) {
     progress.nextPhase('planning');
     setPhase('planning');
     try {
