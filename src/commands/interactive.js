@@ -59,6 +59,7 @@ import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { runLoop } from '../../lib/agent/loop.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
+import { generatePlan } from '../../lib/agent/plan.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -735,6 +736,109 @@ async function handleLine(line, session, ctx) {
   await runAgentTurn(trimmed, session, ctx);
 }
 
+/**
+ * Interactive plan confirmation (HK2_PLAN_NEED_CONFIRM, default 1).
+ *
+ * Given a plan (from generatePlan) - an ordered list of steps, each with
+ * multiple candidate strategies - prompt the user once per step to choose a
+ * strategy. Each prompt is a numbered menu:
+ *
+ *   1. <name> (recommend)         <- recommended strategy first
+ *      <description>
+ *   2. <name>
+ *      <description>
+ *   3. <name>
+ *      <description>
+ *   4. something else             <- free text the user types
+ *
+ * The recommended strategy is always listed as option 1 (and marked). Options
+ * are 1-indexed; the last option is "something else" and captures the next line
+ * the user types as free-form guidance.
+ *
+ * Returns null if the user cancels (Ctrl+D / rl close) or the plan has no
+ * usable steps; otherwise a finalized plan string suitable to inject into the
+ * transcript, e.g.:
+ *   "Summary: ..."
+ *   "Step 1: <goal> -> <chosen strategy / free text>"
+ *   "Step 2: ..."
+ */
+async function confirmPlan(plan, session) {
+  if (!plan || !plan.steps || plan.steps.length === 0) return null;
+  const choices = [];
+  for (let s = 0; s < plan.steps.length; s++) {
+    const step = plan.steps[s];
+    // Recommended strategy first, then the rest, preserving model order.
+    const ordered = [...step.strategies].sort((a, b) =>
+      (a.recommended === b.recommended) ? 0 : a.recommended ? -1 : 1);
+    const lines = [];
+    lines.push('');
+    lines.push(style.accent(style.bold(`Plan - Step ${s + 1}/${plan.steps.length}: ${step.goal}`)));
+    const nStrats = ordered.length;
+    for (let i = 0; i < nStrats; i++) {
+      const strat = ordered[i];
+      const tag = strat.recommended ? ` ${style.warning('(recommend)')}` : '';
+      lines.push(`  ${style.bold(String(i + 1))}. ${strat.name}${tag}`);
+      if (strat.description) lines.push(`     ${style.dim(strat.description)}`);
+    }
+    lines.push(`  ${style.bold(String(nStrats + 1))}. ${style.dim('something else (type your own approach)')}`);
+    for (const ln of lines) process.stderr.write(ln + '\n');
+
+    const choice = await promptChoice(session, nStrats + 1);
+    if (choice.cancelled) return null;
+    if (choice.index === nStrats) {
+      // "something else": the next line is the free-form approach.
+      const free = await promptLine(session, style.accent('  Your approach: '));
+      if (free.cancelled) return null;
+      choices.push({ goal: step.goal, text: free.text || '(no approach given)' });
+    } else {
+      const strat = ordered[choice.index];
+      choices.push({ goal: step.goal, text: `${strat.name}${strat.description ? ' - ' + strat.description : ''}` });
+    }
+  }
+  const parts = [];
+  if (plan.summary) parts.push(`Summary: ${plan.summary}`);
+  choices.forEach((c, i) => parts.push(`Step ${i + 1}: ${c.goal} -> ${c.text}`));
+  return parts.join('\n');
+}
+
+/**
+ * Prompt for a single integer choice in [1..max]. Returns {index, cancelled}.
+ * Mirrors ctx.confirm's consumeNext + close handling. Re-prompts on bad input.
+ */
+function promptChoice(session, max) {
+  return new Promise((resolve) => {
+    if (!session.rl) { resolve({ index: -1, cancelled: true }); return; }
+    const onClose = () => resolve({ index: -1, cancelled: true });
+    session.rl.once('close', onClose);
+    const done = (val) => { session.rl.off('close', onClose); resolve(val); };
+    const ask = () => {
+      process.stderr.write(style.accent(`  Choose [1-${max}]: `));
+      session.consumeNext = (ans) => {
+        const v = (ans || '').trim();
+        const n = parseInt(v, 10);
+        if (/^\d+$/.test(v) && n >= 1 && n <= max) { done({ index: n - 1, cancelled: false }); return; }
+        process.stderr.write(`  Please enter a number 1-${max}. `);
+        ask();
+      };
+    };
+    ask();
+  });
+}
+
+/**
+ * Prompt for a single free-text line. Returns {text, cancelled}.
+ */
+function promptLine(session, promptText) {
+  return new Promise((resolve) => {
+    if (!session.rl) { resolve({ text: '', cancelled: true }); return; }
+    const onClose = () => resolve({ text: '', cancelled: true });
+    session.rl.once('close', onClose);
+    const done = (val) => { session.rl.off('close', onClose); resolve(val); };
+    process.stderr.write(promptText);
+    session.consumeNext = (ans) => done({ text: (ans || '').trim(), cancelled: false });
+  });
+}
+
 async function runAgentTurn(userText, session, ctx) {
   const progress = new ProgressIndicator();
   session.turnStart = Date.now();
@@ -842,6 +946,58 @@ async function runAgentTurn(userText, session, ctx) {
   session.tokens.loopOut = 0;
   session.tokens.loopPeakIn = 0;
   session.tokens.loopPeakOut = 0;
+
+  // Plan mode (HK2_PLAN_NEED_CONFIRM, default 1): before execution, ask the LLM
+  // to decompose the task into ordered steps with multiple candidate strategies,
+  // then prompt the user to choose one strategy per step. The finalized plan is
+  // injected as a system message so the agent loop executes the chosen approach.
+  // Any failure (env disabled, LLM error, user cancel, no usable plan) falls
+  // through silently to the normal agent loop.
+  const needPlanConfirm = envFlag('HK2_PLAN_NEED_CONFIRM', 1);
+  if (needPlanConfirm && session.llm) {
+    progress.nextPhase('planning');
+    setPhase('planning');
+    try {
+      const plan = await generatePlan(session.llm, userText, {
+        graphSummary,
+        signal: abortCtrl.signal,
+      });
+      const planText = await confirmPlan(plan, session);
+      if (planText) {
+        session.messages.push({
+          role: 'system',
+          content: `## Confirmed execution plan (user-selected strategies)\nThe user reviewed a candidate plan and chose the strategy for each step. Follow this plan.\n\n${planText}`,
+        });
+        await session.transcript?.logMeta('plan', { plan: planText });
+      } else if (plan && plan.steps && plan.steps.length > 0) {
+        // User cancelled mid-confirmation (Ctrl+D / rl close). Abort the turn
+        // rather than executing an unconfirmed plan. Detach the ESC listener
+        // manually: the main try/finally that owns it starts further down, so
+        // an early return here would otherwise leak it.
+        if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
+        progress.done();
+        process.stderr.write(`${style.warning(style.ICON.warn + ' plan cancelled')} - turn aborted.\n`);
+        session.phase = 'idle';
+        session.turnStart = 0;
+        session.statusBar?.update();
+        return;
+      }
+      // else: plan generation fell back (empty steps) -> proceed normally.
+    } catch (err) {
+      if (abortCtrl.signal.aborted) {
+        // ESC during planning. Same listener-leak concern as the cancel path.
+        if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
+        progress.done();
+        process.stderr.write(`\n${style.warning(style.ICON.warn + ' interrupted')}${style.dim(' - partial output preserved')}\n`);
+        session.phase = 'idle';
+        session.turnStart = 0;
+        session.statusBar?.update();
+        return;
+      }
+      // Plan failure is non-fatal: warn and continue into the agent loop.
+      ctx.print(`[warn] plan generation failed, proceeding without plan: ${err.message}`);
+    }
+  }
 
   session.messages.push({ role: 'user', content: userText });
   await session.transcript?.logUser(userText);
