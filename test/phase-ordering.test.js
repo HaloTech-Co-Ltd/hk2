@@ -74,16 +74,17 @@ test('no-rewrite path starts directly on retrieving KB (no rewriting query)', ()
     'no-rewrite path must not show a rewriting-query phase');
 });
 
-test('assessment-first path: assessing request -> rewriting query -> retrieving KB', () => {
+test('assessment path: rewriting query -> retrieving KB -> assessing request', () => {
   const stream = new RecordingStream();
   const progress = new ProgressIndicator(stream);
 
   // Mirror runAgentTurn's full interactive control flow when request-clarity
-  // assessment is enabled: assess, then rewrite, then retrieve. Retrieval must
-  // still come after the rewrite.
-  progress.start('assessing request');
-  progress.nextPhase('rewriting query');
+  // assessment is enabled: rewrite, then retrieve, THEN assess (the assessment
+  // runs after retrieval so the LLM can judge clarity against the retrieved
+  // project context). Retrieval must still come after the rewrite.
+  progress.start('rewriting query');
   progress.nextPhase('retrieving KB');
+  progress.nextPhase('assessing request');
   progress.done();
 
   const phases = stream.recordedPhases();
@@ -91,8 +92,8 @@ test('assessment-first path: assessing request -> rewriting query -> retrieving 
   const ri = phases.indexOf('rewriting query');
   const ki = phases.indexOf('retrieving KB');
   assert.ok(ai !== -1 && ri !== -1 && ki !== -1, 'all three phases recorded');
-  assert.ok(ai < ri && ri < ki,
-    `expected assessing < rewriting < retrieving, got idx ${ai}/${ri}/${ki}`);
+  assert.ok(ri < ki && ki < ai,
+    `expected rewriting < retrieving < assessing, got idx ${ri}/${ki}/${ai}`);
 });
 
 test('regression canary: retrieving-before-rewriting order is detectable as wrong', () => {

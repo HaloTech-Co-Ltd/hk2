@@ -112,10 +112,17 @@ export async function interactive(opts = {}) {
     // call's values are committed to loopIn/loopOut and cumIn/cumOut first.
     // loopIn/loopOut are reset at the start of each user prompt.
     tokens: { callIn: 0, callOut: 0, loopIn: 0, loopOut: 0, loopPeakIn: 0, loopPeakOut: 0, cumIn: 0, cumOut: 0, cacheRead: 0, cacheCreation: 0 },
-    // Persistent status bar — pinned to the bottom of the terminal
+    // Persistent status bar - pinned to the bottom of the terminal
     statusBar: null,
     phase: 'idle',     // current phase string for the status bar
     turnStart: 0,      // epoch ms of current turn start (for elapsed display)
+    // Active plan-execution progress, shown as a pinned multi-line block just
+    // above the status bar. null when no plan is active. Set when a plan is
+    // confirmed (confirmPlan); advanced step-by-step by the `plan_step` tool;
+    // cleared when the last step completes or a fresh user prompt arrives.
+    //   { summary, steps: [{ goal, strategy, status }], current }
+    // status is one of 'done' | 'in_progress' | 'pending'.
+    planProgress: null,
     // Per-turn KB-first guardrail — tracks whether the agent used KB tools
     // this turn, so we can nudge it away from bash-grep / source-read when
     // the KB has what it needs.
@@ -144,6 +151,12 @@ export async function interactive(opts = {}) {
   // Persistent bottom status bar (only in TTY mode)
   session.statusBar = new StatusBar(process.stderr, {
     formatter: () => formatStatusLine(session),
+    // Pinned multi-line plan-progress block rendered just above the status
+    // line. Returns [] when no plan is active, so the bar behaves exactly
+    // as before (1 reserved line). When a plan is confirmed this returns
+    // one line per step + a header, and the scroll region shrinks to make
+    // room. Updated on every statusBar.update() (incl. the 500ms poll).
+    planRenderer: () => formatPlanProgressLines(session),
   });
   if (session.statusBar.isEnabled()) {
     // Clear the visible screen so the previous session's last lines don't
@@ -512,6 +525,49 @@ function kbBrief(session) {
  * call's numbers — a multi-step task with N tool-call rounds shows the sum
  * across all N calls.
  */
+/**
+ * Plan-execution progress block - the pinned multi-line panel rendered
+ * JUST ABOVE the bottom status bar. Returns an array of styled lines
+ * (one per visible row), or [] when no plan is active (so the status bar
+ * reserves no extra rows).
+ *
+ * Layout:
+   Plan: <summary>   (1 line, dim - truncated by the caller)
+   [x] 1. <goal>     (done)
+   [>] 2. <goal>     (in progress)
+   [ ] 3. <goal>     (pending)
+ * The chosen strategy for the current (in_progress) step is shown on a
+ * second indented line so the user can see what approach is in flight.
+ */
+function formatPlanProgressLines(session) {
+  const p = session.planProgress;
+  if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return [];
+  const lines = [];
+  const head = p.summary
+    ? `${style.accent(style.bold("Plan"))} ${style.dim(":")} ${style.muted(p.summary)}`
+    : `${style.accent(style.bold("Plan"))} ${style.dim("(in progress)")}`;
+  lines.push(head);
+  for (let i = 0; i < p.steps.length; i++) {
+    const st = p.steps[i];
+    let mark, label;
+    if (st.status === 'done') {
+      mark = style.success(style.ICON.ok);
+      label = style.dim(`${i + 1}. ${st.goal}`);
+    } else if (st.status === 'in_progress') {
+      mark = style.accent(">");
+      label = style.accent(style.bold(`${i + 1}. ${st.goal}`));
+    } else {
+      mark = style.dim("[ ]");
+      label = style.dim(`${i + 1}. ${st.goal}`);
+    }
+    lines.push(`  ${mark} ${label}`);
+    if (st.status === 'in_progress' && st.strategy) {
+      lines.push(`     ${style.dim(st.strategy)}`);
+    }
+  }
+  return lines;
+}
+
 function formatStatusLine(session) {
   const projTag = session.project ? style.accent(session.project.name) : style.dim('no-project');
   const kbTag = kbBrief(session);
@@ -732,6 +788,15 @@ async function handleLine(line, session, ctx) {
     return;
   }
 
+  // Plan-progress lifecycle: a fresh prompt that is not a short
+  // continuation (yes/ok/continue/go/next/done) starts a new task, so any
+  // stale plan block from a previous task is cleared. Multi-turn
+  // continuation of an in-progress plan keeps the block.
+  const contRe = /^(y|yes|ok|okay|continue|cont|go|next|done|keep going|proceed)\b/i;
+  if (session.planProgress && !contRe.test(trimmed)) {
+    session.planProgress = null;
+    session.statusBar?.update();
+  }
   await runAgentTurn(trimmed, session, ctx);
 }
 
@@ -800,6 +865,19 @@ async function confirmPlan(plan, session) {
   const parts = [];
   if (plan.summary) parts.push(`Summary: ${plan.summary}`);
   choices.forEach((c, i) => parts.push(`Step ${i + 1}: ${c.goal} -> ${c.text}`));
+  // Persist the structured plan so the status bar can render live progress.
+  // The first step is marked in_progress and the rest pending; the agent
+  // advances them via the `plan_step` tool (planStep callback below).
+  session.planProgress = {
+    summary: plan.summary || "",
+    steps: choices.map((c, i) => ({
+      goal: c.goal,
+      strategy: c.text,
+      status: i === 0 ? 'in_progress' : 'pending',
+    })),
+    current: 0,
+  };
+  session.statusBar?.update();
   return parts.join('\n');
 }
 
@@ -903,14 +981,19 @@ async function runAgentTurn(userText, session, ctx) {
     rlInput.on('keypress', onKeypress);
   }
 
-  // Phase ordering: the LLM query rewrite (when enabled) MUST run before
-  // KB retrieval, because the rewritten query feeds BM25. So the spinner
-  // starts on 'rewriting query' (or 'assessing request' when request-clarity
-  // assessment runs first), and only transitions to 'retrieving KB' right
-  // before buildRequestGraph performs the actual retrieval. Announcing
-  // 'retrieving KB' before the rewrite would mislabel the work and imply
-  // retrieval runs on the un-rewritten query. See Eden KB entry
-  // `interactive-progress-phase-ordering`.
+  // Phase ordering: the LLM query rewrite (when enabled) runs before KB
+  // retrieval, because the rewritten query feeds BM25. The spinner therefore
+  // starts on 'rewriting query' (or 'retrieving KB' when rewrite is off), and
+  // only transitions to 'retrieving KB' right before buildRequestGraph performs
+  // the actual retrieval. Announcing 'retrieving KB' before the rewrite would
+  // mislabel the work and imply retrieval runs on the un-rewritten query.
+  //
+  // Request-clarity assessment (when enabled) runs AFTER the first
+  // rewrite+retrieve pass, so the LLM can judge clarity against the retrieved
+  // project context (matching symbols/knowledge) instead of the raw request
+  // alone. If the request is unclear, the user's confirmation is fed back into
+  // a context-aware second rewrite, after which retrieval is re-run. See Eden
+  // KB entry `request-assessment-clarification-phase`.
   const enableRewrite = envFlag('HK2_ENABLE_QUERYREWRITE', 1);
   // Request-clarity assessment (HK2_ENABLE_REQUEST_ASSESS, default 1).
   // Active only in interactive TTY mode (a confirmation menu needs a real
@@ -919,12 +1002,9 @@ async function runAgentTurn(userText, session, ctx) {
   const canAssess = enableAssess && session.llm && !!(session.rl && session.rl.terminal);
   let rewrite = null;
 
-  // Start the spinner on the FIRST piece of real work: assessment (when it
-  // will run), else the rewrite (when enabled), else KB retrieval.
-  if (canAssess) {
-    progress.start('assessing request');
-    setPhase('assessing request');
-  } else if (enableRewrite && session.llm) {
+  // Start the spinner on the FIRST piece of real work: the rewrite (when
+  // enabled), else KB retrieval. Assessment runs later, after retrieval.
+  if (enableRewrite && session.llm) {
     progress.start('rewriting query');
     setPhase('rewriting query');
   } else {
@@ -932,21 +1012,86 @@ async function runAgentTurn(userText, session, ctx) {
     setPhase('retrieving KB');
   }
 
-  // Request-clarity assessment: ask the LLM whether the request is clear
-  // first. If not, surface the unclear aspects + candidate interpretations
-  // as a numbered menu (with a 'something else' free-text option) and feed
-  // the user's confirmation back into the rewrite. One bounded round.
+  // --- Pass 1: rewrite (raw user text, no clarification yet) ---------------
+  if (enableRewrite && session.llm) {
+    if (progress.phase !== 'rewriting query') {
+      progress.nextPhase('rewriting query');
+      setPhase('rewriting query');
+    }
+    try {
+      const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
+      rewrite = await rewriteQuery(session.llm, userText, {
+        timeoutMs: 15000,
+      });
+      await session.transcript?.logMeta('rewrite', {
+        intent: rewrite.intent,
+        functionNames: rewrite.functionNames,
+        keywords: rewrite.keywords,
+        rewrittenQuery: rewrite.rewrittenQuery,
+        fallback: rewrite.fallback,
+      });
+    } catch (err) {
+      progress.done();
+      ctx.print(`[warn] query rewrite failed, using raw query: ${err.message}`);
+      rewrite = null;
+    }
+  }
+
+  // --- Pass 1: retrieve KB (on the rewritten query, else raw user text) ----
+  if (progress.phase !== 'retrieving KB') {
+    progress.nextPhase('retrieving KB');
+    setPhase('retrieving KB');
+  }
+  let graphText = '';
+  let graphSummary = '';
+  let graph = null;
+  try {
+    graph = await buildRequestGraph(session.rt, userText, {
+      maxChars: session.modelCfg.maxChars || 65536,
+      project: session.project,
+      retrievalQuery: rewrite && !rewrite.fallback ? rewrite.rewrittenQuery : userText,
+      rewrite,
+    });
+    graphSummary = graph.summary;
+    graphText = renderRequestGraph(graph, { maxChars: Math.floor((session.modelCfg.maxChars || 65536) / 2) });
+    await session.transcript?.logMeta('graph', { summary: graph.summary });
+  } catch (err) {
+    progress.done();
+    ctx.print(`[warn] knowledge graph build failed: ${err.message}`);
+    graphText = '';
+    graph = null;
+  }
+
+  // --- Pass 1.5: request-clarity assessment WITH retrieved context ---------
+  // Runs after the first rewrite+retrieve so the LLM can ground its clarity
+  // judgement in the retrieved symbols/knowledge. If unclear, surface the
+  // candidate interpretations as a menu; the user's confirmation then drives
+  // a second rewrite and a re-retrieve. One bounded round.
   let clarification = null;
-  if (canAssess) {
+  if (canAssess && graph) {
     if (progress.phase !== 'assessing request') {
       progress.nextPhase('assessing request');
       setPhase('assessing request');
     }
     try {
       const { assessRequest } = await import('../../lib/retrieval/rewrite_query.js');
+      // Build a compact KB-context digest for the assessor: the graph summary
+      // plus the top symbol names/signatures and matched knowledge titles.
+      const ctxLines = [graphSummary ? `Summary: ${graphSummary}` : 'Summary: (no KB hits)'];
+      if (graph.symbols && graph.symbols.length) {
+        ctxLines.push('Top symbols:');
+        for (const s of graph.symbols.slice(0, 8)) {
+          ctxLines.push(`  - ${s.name} (${s.kind}) ${s.signature ? s.signature : ''}`);
+        }
+      }
+      if (graph.knowledge && graph.knowledge.length) {
+        ctxLines.push('Knowledge entries:');
+        for (const k of graph.knowledge.slice(0, 4)) ctxLines.push(`  - ${k.title}`);
+      }
       const assessment = await assessRequest(session.llm, userText, {
         timeoutMs: 15000,
         signal: abortCtrl.signal,
+        context: ctxLines.join('\n'),
       });
       await session.transcript?.logMeta('assess', {
         clear: assessment.clear,
@@ -970,61 +1115,57 @@ async function runAgentTurn(userText, session, ctx) {
       }
     } catch (err) {
       // Assessment is best-effort: on any failure, fall through to the
-      // normal rewrite path with no clarification.
-      progress.done();
+      // normal flow (using the pass-1 rewrite + graph) with no clarification.
       ctx.print(`[warn] request assessment failed, skipping: ${err.message}`);
     }
   }
 
-  if (enableRewrite && session.llm) {
-    if (progress.phase !== 'rewriting query') {
-      progress.nextPhase('rewriting query');
-      setPhase('rewriting query');
+  // --- Pass 2 (only when the user supplied a clarification) ----------------
+  // Re-run the rewrite with the confirmed interpretation, then re-retrieve so
+  // the agent loop operates on the disambiguated, re-grounded context.
+  if (clarification) {
+    if (enableRewrite && session.llm) {
+      if (progress.phase !== 'rewriting query') {
+        progress.nextPhase('rewriting query');
+        setPhase('rewriting query');
+      }
+      try {
+        const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
+        rewrite = await rewriteQuery(session.llm, userText, {
+          timeoutMs: 15000,
+          clarification,
+        });
+        await session.transcript?.logMeta('rewrite', {
+          intent: rewrite.intent,
+          functionNames: rewrite.functionNames,
+          keywords: rewrite.keywords,
+          rewrittenQuery: rewrite.rewrittenQuery,
+          fallback: rewrite.fallback,
+          afterClarification: true,
+        });
+      } catch (err) {
+        ctx.print(`[warn] post-clarification rewrite failed, keeping prior query: ${err.message}`);
+      }
+    }
+    if (progress.phase !== 'retrieving KB') {
+      progress.nextPhase('retrieving KB');
+      setPhase('retrieving KB');
     }
     try {
-      const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
-      rewrite = await rewriteQuery(session.llm, userText, {
-        timeoutMs: 15000,
-        clarification,
+      graph = await buildRequestGraph(session.rt, userText, {
+        maxChars: session.modelCfg.maxChars || 65536,
+        project: session.project,
+        retrievalQuery: rewrite && !rewrite.fallback ? rewrite.rewrittenQuery : userText,
+        rewrite,
       });
-      await session.transcript?.logMeta('rewrite', {
-        intent: rewrite.intent,
-        functionNames: rewrite.functionNames,
-        keywords: rewrite.keywords,
-        rewrittenQuery: rewrite.rewrittenQuery,
-        fallback: rewrite.fallback,
-      });
+      graphSummary = graph.summary;
+      graphText = renderRequestGraph(graph, { maxChars: Math.floor((session.modelCfg.maxChars || 65536) / 2) });
+      await session.transcript?.logMeta('graph', { summary: graph.summary, afterClarification: true });
     } catch (err) {
       progress.done();
-      ctx.print(`[warn] query rewrite failed, using raw query: ${err.message}`);
-      rewrite = null;
+      ctx.print(`[warn] post-clarification knowledge graph build failed: ${err.message}`);
+      // Keep the pass-1 graphText; retrieval failures are non-fatal.
     }
-  }
-
-  // Transition to 'retrieving KB' only now — right before buildRequestGraph
-  // performs the actual BM25 retrieval (on the rewritten query when the
-  // rewrite succeeded, else the raw user text).
-  if (progress.phase !== 'retrieving KB') {
-    progress.nextPhase('retrieving KB');
-    setPhase('retrieving KB');
-  }
-
-  let graphText = '';
-  let graphSummary = '';
-  try {
-    const graph = await buildRequestGraph(session.rt, userText, {
-      maxChars: session.modelCfg.maxChars || 65536,
-      project: session.project,
-      retrievalQuery: rewrite && !rewrite.fallback ? rewrite.rewrittenQuery : userText,
-      rewrite,
-    });
-    graphSummary = graph.summary;
-    graphText = renderRequestGraph(graph, { maxChars: Math.floor((session.modelCfg.maxChars || 65536) / 2) });
-    await session.transcript?.logMeta('graph', { summary: graph.summary });
-  } catch (err) {
-    progress.done();
-    ctx.print(`[warn] knowledge graph build failed: ${err.message}`);
-    graphText = '';
   }
 
   const tools = buildTools(session.rt, {
@@ -1040,6 +1181,32 @@ async function runAgentTurn(userText, session, ctx) {
     planConfirm: async (plan) => {
       progress.pause();
       return await confirmPlan(plan, session);
+    },
+    // Plan-step advancement: the agent calls the `plan_step` tool to mark
+    // the current step done and move to the next. This updates the pinned
+    // progress block above the status bar in real time. When the last step
+    // completes the plan is cleared (block disappears).
+    planStep: async (stepIndex, note) => {
+      const p = session.planProgress;
+      if (!p) return;
+      const idx = typeof stepIndex === "number" ? stepIndex - 1 : p.current;
+      if (idx >= 0 && idx < p.steps.length) {
+        p.steps[idx].status = 'done';
+        if (note) p.steps[idx].note = String(note).slice(0, 160);
+      }
+      // Advance current pointer to the next pending step.
+      let next = -1;
+      for (let i = 0; i < p.steps.length; i++) {
+        if (p.steps[i].status === 'pending') { next = i; break; }
+      }
+      if (next === -1) {
+        // All steps done - clear the plan progress block.
+        session.planProgress = null;
+      } else {
+        p.steps[next].status = 'in_progress';
+        p.current = next;
+      }
+      session.statusBar?.update();
     },
   });
 
