@@ -841,6 +841,43 @@ function promptLine(session, promptText) {
   });
 }
 
+/**
+ * Surface an unclear-request assessment to the user for confirmation.
+ *
+ * assessment = { clear: false, unclear: string[], interpretations: string[] }
+ * Renders the unclear aspects, then a numbered menu of the candidate
+ * interpretations followed by a 'something else' free-text option (exactly
+ * the shape the user requested). Returns the chosen interpretation text
+ * (a candidate string or the user's typed text), or null if the user
+ * cancelled (Ctrl+D / rl close).
+ */
+async function confirmClarification(assessment, session) {
+  if (!assessment || assessment.clear) return null;
+  const lines = [];
+  lines.push('');
+  lines.push(style.accent(style.bold('Your request is not fully clear. Could you confirm what you mean?')));
+  if (assessment.unclear && assessment.unclear.length) {
+    lines.push(style.dim('  Unclear aspects:'));
+    for (const u of assessment.unclear) lines.push(style.dim(`    - ${u}`));
+  }
+  const n = assessment.interpretations.length;
+  for (let i = 0; i < n; i++) {
+    const tag = i === 0 ? ` ${style.warning('(recommend)')}` : '';
+    lines.push(`  ${style.bold(String(i + 1))}. ${assessment.interpretations[i]}${tag}`);
+  }
+  lines.push(`  ${style.bold(String(n + 1))}. ${style.dim('something else (type what you mean)')}`);
+  for (const ln of lines) process.stderr.write(ln + '\n');
+
+  const choice = await promptChoice(session, n + 1);
+  if (choice.cancelled) return null;
+  if (choice.index === n) {
+    const free = await promptLine(session, style.accent('  Your request: '));
+    if (free.cancelled) return null;
+    return free.text || null;
+  }
+  return assessment.interpretations[choice.index];
+}
+
 async function runAgentTurn(userText, session, ctx) {
   const progress = new ProgressIndicator();
   session.turnStart = Date.now();
@@ -866,20 +903,90 @@ async function runAgentTurn(userText, session, ctx) {
     rlInput.on('keypress', onKeypress);
   }
 
-  progress.start('retrieving KB');
-  setPhase('retrieving KB');
-
-  // LLM query rewrite (HK2_ENABLE_QUERYREWRITE, default 1).
-  // Rewrites natural-language user query to English function names + keywords
-  // so BM25 retrieves sharper results.
+  // Phase ordering: the LLM query rewrite (when enabled) MUST run before
+  // KB retrieval, because the rewritten query feeds BM25. So the spinner
+  // starts on 'rewriting query' (or 'assessing request' when request-clarity
+  // assessment runs first), and only transitions to 'retrieving KB' right
+  // before buildRequestGraph performs the actual retrieval. Announcing
+  // 'retrieving KB' before the rewrite would mislabel the work and imply
+  // retrieval runs on the un-rewritten query. See Eden KB entry
+  // `interactive-progress-phase-ordering`.
   const enableRewrite = envFlag('HK2_ENABLE_QUERYREWRITE', 1);
+  // Request-clarity assessment (HK2_ENABLE_REQUEST_ASSESS, default 1).
+  // Active only in interactive TTY mode (a confirmation menu needs a real
+  // prompt). Non-interactive callers (explain/search/serve) never run it.
+  const enableAssess = enableRewrite && envFlag('HK2_ENABLE_REQUEST_ASSESS', 1);
+  const canAssess = enableAssess && session.llm && !!(session.rl && session.rl.terminal);
   let rewrite = null;
-  if (enableRewrite && session.llm) {
-    progress.nextPhase('rewriting query');
+
+  // Start the spinner on the FIRST piece of real work: assessment (when it
+  // will run), else the rewrite (when enabled), else KB retrieval.
+  if (canAssess) {
+    progress.start('assessing request');
+    setPhase('assessing request');
+  } else if (enableRewrite && session.llm) {
+    progress.start('rewriting query');
     setPhase('rewriting query');
+  } else {
+    progress.start('retrieving KB');
+    setPhase('retrieving KB');
+  }
+
+  // Request-clarity assessment: ask the LLM whether the request is clear
+  // first. If not, surface the unclear aspects + candidate interpretations
+  // as a numbered menu (with a 'something else' free-text option) and feed
+  // the user's confirmation back into the rewrite. One bounded round.
+  let clarification = null;
+  if (canAssess) {
+    if (progress.phase !== 'assessing request') {
+      progress.nextPhase('assessing request');
+      setPhase('assessing request');
+    }
+    try {
+      const { assessRequest } = await import('../../lib/retrieval/rewrite_query.js');
+      const assessment = await assessRequest(session.llm, userText, {
+        timeoutMs: 15000,
+        signal: abortCtrl.signal,
+      });
+      await session.transcript?.logMeta('assess', {
+        clear: assessment.clear,
+        unclear: assessment.unclear,
+        interpretations: assessment.interpretations,
+      });
+      if (!assessment.clear) {
+        progress.pause();
+        clarification = await confirmClarification(assessment, session);
+        if (clarification === null) {
+          // User cancelled the clarification prompt (Ctrl+D / rl close):
+          // abort the whole turn cleanly, mirroring plan-cancel handling.
+          progress.done();
+          process.stderr.write(`${style.warning(style.ICON.warn + ' cancelled')}\n`);
+          session.phase = 'idle';
+          session.turnStart = 0;
+          session.statusBar?.update();
+          return;
+        }
+        await session.transcript?.logMeta('clarify', { clarification });
+      }
+    } catch (err) {
+      // Assessment is best-effort: on any failure, fall through to the
+      // normal rewrite path with no clarification.
+      progress.done();
+      ctx.print(`[warn] request assessment failed, skipping: ${err.message}`);
+    }
+  }
+
+  if (enableRewrite && session.llm) {
+    if (progress.phase !== 'rewriting query') {
+      progress.nextPhase('rewriting query');
+      setPhase('rewriting query');
+    }
     try {
       const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
-      rewrite = await rewriteQuery(session.llm, userText, { timeoutMs: 15000 });
+      rewrite = await rewriteQuery(session.llm, userText, {
+        timeoutMs: 15000,
+        clarification,
+      });
       await session.transcript?.logMeta('rewrite', {
         intent: rewrite.intent,
         functionNames: rewrite.functionNames,
@@ -892,6 +999,14 @@ async function runAgentTurn(userText, session, ctx) {
       ctx.print(`[warn] query rewrite failed, using raw query: ${err.message}`);
       rewrite = null;
     }
+  }
+
+  // Transition to 'retrieving KB' only now — right before buildRequestGraph
+  // performs the actual BM25 retrieval (on the rewritten query when the
+  // rewrite succeeded, else the raw user text).
+  if (progress.phase !== 'retrieving KB') {
+    progress.nextPhase('retrieving KB');
+    setPhase('retrieving KB');
   }
 
   let graphText = '';
