@@ -59,7 +59,6 @@ import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { runLoop } from '../../lib/agent/loop.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
-import { generatePlan, assessComplexity } from '../../lib/agent/plan.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -737,11 +736,14 @@ async function handleLine(line, session, ctx) {
 }
 
 /**
- * Interactive plan confirmation (HK2_PLAN_NEED_CONFIRM, default 1).
+ * Interactive plan confirmation - the interface that receives the LLM plan
+ * decision. The agent calls the `plan` tool (registered in buildTools with a
+ * `planConfirm` callback) when IT decides a task is complex enough to need a
+ * user-confirmed plan; that callback invokes this function.
  *
- * Given a plan (from generatePlan) - an ordered list of steps, each with
- * multiple candidate strategies - prompt the user once per step to choose a
- * strategy. Each prompt is a numbered menu:
+ * Given a plan (from the `plan` tool args) - an ordered list of steps, each
+ * with multiple candidate strategies - prompt the user once per step to choose
+ * a strategy. Each prompt is a numbered menu:
  *
  *   1. <name> (recommend)         <- recommended strategy first
  *      <description>
@@ -915,6 +917,15 @@ async function runAgentTurn(userText, session, ctx) {
     llm: session.llm,
     projectId: session.project?.id,
     guard: session.kbGuard,
+    // Plan-confirmation interface: when the agent calls the `plan` tool,
+    // surface its proposed plan to the user for per-step strategy
+    // selection (confirmPlan) and return the finalized plan. The progress
+    // spinner is paused while the interactive menu is on screen so its
+    // per-200ms \r refresh does not overwrite the "Choose [1-k]" prompt.
+    planConfirm: async (plan) => {
+      progress.pause();
+      return await confirmPlan(plan, session);
+    },
   });
 
   if (session.messages.length === 0) {
@@ -947,123 +958,22 @@ async function runAgentTurn(userText, session, ctx) {
   session.tokens.loopPeakIn = 0;
   session.tokens.loopPeakOut = 0;
 
-  // Plan mode (HK2_PLAN_NEED_CONFIRM, default 1): before execution, ask the LLM
-  // to decompose the task into ordered steps with multiple candidate strategies,
-  // then prompt the user to choose one strategy per step. The finalized plan is
-  // injected as a system message so the agent loop executes the chosen approach.
-  // Any failure (env disabled, LLM error, user cancel, no usable plan) falls
-  // through silently to the normal agent loop.
-  //
-  // Complexity gating is itself LLM-driven (not a pure regex heuristic). The
-  // triage call runs UNDER the "waiting for model" phase - the model is already
-  // analyzing the request at that point, so a separate upfront "assessing"
-  // spinner would be redundant and weird. Only when the verdict is complex do we
-  // branch into a distinct "planning" phase (generate + confirm), then return to
-  // "waiting for model" for the real agent loop.
-  //   1. isObviouslyTrivial() skips even the assessment for definite-simple tasks.
-  //   2. assessComplexity() asks the LLM whether the task genuinely needs a
-  //      strategy decision the user should confirm. Regex heuristics cannot
-  //      understand semantic intent (a chained git workflow says "then" but is
-  //      routine), so the model is the real gate. On any LLM failure it falls
-  //      back to the legacy regex heuristic so the user is never blocked.
-  // Set HK2_PLAN_ALWAYS=1 to force planning on every task (bypass assessment).
-  const needPlanConfirm = envFlag('HK2_PLAN_NEED_CONFIRM', 1);
-  const forceAlways = envFlag('HK2_PLAN_ALWAYS', 0);
-  let isComplex = forceAlways;
-  if (needPlanConfirm && !forceAlways && session.llm) {
-    // Enter the model-wait phase early so the complexity triage runs under it:
-    // the model is analyzing the request, which is exactly what this phase means.
-    progress.nextPhase('waiting for model');
-    setPhase('waiting for model');
-    try {
-      const assessment = await assessComplexity(session.llm, userText, {
-        signal: abortCtrl.signal,
-      });
-      isComplex = assessment.complex;
-      await session.transcript?.logMeta('assessment', {
-        complex: assessment.complex,
-        reason: assessment.reason,
-        source: assessment.source,
-      });
-    } catch (err) {
-      if (abortCtrl.signal.aborted) {
-        // ESC during triage. Same listener-leak concern as the cancel path.
-        if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
-        progress.done();
-        process.stderr.write(`\n${style.warning(style.ICON.warn + ' interrupted')}${style.dim(' - partial output preserved')}\n`);
-        session.phase = 'idle';
-        session.turnStart = 0;
-        session.statusBar?.update();
-        return;
-      }
-      // Assessment failure is non-fatal: warn and let the old isComplex
-      // (false here, since forceAlways is off) fall through - i.e. skip plan
-      // mode and go straight to the agent loop.
-      ctx.print(`[warn] complexity assessment failed, skipping plan mode: ${err.message}`);
-      isComplex = false;
-    }
-  }
-  if (needPlanConfirm && isComplex && session.llm) {
-    progress.nextPhase('planning');
-    setPhase('planning');
-    try {
-      const plan = await generatePlan(session.llm, userText, {
-        graphSummary,
-        signal: abortCtrl.signal,
-      });
-      // Stop the planning spinner before the interactive menu, otherwise the
-      // spinner's per-200ms \r refresh overwrites the "Choose [1-k]" prompt.
-      // pause() leaves `stopped` false, so the subsequent "waiting for model"
-      // phase (and its tick() on the first delta) still work normally.
-      progress.pause();
-      const planText = await confirmPlan(plan, session);
-      if (planText) {
-        session.messages.push({
-          role: 'system',
-          content: `## Confirmed execution plan (user-selected strategies)\nThe user reviewed a candidate plan and chose the strategy for each step. Follow this plan.\n\n${planText}`,
-        });
-        await session.transcript?.logMeta('plan', { plan: planText });
-      } else if (plan && plan.steps && plan.steps.length > 0) {
-        // User cancelled mid-confirmation (Ctrl+D / rl close). Abort the turn
-        // rather than executing an unconfirmed plan. Detach the ESC listener
-        // manually: the main try/finally that owns it starts further down, so
-        // an early return here would otherwise leak it.
-        if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
-        progress.done();
-        process.stderr.write(`${style.warning(style.ICON.warn + ' plan cancelled')} - turn aborted.\n`);
-        session.phase = 'idle';
-        session.turnStart = 0;
-        session.statusBar?.update();
-        return;
-      }
-      // else: plan generation fell back (empty steps) -> proceed normally.
-    } catch (err) {
-      if (abortCtrl.signal.aborted) {
-        // ESC during planning. Same listener-leak concern as the cancel path.
-        if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
-        progress.done();
-        process.stderr.write(`\n${style.warning(style.ICON.warn + ' interrupted')}${style.dim(' - partial output preserved')}\n`);
-        session.phase = 'idle';
-        session.turnStart = 0;
-        session.statusBar?.update();
-        return;
-      }
-      // Plan failure is non-fatal: warn and continue into the agent loop.
-      ctx.print(`[warn] plan generation failed, proceeding without plan: ${err.message}`);
-    }
-  }
+  // Planning is now LLM-driven: the system prompt instructs the agent to act
+  // as its own triage assistant and call the `plan` tool when (and only when)
+  // it decides the task is complex enough to warrant a user-confirmed plan.
+  // There is no separate pre-execution assessment / generation pass here;
+  // the `plan` tool (registered via buildTools planConfirm) is the interface
+  // that receives the LLM plan decision and surfaces it to the user for
+  // per-step confirmation. Simple tasks flow straight into execution.
 
   session.messages.push({ role: 'user', content: userText });
   await session.transcript?.logUser(userText);
 
-  // If triage already entered the model-wait phase (simple task), keep flowing
-  // into execution under the same phase instead of ending+restarting the spinner
-  // (which would print a spurious ✓ line for an identical label). Only re-enter
-  // when we came from planning / no-plan paths.
-  if (session.phase !== 'waiting for model') {
-    progress.nextPhase('waiting for model');
-    setPhase('waiting for model');
-  }
+  // Enter the model-wait phase for the agent loop. (Planning, if needed, is
+  // now driven by the agent calling the `plan` tool mid-loop, not by a
+  // pre-execution pass, so we always transition straight into execution.)
+  progress.nextPhase('waiting for model');
+  setPhase('waiting for model');
 
   let assistantText = '';
   // Per-LLM-call markdown renderer. Streams line-by-line styling so the

@@ -409,7 +409,7 @@ Updates live during streaming, tool calls, and phase transitions.
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |
 | `HK2_PROJECT_SOURCE` | Project source root for tool sandbox (set automatically in interactive mode) | - |
 | `HK2_ENABLE_QUERYREWRITE` | When 1, hk2 uses an LLM call to rewrite each user query to English function names + keywords before BM25 retrieval (both at turn start and on each `kb_search` tool call). | `1` |
-| `HK2_PLAN_NEED_CONFIRM` | When 1, before executing a task hk2 asks the LLM to decompose it into ordered steps (each with multiple candidate strategies) and prompts the user to pick one strategy per step. The finalized plan is injected into the agent's context before the loop runs. Plan failures fall through silently to the normal loop. | `1` |
+| `HK2_PLAN_NEED_CONFIRM` | (Deprecated / no-op) Planning is now LLM-driven: the system prompt instructs the agent to act as its own triage assistant and call the `plan` tool when it decides a task is complex enough to need a user-confirmed plan. The `plan` tool surfaces the proposed plan for per-step strategy selection. This flag is retained only for backward compatibility and has no effect. | `1` |
 | `HK2_ENABLE_AUTO_UPDATEKB` | When 1, hk2 silently runs an incremental `/kb update` (Index Space) at end of any turn where the agent fell back to bash to search source files. | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | When 1, hk2 silently asks the model to extract a reusable knowledge entry from the just-finished conversation and saves it to Eden Space. Holy Space ALWAYS prompts y/N regardless of this flag. | `0` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | Save `/kb init` checkpoint every N files | `100` |
