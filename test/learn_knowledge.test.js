@@ -25,7 +25,7 @@ import { parseDocument, isDocFile } from '../lib/parser/doc_parser.js';
 import { __learnTest, cmdKb } from '../src/slash/kb.js';
 import * as home from '../lib/config/home.js';
 
-const { isLearnableExt, walkLearnFiles, reconcilePlan, parseFlags, LEARN_DOC_EXTS } = __learnTest;
+const { isLearnableExt, walkLearnFiles, reconcilePlan, parseFlags, LEARN_DOC_EXTS, chunkDocText, groupByBudget, labelMatches } = __learnTest;
 
 /* ----------------------- doc_parser format support ---------------------- */
 
@@ -441,6 +441,105 @@ test('knowledgeLearnKb safety net studies a file the planner dropped', async () 
     assert.match(out, /single-file fallback for b\.md/);
     // Every parsed file was studied: two batches in total.
     assert.match(out, /Study plan: 2 batches/);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+/* ----------------------- large-file chunking (no content loss) ---------- */
+
+test('chunkDocText keeps small documents as a single chunk', () => {
+  const out = chunkDocText('hello world\nsecond line\n', 100000);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].text, 'hello world\nsecond line'); // trimmed like parsed doc text
+  assert.equal(out[0].start, 0);
+});
+
+test('chunkDocText splits large documents into parts with no content loss', () => {
+  // 10 lines of ~101 chars -> ~1010 chars; chunk size 300 with 20-char overlap.
+  const lines = [];
+  for (let i = 0; i < 10; i++) lines.push(`line-${i}: ` + 'x'.repeat(90));
+  const text = lines.join('\n');
+  const out = chunkDocText(text, 300, 20);
+  assert.ok(out.length >= 4, `expected multiple chunks, got ${out.length}`);
+  for (const c of out) {
+    assert.ok(c.text.length <= 300, `chunk exceeds maxChars: ${c.text.length}`);
+  }
+  // Every character of the original must be covered by some chunk (no gaps).
+  for (let i = 1; i < out.length; i++) {
+    assert.ok(out[i].start <= out[i - 1].end, `gap between chunk ${i - 1} and ${i}`);
+  }
+  // First chunk starts at the beginning; the last chunk reaches the end.
+  assert.ok(out[0].text.startsWith('line-0:'), 'first chunk should start at the beginning');
+  assert.ok(out[out.length - 1].text.includes('line-9:'), 'last chunk should reach the end');
+  // Consecutive chunks overlap so boundary content is visible to both.
+  assert.ok(out[1].start < out[0].end, 'chunks should overlap slightly');
+  // Chunks prefer line boundaries: the first cut lands on a newline because
+  // one is available inside the overlap window (mid-line cuts are only a
+  // fallback when the window has no newline before the hard budget cap).
+  assert.equal(out[0].text[out[0].text.length - 1], '\n', 'first cut should prefer a line boundary');
+});
+
+test('chunkDocText returns [] for empty / whitespace-only input', () => {
+  assert.deepEqual(chunkDocText('   \n  '), []);
+  assert.deepEqual(chunkDocText(null), []);
+  assert.deepEqual(chunkDocText(''), []);
+});
+
+test('groupByBudget splits oversized batches into budget-sized groups', () => {
+  const mk = (path, n) => ({ path, text: 'y'.repeat(n) });
+  const sources = [mk('a.md', 60000), mk('b.pdf.part1', 60000), mk('c.md', 20000)];
+  const groups = groupByBudget(sources, 100000);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].map(s => s.path), ['a.md']);
+  assert.deepEqual(groups[1].map(s => s.path), ['b.pdf.part1', 'c.md']);
+  for (const g of groups) {
+    const total = g.reduce((s, f) => s + f.text.length, 0);
+    assert.ok(total <= 100000, `group over budget: ${total}`);
+  }
+  // Every source appears exactly once across groups.
+  assert.deepEqual(groups.flat().map(s => s.path), ['a.md', 'b.pdf.part1', 'c.md']);
+  // Under-budget input stays in a single group.
+  assert.equal(groupByBudget([mk('a.md', 100)], 100000).length, 1);
+});
+
+test('labelMatches resolves chunk labels, base labels and space-containing names', () => {
+  assert.ok(labelMatches('book.pdf.part2', 'book.pdf.part2'));
+  assert.ok(labelMatches('book.pdf.part2', 'book.pdf'), 'chunk label should match its base label');
+  assert.ok(labelMatches('book.pdf', 'book.pdf.part2'), 'base label should match a chunk label');
+  assert.ok(labelMatches('The Internals of PostgreSQL.pdf.part1', 'PostgreSQL.pdf'), 'tail-only echo of a space-containing chunk label');
+  assert.ok(labelMatches('The Internals of PostgreSQL.pdf.part1', 'The Internals of PostgreSQL.pdf'));
+  assert.ok(labelMatches('docs/a.md', 'a.md'), 'relative path should match basename');
+  assert.ok(!labelMatches('a.md', 'b.md'));
+  assert.ok(!labelMatches('book.pdf.part2', 'other.pdf'));
+});
+
+test('knowledgeLearnKb splits a large file into parts and studies every part', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-chunk-'));
+  try {
+    // ~105k chars -> with --per-batch-chars=40000 it splits into 3 parts.
+    const big = ['# Big Book', ''];
+    for (let i = 0; i < 400; i++) big.push(`section-${i}: ` + 'z'.repeat(250));
+    await fs.writeFile(path.join(tmpDir, 'big.md'), big.join('\n'));
+    await ensureProject(tmpDir);
+    const ctx = makeMockCtx({
+      planOutput: 'chunks | all parts | big.md.part1, big.md.part2, big.md.part3\n',
+      extractOutput: JSON.stringify([
+        { id: 'chunk-entry', title: 'Chunk Entry', intro: 'I', keyFiles: [], keySymbols: [], keywords: [] },
+      ]),
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'big.md'), '--per-batch-chars=40000', '--dry-run'], ctx);
+    const out = ctx.prints.join('\n');
+    // The file was split, not truncated: all three parts appear in the plan.
+    assert.match(out, /split into 3 study parts/);
+    assert.match(out, /big\.md\.part1/);
+    // The single planned batch is studied in budget-sized sub-batches.
+    assert.match(out, /sub-batch 2\/3: big\.md\.part2/);
+    assert.match(out, /sub-batch 3\/3: big\.md\.part3/);
+    // Every part produced a proposal (no silent content loss).
+    assert.match(out, /total proposed: 3/);
+    assert.match(out, /total accepted: 3/);
+    assert.match(out, /\[dry-run\] 3 entries would have been saved to eden/);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

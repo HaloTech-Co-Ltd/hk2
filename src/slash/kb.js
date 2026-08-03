@@ -961,12 +961,23 @@ async function knowledgeLearnKb(rest, ctx) {
       if (parsed) failed.push({ label, msg: 'no extractable text' });
       continue;
     }
-    // Cap each file to keep total context sane; very large PDFs/PPTs are
-    // chunked across batches by the planner.
-    const text = parsed.text.length > perBatchChars
-      ? parsed.text.slice(0, perBatchChars) + '\n...(truncated)'
-      : parsed.text;
-    parsedFiles.push({ path: label, label, text, title: parsed.title || label });
+    // Large files (books, long PDFs/PPTs) are split into sequential parts so
+    // EVERY section is studied. Previously the text was truncated to
+    // perBatchChars here, silently discarding everything after the first
+    // chunk (e.g. chapters 4-12 of a 12-chapter book). Each part is its own
+    // manifest entry and gets its own study batch in Phase 2.
+    const chunks = chunkDocText(parsed.text, perBatchChars);
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunkLabel = chunks.length > 1 ? `${label}.part${ci + 1}` : label;
+      parsedFiles.push({
+        path: chunkLabel,
+        label: chunkLabel,
+        text: chunks[ci].text,
+        title: chunks.length > 1
+          ? `${parsed.title || label} (part ${ci + 1}/${chunks.length})`
+          : (parsed.title || label),
+      });
+    }
   }
   ctx.setPhase?.('idle');
 
@@ -976,7 +987,10 @@ async function knowledgeLearnKb(rest, ctx) {
     return;
   }
   const totalChars = parsedFiles.reduce((s, f) => s + f.text.length, 0);
-  ctx.print(`  parsed: ${parsedFiles.length}/${targetFiles.length} files, ${totalChars} chars`);
+  const parsedLine = parsedFiles.length > targetFiles.length
+    ? `  parsed: ${targetFiles.length} file(s) split into ${parsedFiles.length} study parts, ${totalChars} chars`
+    : `  parsed: ${parsedFiles.length}/${targetFiles.length} files, ${totalChars} chars`;
+  ctx.print(parsedLine);
   if (failed.length) {
     ctx.print(`  failed: ${failed.length}`);
     for (const f of failed.slice(0, 10)) ctx.print(`    - ${f.label}: ${f.msg}`);
@@ -1004,6 +1018,8 @@ topic-id | short description | file1, file2, file3
 Rules:
 - Use the EXACT file labels from the manifest (the [N] label text).
 - Cover EVERY file across the batches - no file may be dropped.
+- A large document is split into numbered parts (e.g. "book.pdf.part1", "book.pdf.part2") - each part is a separate manifest entry and must be covered like any other file.
+- Keep each batch's TOTAL source size under the per-batch budget of ${perBatchChars} chars (the manifest shows every entry's char count). Split the parts of one book into separate batches when grouping them would exceed the budget.
 - If there is only one file, output a single batch for it.
 - Keep batches to <= 6 files when possible.
 
@@ -1076,37 +1092,27 @@ ${manifest}`;
   let totalProposed = 0;
   const processedLabels = new Set();
 
-  for (let batchIdx = 0; batchIdx < plan.length; batchIdx++) {
-    const batch = plan[batchIdx];
-    ctx.setPhase?.(`studying [${batchIdx + 1}/${plan.length}] ${batch.topic}`);
-    ctx.print(`--- [${batchIdx + 1}/${plan.length}] ${batch.topic}: ${batch.description || ''} ---`);
-
-    // Gather parsed text for this batch's files
-    const sources = [];
-    for (const rel of batch.files || []) {
-      const f = textByLabel.get(rel) || findByLabel(textByLabel, rel);
-      if (!f) continue;
-      sources.push(f);
-      processedLabels.add(f.path);
-    }
-    if (sources.length === 0) {
-      ctx.print('  (no readable files in batch - skipping)');
-      continue;
-    }
+  // Shared Phase 2 study routine: feed one group of sources to the model,
+  // cross-check the proposed entries, and write accepted ones. Mutates the
+  // outer counters + existing-entry lists so later batches avoid duplicates.
+  async function studySources(sources, topic, description) {
+    if (sources.length === 0) return;
     const sourcesChars = sources.reduce((s, f) => s + f.text.length, 0);
-    ctx.print(`  deep-read: ${sources.length} files, ${sourcesChars} chars`);
+    ctx.print(`  deep-read: ${sources.length} file(s), ${sourcesChars} chars`);
 
     const holyNow = existingHoly.map(e => `- ${e.id}: ${e.title}`).join('\n');
     const edenNow = existingEden.map(e => `- ${e.id}: ${e.title}`).join('\n');
 
-    let contextParts = [];
+    const contextParts = [];
     for (const s of sources) {
       contextParts.push(`## ${s.path}\n\`\`\`\n${s.text}\n\`\`\``);
     }
+    // Budget is enforced by groupByBudget before we get here, so this slice is
+    // only a last-resort guard against a single oversized source.
     const batchContext = contextParts.join('\n\n').slice(0, perBatchChars);
 
     const extractSysPrompt = buildLearnExtractSysPrompt(space, holyNow, edenNow, userPrompt);
-    const extractUserPrompt = `Source documents for topic "${batch.topic}": ${batch.description || ''}\n\nBelow are the document contents. Extract ${space} knowledge entries.\n\n${batchContext}`;
+    const extractUserPrompt = `Source documents for topic "${topic}": ${description}\n\nBelow are the document contents. Extract ${space} knowledge entries.\n\n${batchContext}`;
 
     let raw = '';
     let rawReasoning = '';
@@ -1123,7 +1129,7 @@ ${manifest}`;
       }
     } catch (err) {
       ctx.print(`  LLM call failed: ${err.message} - skipping.`);
-      continue;
+      return;
     }
     if (!raw.trim() && rawReasoning.trim()) {
       const m = rawReasoning.match(/\[[\s\S]*\]/);
@@ -1138,12 +1144,12 @@ ${manifest}`;
     }
     if (!Array.isArray(proposed)) {
       ctx.print('  (could not parse as JSON array - skipping)');
-      continue;
+      return;
     }
     totalProposed += proposed.length;
     if (proposed.length === 0) {
       ctx.print('  (no entries)');
-      continue;
+      return;
     }
 
     const { accepted, discarded: disc } = crossCheckEntries(proposed, existingHoly, existingEden);
@@ -1175,6 +1181,35 @@ ${manifest}`;
     }
   }
 
+  for (let batchIdx = 0; batchIdx < plan.length; batchIdx++) {
+    const batch = plan[batchIdx];
+    ctx.setPhase?.(`studying [${batchIdx + 1}/${plan.length}] ${batch.topic}`);
+    ctx.print(`--- [${batchIdx + 1}/${plan.length}] ${batch.topic}: ${batch.description || ''} ---`);
+
+    // Gather parsed text for this batch's files
+    const sources = [];
+    for (const rel of batch.files || []) {
+      const f = textByLabel.get(rel) || findByLabel(textByLabel, rel);
+      if (!f) continue;
+      sources.push(f);
+      processedLabels.add(f.path);
+    }
+    if (sources.length === 0) {
+      ctx.print('  (no readable files in batch - skipping)');
+      continue;
+    }
+    // Budget enforcement: an oversized batch (e.g. several book parts grouped
+    // together) is studied in sub-groups so the model context never silently
+    // truncates content (the original bug).
+    const groups = groupByBudget(sources, perBatchChars);
+    for (let gi = 0; gi < groups.length; gi++) {
+      if (groups.length > 1) {
+        ctx.print(`  sub-batch ${gi + 1}/${groups.length}: ${groups[gi].map(s => s.path).join(', ')}`);
+      }
+      await studySources(groups[gi], batch.topic, batch.description || '');
+    }
+  }
+
   // Safety net: if the planner dropped a file (no batch referenced it), study
   // it now so the user's "ensure all files learned" requirement is honored.
   const dropped = parsedFiles.filter(f => !processedLabels.has(f.path));
@@ -1190,63 +1225,7 @@ ${manifest}`;
       ctx.print(`--- [fallback ${batchIdx + 1}/${fallbackPlan.length}] ${batch.topic}: ${batch.description || ''} ---`);
       const sources = [findByLabel(textByLabel, batch.files[0])].filter(Boolean);
       if (sources.length === 0) continue;
-      ctx.print(`  deep-read: 1 file, ${sources[0].text.length} chars`);
-      const holyNow = existingHoly.map(e => `- ${e.id}: ${e.title}`).join('\n');
-      const edenNow = existingEden.map(e => `- ${e.id}: ${e.title}`).join('\n');
-      const batchContext = `## ${sources[0].path}\n\`\`\`\n${sources[0].text}\n\`\`\``;
-      const extractSysPrompt = buildLearnExtractSysPrompt(space, holyNow, edenNow, userPrompt);
-      const extractUserPrompt = `Source document: ${sources[0].path}\n\nExtract ${space} knowledge entries.\n\n${batchContext}`;
-      let raw = '';
-      let rawReasoning = '';
-      try {
-        for await (const evt of ctx.streamLLM(
-          [
-            { role: 'system', content: extractSysPrompt },
-            { role: 'user', content: extractUserPrompt },
-          ],
-          { temperature: 0.1, maxChars: 65536, enableReasoning: true, timeoutMs: 300000 },
-        )) {
-          if (evt.type === 'delta') raw += evt.text;
-          else if (evt.type === 'reasoning') rawReasoning += evt.text;
-        }
-      } catch (err) {
-        ctx.print(`  LLM call failed: ${err.message} - skipping.`);
-        continue;
-      }
-      if (!raw.trim() && rawReasoning.trim()) {
-        const m = rawReasoning.match(/\[[\s\S]*\]/);
-        if (m) raw = m[0];
-      }
-      let proposed = null;
-      try { proposed = JSON.parse(raw); }
-      catch { const m = raw.match(/\[[\s\S]*\]/); if (m) { try { proposed = JSON.parse(m[0]); } catch {} } }
-      if (!Array.isArray(proposed)) { ctx.print('  (could not parse as JSON array - skipping)'); continue; }
-      totalProposed += proposed.length;
-      if (proposed.length === 0) { ctx.print('  (no entries)'); continue; }
-      const { accepted, discarded: disc } = crossCheckEntries(proposed, existingHoly, existingEden);
-      ctx.print(`  proposed: ${proposed.length}, accepted: ${accepted.length}, discarded: ${disc.length}`);
-      for (const e of accepted) ctx.print(`    [ACCEPT] ${e.id}: ${e.title || ''} (${(e.intro || '').length}c)`);
-      totalAccepted += accepted.length;
-      totalDiscarded += disc.length;
-      if (!dryRun && accepted.length > 0) {
-        for (const entry of accepted) {
-          const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
-          const record = {
-            id, space,
-            title: entry.title, intro: entry.intro,
-            keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
-            keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
-            keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
-            autoLearned: true, learned: true,
-          };
-          await writeKnowledge(projectId, space, record);
-          const final = await readKnowledge(projectId, space, id);
-          if (final && rt) rt.reloadKnowledge?.(final, space);
-          if (space === 'holy') existingHoly.push(record);
-          else existingEden.push(record);
-          totalSaved++;
-        }
-      }
+      await studySources(sources, batch.topic, batch.description || '');
     }
   }
 
@@ -1367,16 +1346,100 @@ function reconcilePlan(plan, parsedFiles) {
 function findByLabel(map, rel) {
   if (map.has(rel)) return map.get(rel);
   for (const [k, v] of map) {
-    if (k === rel || k.endsWith('/' + rel) || rel.endsWith('/' + k) || path.basename(k) === path.basename(rel)) return v;
+    if (labelMatches(k, rel)) return v;
   }
   return null;
 }
 
 function findByLabelStr(parsedFiles, rel) {
   for (const f of parsedFiles) {
-    if (f.path === rel || f.path.endsWith('/' + rel) || rel.endsWith('/' + f.path) || path.basename(f.path) === path.basename(rel)) return true;
+    if (labelMatches(f.path, rel)) return true;
   }
   return false;
+}
+
+/**
+ * Strip a chunk-part suffix (".part2") from a manifest label so a chunk label
+ * ("book.pdf.part2") and its base label ("book.pdf") compare equal.
+ */
+function stripPartSuffix(label) {
+  return String(label).replace(/\.part\d+$/i, '');
+}
+
+/**
+ * Lenient label comparison used when resolving LLM-echoed file references back
+ * to parsed entries. Handles: exact matches, chunk labels vs their base label
+ * (".partN" suffix), relative-path prefixes, filenames containing spaces (the
+ * planner often echoes only the tail, e.g. "PostgreSQL.pdf" for "The Internals
+ * of PostgreSQL.pdf.part1"), and plain basenames.
+ */
+function labelMatches(stored, rel) {
+  if (stored === rel) return true;
+  const kb = stripPartSuffix(stored);
+  const rb = stripPartSuffix(rel);
+  if (kb === rb) return true;
+  if (kb.endsWith('/' + rb) || rb.endsWith('/' + kb)) return true;
+  if (kb.endsWith(rb) || rb.endsWith(kb)) return true;
+  return path.basename(kb) === path.basename(rb);
+}
+
+/**
+ * Split a long document's text into sequential chunks, each no larger than
+ * `maxChars`, so every part of a large file (e.g. a 12-chapter book) is fed to
+ * the model. Chunks break on line boundaries near the window edge so
+ * paragraphs/headings aren't cut mid-line, and a small overlap tail ensures
+ * content right at a boundary is visible to both neighboring chunks.
+ *
+ * Returns [{ text, start, end }] - a single chunk when the text already fits.
+ */
+function chunkDocText(text, maxChars = 100000, overlapChars = null) {
+  const src = String(text || '').trim();
+  if (!src) return [];
+  if (src.length <= maxChars) return [{ text: src, start: 0, end: src.length }];
+  const overlap = overlapChars == null
+    ? Math.min(2000, Math.max(200, Math.floor(maxChars * 0.02)))
+    : overlapChars;
+  const chunks = [];
+  let start = 0;
+  while (start < src.length) {
+    const windowEnd = Math.min(start + maxChars, src.length);
+    let cut = windowEnd;
+    if (windowEnd < src.length) {
+      // Prefer the last newline within [windowEnd - overlap, windowEnd) so we
+      // don't split mid-line.
+      const searchFrom = Math.max(start + 1, windowEnd - overlap);
+      const nl = src.lastIndexOf('\n', windowEnd - 1);
+      if (nl >= searchFrom) cut = nl + 1;
+    }
+    if (cut <= start) cut = start + 1; // safety: always advance
+    chunks.push({ text: src.slice(start, cut), start, end: cut });
+    if (cut >= src.length) break;
+    start = Math.max(start + 1, cut - overlap); // overlap tail into next chunk
+  }
+  return chunks;
+}
+
+/**
+ * Group a batch's source entries into sub-groups whose cumulative char count
+ * stays within `budget`. Guarantees the per-batch context passed to the model
+ * never silently truncates content (Phase 2 budget enforcement).
+ */
+function groupByBudget(sources, budget) {
+  const groups = [];
+  let cur = [];
+  let curChars = 0;
+  for (const s of sources) {
+    const c = (s.text || '').length;
+    if (cur.length > 0 && curChars + c > budget) {
+      groups.push(cur);
+      cur = [];
+      curChars = 0;
+    }
+    cur.push(s);
+    curChars += c;
+  }
+  if (cur.length > 0) groups.push(cur);
+  return groups;
 }
 
 
@@ -2213,4 +2276,7 @@ export const __learnTest = {
   reconcilePlan,
   parseFlags,
   LEARN_DOC_EXTS,
+  chunkDocText,
+  groupByBudget,
+  labelMatches,
 };

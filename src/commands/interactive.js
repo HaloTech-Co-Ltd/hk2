@@ -1460,6 +1460,10 @@ async function runAgentTurn(userText, session, ctx) {
     session.statusBar?.update();
   } catch (err) {
     progress.done();
+    // An abort/error can leave a trailing assistant `tool_use` (tool_calls)
+    // whose tool_result never landed - the tool loop was cut short. Strip it
+    // so the next turn doesn't resend an orphaned tool_use and 400 Anthropic.
+    stripDanglingToolUse(session.messages);
     if (abortCtrl.signal.aborted) {
       // User pressed ESC. Any partial assistant text was already streamed to
       // stdout; we don't record an incomplete assistant turn in the transcript.
@@ -1478,6 +1482,29 @@ async function runAgentTurn(userText, session, ctx) {
 }
 
 /**
+ * Remove any trailing assistant `tool_use` (tool_calls) whose tool_result
+ * never landed in history - e.g. after an interrupted or errored turn where
+ * the tool loop was cut short. Without this, the next LLM call resends an
+ * orphaned tool_use and Anthropic rejects it with a 400
+ * ("tool_use ids found without tool_result blocks").
+ *
+ * Operates in place on the messages array.
+ */
+function stripDanglingToolUse(messages) {
+  // Walk from the end; drop a trailing assistant message that issued tool_calls
+  // without a following tool_result. A trailing tool_result pairs with an
+  // earlier assistant tool_use, so keep it (it orphans nothing).
+  while (messages.length > 0) {
+    const last = messages[messages.length - 1];
+    if (last.role === 'assistant' && Array.isArray(last.tool_calls) && last.tool_calls.length > 0) {
+      messages.pop();
+      continue;
+    }
+    break;
+  }
+}
+
+/**
  * Naive context compaction: keep system + last N messages, summarize earlier
  * ones into a single system message via the LLM.
  *
@@ -1487,15 +1514,37 @@ async function compactMessages(session) {
   const conversation = session.messages.filter(m => m.role === 'user' || m.role === 'assistant');
   if (conversation.length < 6) return null;
 
-  const keep = 4;   // keep the last 4 messages verbatim
+  const keep = 4;   // keep the last 4 user/assistant turns verbatim
   const toCompact = conversation.slice(0, conversation.length - keep);
   const kept = conversation.slice(conversation.length - keep);
 
   const summaryText = toCompact.map(m => `${m.role.toUpperCase()}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n\n');
 
-  // Build a fresh system message carrying the summary
+  // IMPORTANT: Anthropic requires every assistant tool_use to be immediately
+  // followed by its tool_result. We must NOT drop a `tool` message whose
+  // matching assistant tool_calls message is being kept verbatim, or the next
+  // call 400s ("tool_use ids found without tool_result blocks"). Collect the
+  // tool_call_ids emitted by any kept assistant turn and retain their `tool`
+  // results in their original positions among the kept messages.
+  const keptToolCallIds = new Set();
+  for (const m of kept) {
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) if (tc.id) keptToolCallIds.add(tc.id);
+    }
+  }
+
+  // Find where the kept tail begins in the full message list so we can carry
+  // the trailing `tool` results forward alongside their assistant tool_calls.
+  const keptStart = (() => {
+    const firstKept = kept[0];
+    return session.messages.indexOf(firstKept);
+  })();
+
+  // Build a fresh message list: leading non-conversation messages (system),
+  // the summary, then the kept tail WITH its matching tool results preserved.
   const newMessages = [];
-  for (const m of session.messages) {
+  for (let i = 0; i < (keptStart >= 0 ? keptStart : session.messages.length); i++) {
+    const m = session.messages[i];
     if (m.role === 'user' || m.role === 'assistant') continue;
     newMessages.push(m);
   }
@@ -1503,7 +1552,19 @@ async function compactMessages(session) {
     role: 'system',
     content: `## Prior conversation (compacted)\nThe following is a summary of the previous ${toCompact.length} messages. Treat it as background context.\n\n${summaryText.slice(0, 4000)}${summaryText.length > 4000 ? '...(truncated)' : ''}\n`,
   });
-  for (const m of kept) newMessages.push(m);
+  if (keptStart >= 0) {
+    for (let i = keptStart; i < session.messages.length; i++) {
+      const m = session.messages[i];
+      // Keep every kept user/assistant turn verbatim, plus any `tool` result
+      // that pairs with a retained assistant tool_call. Drop `tool` results
+      // whose caller was compacted away (those are summarized above instead).
+      if (m.role === 'tool') {
+        if (m.tool_call_id && keptToolCallIds.has(m.tool_call_id)) newMessages.push(m);
+        continue;
+      }
+      if (m.role === 'user' || m.role === 'assistant') newMessages.push(m);
+    }
+  }
 
   return { messages: newMessages, dropped: toCompact.length, kept: kept.length };
 }
