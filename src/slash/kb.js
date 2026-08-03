@@ -299,11 +299,12 @@ async function knowledgeKb(rest, ctx) {
     case 'export': return knowledgeExportKb(subArgs, ctx);
     case 'import': return knowledgeImportKb(subArgs, ctx);
     case 'del': case 'rm': return knowledgeDelKb(subArgs, ctx);
+    case 'learn': case 'study': return knowledgeLearnKb(subArgs, ctx);
     case undefined:
-      ctx.print(`/kb knowledge subcommands: list | show | add | init | housekeep | empty | export | import | del`);
+      ctx.print(`/kb knowledge subcommands: list | show | add | init | housekeep | empty | export | import | del | learn`);
       return;
     default:
-      ctx.print(`Unknown /kb knowledge subcommand: ${sub}. Use list | show | add | init | housekeep | empty | export | import | del.`);
+      ctx.print(`Unknown /kb knowledge subcommand: ${sub}. Use list | show | add | init | housekeep | empty | export | import | del | learn.`);
   }
 }
 
@@ -825,9 +826,560 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
   }
 }
 
+// File formats learnable via /kb knowledge learn (in addition to code-indexed
+// ones). Kept in sync with doc_parser.DOC_EXTS but limited to the human-readable
+// document types the user asked for: Markdown, PDF, Word, PowerPoint.
+const LEARN_DOC_EXTS = new Set(['md', 'markdown', 'pdf', 'doc', 'docx', 'ppt', 'pptx']);
+
 /**
- * Build a compact project map for the LLM planning phase.
+ * /kb knowledge learn - deep-study a file (or every file in a directory) and
+ * write extracted knowledge entries to a user-chosen space.
+ *
+ * Two-phase approach (mirrors /kb knowledge init):
+ *   Phase 1 (Planning): send the LLM a compact manifest of the target files
+ *     (paths + per-file char budget) and ask it to group them into focused
+ *     topic batches.
+ *   Phase 2 (Execution): for each batch, parse + read the listed files, feed
+ *     them to the LLM for focused extraction, cross-check against existing
+ *     entries, and write accepted entries to --space.
+ *
+ * Supported formats (via lib/parser/doc_parser.js):
+ *   Markdown (.md/.markdown), PDF (.pdf), Word (.doc/.docx), PowerPoint (.ppt/.pptx).
+ *   Other text-ish files the indexer already knows (.txt/.rst/.adoc/.json/.yaml/.html)
+ *   are also accepted and read as UTF-8.
+ *
+ * Usage:
+ *   /kb knowledge learn --space=eden|holy [--file=<path>] [--base-dir=<dir>]
+ *                       [--per-batch-chars=N] [--dry-run] [instructions...]
+ *
+ *   --space           eden | holy (required). Holy writes require interactive
+ *                     confirmation (see confirmHolyWrite below).
+ *   --file=<path>     learn a single file.
+ *   --base-dir=<dir>  learn every supported file under this directory
+ *                     (recursive). All files are processed.
+ *   --per-batch-chars LLM context budget per execution batch (default 100000).
+ *   --dry-run         show proposed entries but do NOT write.
+ *   trailing tokens   free-form instructions passed to the extraction prompt.
+ *
+ * Either --file or --base-dir must be given (not both).
  */
+async function knowledgeLearnKb(rest, ctx) {
+  const p = await getProjectOrFail(ctx);
+  if (!p) return;
+  if (!ctx.llm) {
+    ctx.print(`No LLM configured. Run /model add + /model set-default first.`);
+    return;
+  }
+  const flags = parseFlags(rest);
+  const space = flags.space === 'holy' ? 'holy' : flags.space === 'eden' ? 'eden' : '';
+  if (!space) {
+    ctx.print(`--space is required and must be eden or holy.`);
+    ctx.print(`Usage: /kb knowledge learn --space=eden|holy [--file=<path>] [--base-dir=<dir>] [--dry-run]`);
+    return;
+  }
+  const fileArg = typeof flags.file === 'string' ? flags.file : '';
+  const dirArg = typeof flags['base-dir'] === 'string' ? flags['base-dir'] : '';
+  if (!fileArg && !dirArg) {
+    ctx.print(`Either --file=<path> or --base-dir=<dir> is required.`);
+    ctx.print(`Usage: /kb knowledge learn --space=eden|holy [--file=<path>] [--base-dir=<dir>] [--dry-run]`);
+    return;
+  }
+  if (fileArg && dirArg) {
+    ctx.print(`Pass only one of --file or --base-dir, not both.`);
+    return;
+  }
+  const perBatchChars = parseInt(flags['per-batch-chars'], 10) || 100000;
+  const dryRun = !!flags['dry-run'];
+  const userPrompt = flags.positionalText || '';
+
+  // ---- Resolve target files ----
+  // Files may be inside or outside the project source tree. We resolve against
+  // the CWD and fall back to the project source path so both project docs and
+  // arbitrary external files (e.g. /tmp/spec.pdf) work.
+  let targetFiles = [];
+  const unsupported = [];
+  const resolveRoot = (base) => {
+    if (path.isAbsolute(base)) return base;
+    if (p.sourcePath) {
+      const inProject = path.join(p.sourcePath, base);
+      const inCwd = path.resolve(base);
+      // Prefer whichever exists; default to CWD-resolved for external files.
+      return inCwd;
+    }
+    return path.resolve(base);
+  };
+
+  if (fileArg) {
+    const abs = path.isAbsolute(fileArg) ? fileArg : path.resolve(fileArg);
+    const ext = path.extname(abs).slice(1).toLowerCase();
+    if (!isLearnableExt(ext)) {
+      ctx.print(`Unsupported file type: .${ext || '(none)'}`);
+      ctx.print(`Supported: ${[...LEARN_DOC_EXTS].join(', ')}, plus txt/rst/adoc/json/yaml/html/sgml.`);
+      return;
+    }
+    try { const st = await fs.stat(abs); if (!st.isFile()) throw new Error('not a file'); }
+    catch (err) { ctx.print(`--file not found or not a file: ${abs} (${err.message})`); return; }
+    targetFiles.push(abs);
+  } else {
+    const dir = resolveRoot(dirArg);
+    let st;
+    try { st = await fs.stat(dir); }
+    catch { ctx.print(`--base-dir not found: ${dir}`); return; }
+    if (!st.isDirectory()) { ctx.print(`--base-dir is not a directory: ${dir}`); return; }
+    ctx.print(`[kb knowledge learn] Walking ${dir} ...`);
+    targetFiles = await walkLearnFiles(dir, unsupported);
+  }
+
+  if (targetFiles.length === 0) {
+    ctx.print(`No learnable files found${dirArg ? ` under ${dirArg}` : ''}.`);
+    ctx.print(`Supported: ${[...LEARN_DOC_EXTS].join(', ')}, plus txt/rst/adoc/json/yaml/html/sgml.`);
+    if (unsupported.length) {
+      ctx.print(`Skipped ${unsupported.length} unsupported file(s): ${unsupported.slice(0, 8).map(f => path.basename(f)).join(', ')}${unsupported.length > 8 ? ' ...' : ''}`);
+    }
+    return;
+  }
+
+  ctx.print(`[kb knowledge learn] Deep-studying ${targetFiles.length} file${targetFiles.length === 1 ? '' : 's'} -> ${space} space`);
+  if (dirArg) ctx.print(`  base-dir: ${dirArg}`);
+  if (userPrompt) ctx.print(`  user instructions: ${userPrompt}`);
+  if (unsupported.length) {
+    ctx.print(`  (skipped ${unsupported.length} unsupported file${unsupported.length === 1 ? '' : 's'})`);
+  }
+
+  // ---- Parse every target file up-front so we can report failures and ----
+  // ---- guarantee every supported file is processed.                       ----
+  const { parseDocument } = await import('../../lib/parser/doc_parser.js');
+  const parsedFiles = [];   // { path, label, text }
+  const failed = [];
+  for (const abs of targetFiles) {
+    const label = dirArg ? path.relative(resolveRoot(dirArg), abs) : path.basename(abs);
+    ctx.setPhase?.(`parsing ${label}`);
+    let parsed = null;
+    try { parsed = await parseDocument(abs); }
+    catch (err) { failed.push({ label, msg: err.message }); }
+    if (!parsed || !((parsed.text || '').trim())) {
+      if (parsed) failed.push({ label, msg: 'no extractable text' });
+      continue;
+    }
+    // Cap each file to keep total context sane; very large PDFs/PPTs are
+    // chunked across batches by the planner.
+    const text = parsed.text.length > perBatchChars
+      ? parsed.text.slice(0, perBatchChars) + '\n...(truncated)'
+      : parsed.text;
+    parsedFiles.push({ path: label, label, text, title: parsed.title || label });
+  }
+  ctx.setPhase?.('idle');
+
+  if (parsedFiles.length === 0) {
+    ctx.print(`Could not extract text from any file.`);
+    for (const f of failed) ctx.print(`  - ${f.label}: ${f.msg}`);
+    return;
+  }
+  const totalChars = parsedFiles.reduce((s, f) => s + f.text.length, 0);
+  ctx.print(`  parsed: ${parsedFiles.length}/${targetFiles.length} files, ${totalChars} chars`);
+  if (failed.length) {
+    ctx.print(`  failed: ${failed.length}`);
+    for (const f of failed.slice(0, 10)) ctx.print(`    - ${f.label}: ${f.msg}`);
+  }
+
+  // ---- Load existing entries for conflict checking ----
+  const existingHoly = await listKnowledge(p.id, 'holy').catch(() => []);
+  let existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
+  ctx.print(`  existing Holy: ${existingHoly.length}, Eden: ${existingEden.length}`);
+
+  // ---- Phase 1: LLM plans study batches from the file manifest ----
+  ctx.setPhase?.('planning study');
+  ctx.print('');
+  ctx.print('[Phase 1: Planning] Building file manifest for the model...');
+  const manifest = parsedFiles.map((f, i) =>
+    `[${i + 1}] ${f.path} (${f.text.length} chars${f.title && f.title !== f.path ? `, title: ${f.title}` : ''})`).join('\n');
+
+  const planSysPrompt = `You are planning a deep study of a set of documents (PDF / Word / PowerPoint / Markdown) so reusable knowledge entries can be extracted into the project KB.
+
+Group related files into focused topic batches - group by LOGICAL topic, not just by file. Each batch should be coherent and small enough to study together.
+
+Output format - one batch per line, using pipe delimiters (NOT JSON):
+topic-id | short description | file1, file2, file3
+
+Rules:
+- Use the EXACT file labels from the manifest (the [N] label text).
+- Cover EVERY file across the batches - no file may be dropped.
+- If there is only one file, output a single batch for it.
+- Keep batches to <= 6 files when possible.
+
+File manifest:
+${manifest}`;
+
+  let planRaw = '';
+  let planReasoning = '';
+  try {
+    for await (const evt of ctx.streamLLM(
+      [
+        { role: 'system', content: planSysPrompt },
+        { role: 'user', content: `Plan the study of these ${parsedFiles.length} document(s).${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },
+      ],
+      { temperature: 0.1, maxChars: 8192, enableReasoning: true, timeoutMs: 120000 },
+    )) {
+      if (evt.type === 'delta') planRaw += evt.text;
+      else if (evt.type === 'reasoning') planReasoning += evt.text;
+    }
+  } catch (err) {
+    ctx.print(`[Phase 1] planning LLM call failed: ${err.message}`);
+    ctx.print(`[Phase 1] falling back to one batch per file.`);
+  }
+  if (!planRaw.trim() && planReasoning.trim()) {
+    const m = planReasoning.match(/topic-id[\s\S]*$/i);
+    if (m) planRaw = m[0];
+  }
+
+  let plan = parsePlanText(planRaw);
+  // Validate: every parsed file must appear in some batch. Files not assigned
+  // by the LLM are given their own batch so nothing is dropped (the user asked
+  // to ensure all files are learned).
+  plan = reconcilePlan(plan, parsedFiles);
+
+  ctx.print('');
+  ctx.print(`[Phase 1] Study plan: ${plan.length} batch${plan.length === 1 ? '' : 'es'}`);
+  for (let i = 0; i < plan.length; i++) {
+    const b = plan[i];
+    ctx.print(`  [${i + 1}/${plan.length}] ${b.topic}: ${b.description || ''} (${(b.files || []).length} files)`);
+  }
+  ctx.print('');
+
+  // ---- Phase 2: Execute each batch ----
+  ctx.print(`[Phase 2: Execution] Per-batch budget: ${perBatchChars} chars`);
+  ctx.print('');
+
+  const { writeKnowledge, readKnowledge } = await import('../../lib/store/kb_store.js');
+  const { getRuntime } = await import('../../lib/retrieval/kb_runtime.js');
+  const rt = await getRuntime(p.id).catch(() => null);
+  const projectId = p.id;
+
+  // Map label -> parsed text for fast lookup
+  const textByLabel = new Map(parsedFiles.map(f => [f.path, f]));
+
+  // For holy writes we ask for interactive confirmation once per run (not per
+  // entry) to avoid spamming; the user already chose --space=holy explicitly.
+  if (space === 'holy' && !dryRun) {
+    ctx.print(`[holy] You are about to write learned entries to HOLY space.`);
+    ctx.print(`  Holy Space is the source of truth for stable design knowledge.`);
+    const holyConfirmed = await ctx.confirm(`Write learned entries to holy? (y/N) `);
+    if (!holyConfirmed) {
+      ctx.print(`Cancelled. Re-run with --space=eden, or confirm to proceed.`);
+      return;
+    }
+  }
+
+  let totalSaved = 0;
+  let totalAccepted = 0;
+  let totalDiscarded = 0;
+  let totalProposed = 0;
+  const processedLabels = new Set();
+
+  for (let batchIdx = 0; batchIdx < plan.length; batchIdx++) {
+    const batch = plan[batchIdx];
+    ctx.setPhase?.(`studying [${batchIdx + 1}/${plan.length}] ${batch.topic}`);
+    ctx.print(`--- [${batchIdx + 1}/${plan.length}] ${batch.topic}: ${batch.description || ''} ---`);
+
+    // Gather parsed text for this batch's files
+    const sources = [];
+    for (const rel of batch.files || []) {
+      const f = textByLabel.get(rel) || findByLabel(textByLabel, rel);
+      if (!f) continue;
+      sources.push(f);
+      processedLabels.add(f.path);
+    }
+    if (sources.length === 0) {
+      ctx.print('  (no readable files in batch - skipping)');
+      continue;
+    }
+    const sourcesChars = sources.reduce((s, f) => s + f.text.length, 0);
+    ctx.print(`  deep-read: ${sources.length} files, ${sourcesChars} chars`);
+
+    const holyNow = existingHoly.map(e => `- ${e.id}: ${e.title}`).join('\n');
+    const edenNow = existingEden.map(e => `- ${e.id}: ${e.title}`).join('\n');
+
+    let contextParts = [];
+    for (const s of sources) {
+      contextParts.push(`## ${s.path}\n\`\`\`\n${s.text}\n\`\`\``);
+    }
+    const batchContext = contextParts.join('\n\n').slice(0, perBatchChars);
+
+    const extractSysPrompt = buildLearnExtractSysPrompt(space, holyNow, edenNow, userPrompt);
+    const extractUserPrompt = `Source documents for topic "${batch.topic}": ${batch.description || ''}\n\nBelow are the document contents. Extract ${space} knowledge entries.\n\n${batchContext}`;
+
+    let raw = '';
+    let rawReasoning = '';
+    try {
+      for await (const evt of ctx.streamLLM(
+        [
+          { role: 'system', content: extractSysPrompt },
+          { role: 'user', content: extractUserPrompt },
+        ],
+        { temperature: 0.1, maxChars: 65536, enableReasoning: true, timeoutMs: 300000 },
+      )) {
+        if (evt.type === 'delta') raw += evt.text;
+        else if (evt.type === 'reasoning') rawReasoning += evt.text;
+      }
+    } catch (err) {
+      ctx.print(`  LLM call failed: ${err.message} - skipping.`);
+      continue;
+    }
+    if (!raw.trim() && rawReasoning.trim()) {
+      const m = rawReasoning.match(/\[[\s\S]*\]/);
+      if (m) raw = m[0];
+    }
+
+    let proposed = null;
+    try { proposed = JSON.parse(raw); }
+    catch {
+      const m = raw.match(/\[[\s\S]*\]/);
+      if (m) { try { proposed = JSON.parse(m[0]); } catch {} }
+    }
+    if (!Array.isArray(proposed)) {
+      ctx.print('  (could not parse as JSON array - skipping)');
+      continue;
+    }
+    totalProposed += proposed.length;
+    if (proposed.length === 0) {
+      ctx.print('  (no entries)');
+      continue;
+    }
+
+    const { accepted, discarded: disc } = crossCheckEntries(proposed, existingHoly, existingEden);
+    ctx.print(`  proposed: ${proposed.length}, accepted: ${accepted.length}, discarded: ${disc.length}`);
+    for (const e of accepted) {
+      ctx.print(`    [ACCEPT] ${e.id}: ${e.title || ''} (${(e.intro || '').length}c)`);
+    }
+    totalAccepted += accepted.length;
+    totalDiscarded += disc.length;
+
+    if (!dryRun && accepted.length > 0) {
+      for (const entry of accepted) {
+        const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
+        const record = {
+          id, space,
+          title: entry.title, intro: entry.intro,
+          keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
+          keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
+          keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
+          autoLearned: true, learned: true,
+        };
+        await writeKnowledge(projectId, space, record);
+        const final = await readKnowledge(projectId, space, id);
+        if (final && rt) rt.reloadKnowledge?.(final, space);
+        if (space === 'holy') existingHoly.push(record);
+        else existingEden.push(record);
+        totalSaved++;
+      }
+    }
+  }
+
+  // Safety net: if the planner dropped a file (no batch referenced it), study
+  // it now so the user's "ensure all files learned" requirement is honored.
+  const dropped = parsedFiles.filter(f => !processedLabels.has(f.path));
+  if (dropped.length > 0) {
+    ctx.print('');
+    ctx.print(`[safety] ${dropped.length} file(s) were not covered by any batch - studying individually.`);
+    for (const f of dropped) processedLabels.add(f.path);
+    // Re-run Phase 2 with a single-file fallback plan.
+    const fallbackPlan = dropped.map((f, i) => ({ topic: `fallback-${i + 1}`, description: f.path, files: [f.path] }));
+    for (let batchIdx = 0; batchIdx < fallbackPlan.length; batchIdx++) {
+      const batch = fallbackPlan[batchIdx];
+      ctx.setPhase?.(`studying [fallback ${batchIdx + 1}/${fallbackPlan.length}] ${batch.topic}`);
+      ctx.print(`--- [fallback ${batchIdx + 1}/${fallbackPlan.length}] ${batch.topic}: ${batch.description || ''} ---`);
+      const sources = [findByLabel(textByLabel, batch.files[0])].filter(Boolean);
+      if (sources.length === 0) continue;
+      ctx.print(`  deep-read: 1 file, ${sources[0].text.length} chars`);
+      const holyNow = existingHoly.map(e => `- ${e.id}: ${e.title}`).join('\n');
+      const edenNow = existingEden.map(e => `- ${e.id}: ${e.title}`).join('\n');
+      const batchContext = `## ${sources[0].path}\n\`\`\`\n${sources[0].text}\n\`\`\``;
+      const extractSysPrompt = buildLearnExtractSysPrompt(space, holyNow, edenNow, userPrompt);
+      const extractUserPrompt = `Source document: ${sources[0].path}\n\nExtract ${space} knowledge entries.\n\n${batchContext}`;
+      let raw = '';
+      let rawReasoning = '';
+      try {
+        for await (const evt of ctx.streamLLM(
+          [
+            { role: 'system', content: extractSysPrompt },
+            { role: 'user', content: extractUserPrompt },
+          ],
+          { temperature: 0.1, maxChars: 65536, enableReasoning: true, timeoutMs: 300000 },
+        )) {
+          if (evt.type === 'delta') raw += evt.text;
+          else if (evt.type === 'reasoning') rawReasoning += evt.text;
+        }
+      } catch (err) {
+        ctx.print(`  LLM call failed: ${err.message} - skipping.`);
+        continue;
+      }
+      if (!raw.trim() && rawReasoning.trim()) {
+        const m = rawReasoning.match(/\[[\s\S]*\]/);
+        if (m) raw = m[0];
+      }
+      let proposed = null;
+      try { proposed = JSON.parse(raw); }
+      catch { const m = raw.match(/\[[\s\S]*\]/); if (m) { try { proposed = JSON.parse(m[0]); } catch {} } }
+      if (!Array.isArray(proposed)) { ctx.print('  (could not parse as JSON array - skipping)'); continue; }
+      totalProposed += proposed.length;
+      if (proposed.length === 0) { ctx.print('  (no entries)'); continue; }
+      const { accepted, discarded: disc } = crossCheckEntries(proposed, existingHoly, existingEden);
+      ctx.print(`  proposed: ${proposed.length}, accepted: ${accepted.length}, discarded: ${disc.length}`);
+      for (const e of accepted) ctx.print(`    [ACCEPT] ${e.id}: ${e.title || ''} (${(e.intro || '').length}c)`);
+      totalAccepted += accepted.length;
+      totalDiscarded += disc.length;
+      if (!dryRun && accepted.length > 0) {
+        for (const entry of accepted) {
+          const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
+          const record = {
+            id, space,
+            title: entry.title, intro: entry.intro,
+            keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
+            keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
+            keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
+            autoLearned: true, learned: true,
+          };
+          await writeKnowledge(projectId, space, record);
+          const final = await readKnowledge(projectId, space, id);
+          if (final && rt) rt.reloadKnowledge?.(final, space);
+          if (space === 'holy') existingHoly.push(record);
+          else existingEden.push(record);
+          totalSaved++;
+        }
+      }
+    }
+  }
+
+  // ---- Final summary ----
+  ctx.setPhase?.('idle');
+  ctx.print('');
+  ctx.print('=== /kb knowledge learn complete ===');
+  ctx.print(`  target files: ${targetFiles.length}`);
+  ctx.print(`  parsed files: ${parsedFiles.length}`);
+  ctx.print(`  batches studied: ${plan.length + (dropped.length ? dropped.length : 0)}`);
+  ctx.print(`  total proposed: ${totalProposed}`);
+  ctx.print(`  total accepted: ${totalAccepted}`);
+  ctx.print(`  total discarded: ${totalDiscarded}`);
+  if (dryRun) {
+    ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved to ${space}.`);
+  } else if (totalSaved > 0) {
+    ctx.print(`  ${totalSaved} ${space} entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
+  } else {
+    ctx.print('  (no entries saved)');
+  }
+}
+
+/**
+ * System prompt for the per-batch extraction phase of /kb knowledge learn.
+ * Parameterized by target space so the model writes the right kind of entry.
+ */
+function buildLearnExtractSysPrompt(space, holySummary, edenSummary, userPrompt) {
+  const spaceGuidance = space === 'holy'
+    ? `The target space is HOLY - stable design knowledge that rarely changes: architecture, core algorithms, fundamental patterns, design principles. Only write genuinely stable, reusable design knowledge. If a document only contains ephemeral details (config values, version lists, one-off notes), return [].`
+    : `The target space is EDEN - frequently-updated knowledge: API/command catalogs, function lists, module summaries, observed patterns, how-to checklists. Things that may evolve are welcome.`;
+  return `You are analyzing documents (PDF / Word / PowerPoint / Markdown) to extract reusable knowledge entries for the project's KB ${space.toUpperCase()} Space.
+
+${spaceGuidance}
+
+For each piece of knowledge, decide whether it belongs in ${space.toUpperCase()}:
+- Stable design knowledge (architecture, algorithms)? -> ${space === 'holy' ? 'INCLUDE' : 'SKIP (that is Holy Space)'}.
+- Catalog / list / summary that may change? -> ${space === 'eden' ? 'INCLUDE' : 'SKIP (that is Eden Space)'}.
+
+Output STRICT JSON array:
+[
+  {
+    "id": "kebab-case-id",
+    "title": "human-readable title",
+    "intro": "2-5 paragraph prose explaining this knowledge; include key names, commands, and patterns mentioned in the documents",
+    "keyFiles": ["document-relative paths or source file references"],
+    "keySymbols": ["named entities / functions / commands / terms"],
+    "keywords": ["english search terms"]
+  }
+]
+
+Rules:
+- Ground every entry in the ACTUAL document contents provided. Quote real terms and commands.
+- Do NOT duplicate existing Holy or Eden entries.
+- Aim for 1-6 entries per batch. Quality over quantity.
+- If no extractable ${space} knowledge, return [].
+
+Existing Holy entries (DO NOT duplicate):
+${holySummary || '(none)'}
+
+Existing Eden entries (DO NOT duplicate):
+${edenSummary || '(none)'}
+${userPrompt ? `\nAdditional user instructions (follow these when extracting knowledge):\n${userPrompt}` : ''}`;
+}
+
+/**
+ * Recursively walk a directory and return absolute paths of files whose
+ * extension is learnable (Markdown/PDF/Word/PowerPoint + text-ish doc types).
+ * Unsupported files are collected into `unsupported` for reporting.
+ */
+async function walkLearnFiles(root, unsupported) {
+  const out = [];
+  let entries;
+  try { entries = await fs.readdir(root, { withFileTypes: true }); }
+  catch { return out; }
+  for (const ent of entries) {
+    if (ent.name.startsWith('.')) continue; // skip hidden files/dirs
+    const full = path.join(root, ent.name);
+    if (ent.isDirectory()) {
+      const sub = await walkLearnFiles(full, unsupported);
+      out.push(...sub);
+    } else if (ent.isFile()) {
+      const ext = path.extname(ent.name).slice(1).toLowerCase();
+      if (isLearnableExt(ext)) out.push(full);
+      else unsupported.push(full);
+    }
+  }
+  return out;
+}
+
+function isLearnableExt(ext) {
+  if (!ext) return false;
+  if (LEARN_DOC_EXTS.has(ext)) return true;
+  // Also accept the text-ish doc types doc_parser already understands.
+  return ['txt', 'rst', 'adoc', 'json', 'yaml', 'yml', 'html', 'htm', 'sgml'].includes(ext);
+}
+
+/**
+ * Ensure every parsed file appears in at least one batch. Files the LLM
+ * omitted get their own single-file batch (topic = filename stem).
+ */
+function reconcilePlan(plan, parsedFiles) {
+  if (!Array.isArray(plan)) plan = [];
+  const seen = new Set();
+  for (const b of plan) {
+    for (const f of b.files || []) seen.add(f);
+  }
+  const missing = parsedFiles.filter(f => !seen.has(f.path));
+  for (const f of missing) {
+    plan.push({ topic: f.path.replace(/\.[^.]+$/, ''), description: `single-file fallback for ${f.path}`, files: [f.path] });
+  }
+  // Drop batches that reference no known files (hallucinated paths).
+  const labels = new Set(parsedFiles.map(f => f.path));
+  return plan
+    .map(b => ({ ...b, files: (b.files || []).filter(f => labels.has(f) || findByLabelStr(parsedFiles, f)) }))
+    .filter(b => (b.files || []).length > 0);
+}
+
+function findByLabel(map, rel) {
+  if (map.has(rel)) return map.get(rel);
+  for (const [k, v] of map) {
+    if (k === rel || k.endsWith('/' + rel) || rel.endsWith('/' + k) || path.basename(k) === path.basename(rel)) return v;
+  }
+  return null;
+}
+
+function findByLabelStr(parsedFiles, rel) {
+  for (const f of parsedFiles) {
+    if (f.path === rel || f.path.endsWith('/' + rel) || rel.endsWith('/' + f.path) || path.basename(f.path) === path.basename(rel)) return true;
+  }
+  return false;
+}
+
+
 /**
  * Parse the LLM's pipe-delimited plan output into batch objects.
  * Accepts both content and reasoning text. Handles:
@@ -1652,3 +2204,13 @@ function parseFlags(tokens) {
   out.positionalText = out.positional.join(' ').trim().replace(/^["'](.*)["']$/, '$1');
   return out;
 }
+
+// Exposed for unit tests (test/learn_knowledge.test.js). These are pure
+// helpers used by /kb knowledge learn; not part of the public CLI surface.
+export const __learnTest = {
+  isLearnableExt,
+  walkLearnFiles,
+  reconcilePlan,
+  parseFlags,
+  LEARN_DOC_EXTS,
+};
