@@ -160,18 +160,21 @@ function populateProgress(session, plan, choices) {
   };
 }
 
-// Mirrors the planStep callback body (interactive.js ~line 1126).
+// Mirrors the planStep callback body (interactive.js ~line 1196).
 function advanceStep(session, stepIndex, note) {
   const p = session.planProgress;
-  if (!p) return;
-  const idx = typeof stepIndex === 'number' ? stepIndex - 1 : p.current;
-  if (idx >= 0 && idx < p.steps.length) {
-    p.steps[idx].status = 'done';
-    if (note) p.steps[idx].note = String(note).slice(0, 160);
-  }
+  if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return null;
+  let idx = -1;
+  if (typeof stepIndex === 'number' && Number.isInteger(stepIndex)) idx = stepIndex - 1;
+  else if (typeof stepIndex === 'string' && /^\d+$/.test(stepIndex.trim())) idx = parseInt(stepIndex, 10) - 1;
+  const cur = (typeof p.current === 'number' && p.current >= 0 && p.current < p.steps.length) ? p.current : 0;
+  if (idx < 0 || idx >= p.steps.length) idx = cur;
+  else if (idx > cur) idx = cur; // ahead-of-current -> mark the current step
+  p.steps[idx].status = 'done';
+  if (note) p.steps[idx].note = String(note).slice(0, 160);
   let next = -1;
   for (let i = 0; i < p.steps.length; i++) {
-    if (p.steps[i].status === 'pending') { next = i; break; }
+    if (p.steps[i].status !== 'done') { next = i; break; }
   }
   if (next === -1) {
     session.planProgress = null;
@@ -179,7 +182,96 @@ function advanceStep(session, stepIndex, note) {
     p.steps[next].status = 'in_progress';
     p.current = next;
   }
+  return idx + 1;
 }
+
+test('planStep tolerates string, 0-based, out-of-range and missing step args', () => {
+  const mk = () => {
+    const s = makeSession();
+    populateProgress(s, samplePlan(), [
+      { goal: 'step A', text: 'alpha' },
+      { goal: 'step B', text: 'gamma' },
+      { goal: 'step C', text: 'eps' },
+    ]);
+    return s;
+  };
+
+  // Numeric string "1" -> step 1 marked done, step 2 in_progress.
+  const s1 = mk();
+  assert.equal(advanceStep(s1, '1'), 1);
+  assert.equal(s1.planProgress.steps[0].status, 'done');
+  assert.equal(s1.planProgress.steps[1].status, 'in_progress');
+
+  // 0-based "0" -> falls back to the current step (never stuck).
+  const s2 = mk();
+  assert.equal(advanceStep(s2, 0), 1);
+  assert.equal(s2.planProgress.steps[0].status, 'done');
+  assert.equal(s2.planProgress.steps[1].status, 'in_progress');
+
+  // Out-of-range 99 -> falls back to the current step.
+  const s3 = mk();
+  assert.equal(advanceStep(s3, 99), 1);
+  assert.equal(s3.planProgress.steps[0].status, 'done');
+
+  // Missing step -> advances the current step.
+  const s4 = mk();
+  assert.equal(advanceStep(s4, undefined), 1);
+  assert.equal(s4.planProgress.steps[0].status, 'done');
+  assert.equal(s4.planProgress.steps[1].status, 'in_progress');
+
+  // Float / garbage -> falls back to the current step.
+  const s5 = mk();
+  assert.equal(advanceStep(s5, 1.5), 1);
+  assert.equal(s5.planProgress.steps[0].status, 'done');
+  assert.equal(s5.planProgress.steps[1].status, 'in_progress');
+});
+
+test('planStep with a wrong-but-valid step still converges (first non-done advances)', () => {
+  const s = makeSession();
+  populateProgress(s, samplePlan(), [
+    { goal: 'step A', text: 'alpha' },
+    { goal: 'step B', text: 'gamma' },
+    { goal: 'step C', text: 'eps' },
+  ]);
+  // Model skips ahead and marks step 3 done while step 1 is still in_progress.
+  // A step ahead of the current one is treated as "finished the current step";
+  // the current step (1) is marked done, not step 3.
+  assert.equal(advanceStep(s, 3), 1);
+  assert.equal(s.planProgress.steps[0].status, 'done');
+  assert.equal(s.planProgress.steps[1].status, 'in_progress');
+  assert.equal(s.planProgress.steps[2].status, 'pending');
+  assert.equal(s.planProgress.current, 1);
+  // The next call continues from there - no stuck rows.
+  assert.equal(advanceStep(s, 2), 2);
+  assert.equal(s.planProgress.steps[0].status, 'done');
+  assert.equal(s.planProgress.steps[1].status, 'done');
+  assert.equal(s.planProgress.steps[2].status, 'in_progress');
+});
+
+test('planStep with an ahead-of-current step (observed deepseek behavior) never strands a step', () => {
+  // deepseek-v4-flash, after finishing step 1 (current=0), was observed to call
+  // plan_step(2) - passing the NEXT step rather than the just-completed one.
+  // The fix must mark the current step done so the panel advances.
+  const s = makeSession();
+  populateProgress(s, samplePlan(), [
+    { goal: 'step A', text: 'alpha' },
+    { goal: 'step B', text: 'gamma' },
+    { goal: 'step C', text: 'eps' },
+  ]);
+  assert.equal(advanceStep(s, 2), 1); // marks step 1, returns 1
+  assert.equal(s.planProgress.steps[0].status, 'done');
+  assert.equal(s.planProgress.steps[1].status, 'in_progress');
+  assert.equal(s.planProgress.steps[2].status, 'pending');
+  // No step is left stuck in_progress while a later one is done.
+  const stuck = s.planProgress.steps.some((st, i) =>
+    st.status === 'in_progress' && s.planProgress.steps.slice(0, i).some(p => p.status !== 'done'));
+  assert.equal(stuck, false, 'no earlier step should be left non-done');
+});
+
+test('planStep with no active plan returns null (tool reports it honestly)', () => {
+  const s = makeSession(); // planProgress null
+  assert.equal(advanceStep(s, 1), null);
+});
 
 // Mirrors formatPlanProgressLines (interactive.js ~line 542).
 function renderProgress(session) {

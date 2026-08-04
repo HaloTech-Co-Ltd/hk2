@@ -1186,18 +1186,40 @@ async function runAgentTurn(userText, session, ctx) {
     // the current step done and move to the next. This updates the pinned
     // progress block above the status bar in real time. When the last step
     // completes the plan is cleared (block disappears).
+    //
+    // Robust to sloppy model step args (fast reasoning models like
+    // deepseek-v4-flash emit numeric strings, 0-based indices, or off-by-one
+    // values): any invalid step falls back to the current one so the panel
+    // never gets stuck on an in_progress step that can never flip to done.
+    // Returns the 1-based step actually marked (or null when no plan is
+    // active) so the tool result can report it accurately.
     planStep: async (stepIndex, note) => {
       const p = session.planProgress;
-      if (!p) return;
-      const idx = typeof stepIndex === "number" ? stepIndex - 1 : p.current;
-      if (idx >= 0 && idx < p.steps.length) {
-        p.steps[idx].status = 'done';
-        if (note) p.steps[idx].note = String(note).slice(0, 160);
+      if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return null;
+      let idx = -1;
+      if (typeof stepIndex === 'number' && Number.isInteger(stepIndex)) idx = stepIndex - 1;
+      else if (typeof stepIndex === 'string' && /^\d+$/.test(stepIndex.trim())) idx = parseInt(stepIndex, 10) - 1;
+      const cur = (typeof p.current === 'number' && p.current >= 0 && p.current < p.steps.length) ? p.current : 0;
+      if (idx < 0 || idx >= p.steps.length) {
+        // Invalid / 0-based / missing step -> mark the current step.
+        idx = cur;
+      } else if (idx > cur) {
+        // The model passed a step AHEAD of the current one. Fast reasoning
+        // models (observed: deepseek-v4-flash) often pass the NEXT step number
+        // to signal "I finished the current step, now at step N". If we only
+        // mark `idx` done, every step before it stays in_progress forever -
+        // the exact "status not updated" symptom. Mark the current step done
+        // so the panel reflects that the just-finished work completed.
+        idx = cur;
       }
-      // Advance current pointer to the next pending step.
+      p.steps[idx].status = 'done';
+      if (note) p.steps[idx].note = String(note).slice(0, 160);
+      // Advance to the FIRST step that is not done. (Looking only for the
+      // first 'pending' step let a wrong-but-valid step number leave an
+      // earlier in_progress step stuck forever, rendering two '>' rows.)
       let next = -1;
       for (let i = 0; i < p.steps.length; i++) {
-        if (p.steps[i].status === 'pending') { next = i; break; }
+        if (p.steps[i].status !== 'done') { next = i; break; }
       }
       if (next === -1) {
         // All steps done - clear the plan progress block.
@@ -1207,6 +1229,7 @@ async function runAgentTurn(userText, session, ctx) {
         p.current = next;
       }
       session.statusBar?.update();
+      return idx + 1;
     },
   });
 
