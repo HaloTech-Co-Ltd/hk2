@@ -138,3 +138,50 @@ test('_renderPlanLines truncates to terminal width and drops trailing empties', 
   // trailing whitespace-only lines dropped -> only ['short'] remains
   assert.deepEqual(lines, ['short']);
 });
+
+test('plan completion shrink (N->0) reflows workspace and does not overlap prior output', () => {
+  // Regression: when the last plan_step clears the block (N->0) mid-turn, the
+  // scroll workspace grows. Output already written during the smaller-region
+  // era was at fixed rows up to the OLD workspace bottom; restoring the cursor
+  // to that stale position made the final summary land ON TOP of prior output.
+  // The fix reflows: scroll the OLD workspace up by the released rows (SU)
+  // within the OLD region, then switch to the new (larger) region, then park
+  // the cursor at the new workspace bottom (not a stale restore).
+  const { bar, writes, all, setPlan } = makeBar();
+  setPlan(['Plan: x', '  > 1. a', '  [ ] 2. b', '  [ ] 3. c']); // 4 lines
+  bar.update(); // grow to 4 -> region 1..(24-1-4)=1..19
+  assert.equal(bar._planLineCount, 4);
+  writes.length = 0;
+  setPlan([]); // plan completes -> shrink 4 -> 0
+  bar.update();
+  const w = all();
+  // The OLD workspace bottom was rows-1-prevCount = 24-1-4 = 19. The reflow
+  // must point the scroll region at 1..19 and emit an SU by `released`=4.
+  assert.ok(w.includes('\x1b[1;19r'), 'reflow targets the OLD workspace region 1..19');
+  assert.ok(/\x1b\[4S/.test(w), 'scroll-up by the released row count (4) reflows prior output up');
+  // The NEW region (1..23, full) must be set before the cursor parks.
+  assert.ok(w.includes('\x1b[1;23r'), 'scroll region restored to the full 1..23');
+  // Cursor must be parked at the NEW workspace bottom (24-1-0 = 23), NOT
+  // restored (\x1b8) to a stale saved position that would overlap prior output.
+  assert.ok(w.includes('\x1b[23;1H'), 'cursor parked at the new workspace bottom (row 23)');
+  assert.ok(!/\x1b8$/.test(w), 'shrink transition does not end with a stale cursor-restore');
+  assert.equal(bar._planLineCount, 0);
+});
+
+test('partial shrink (N->M) also reflows and parks, not restores', () => {
+  // A step completing (in_progress strategy sub-line disappears) shrinks the
+  // block by 1 line. Same reflow/park behavior must apply.
+  const { bar, writes, all, setPlan } = makeBar();
+  setPlan(['Plan: x', '  > 1. a', '     strat', '  [ ] 2. b']); // 4 lines
+  bar.update();
+  writes.length = 0;
+  setPlan(['Plan: x', '  ✓ 1. a', '  > 2. b']); // 3 lines
+  bar.update();
+  const w = all();
+  // OLD bottom = 24-1-4 = 19; released = 1.
+  assert.ok(w.includes('\x1b[1;19r'), 'reflow targets old region 1..19');
+  assert.ok(/\x1b\[1S/.test(w), 'scroll-up by 1');
+  // NEW region = 24-1-3 = 20.
+  assert.ok(w.includes('\x1b[1;20r'), 'region set to new 1..20');
+  assert.ok(!/\x1b8$/.test(w), 'partial shrink parks cursor, no stale restore');
+});
