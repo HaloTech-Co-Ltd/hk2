@@ -13,7 +13,7 @@ English | [简体中文](README_zh.md)
 - **Per-request knowledge graph**: for each user message, hk2 retrieves related symbols, call chains, class membership, knowledge entries, and docs from the KB, then injects them as context before the LLM responds.
 - **KB-first policy**: the agent always tries KB tools (`kb_search`, `kb_symbol`, `kb_callchain`, `kb_class`, `kb_refs`, `kb_implements`, `kb_knowledge`, etc.) before falling back to `bash grep`/`find`. Mid-turn guardrails detect violations and nudge the agent back to the KB.
 - **Resumable builds**: `/kb init` saves a checkpoint every 100 files (configurable). If interrupted, re-running resumes from the checkpoint — no re-parsing.
-- **Auto-generated summaries**: at end of `/kb init`, an LLM authors three Eden entries: `project-overview`, `api-docs`, `architecture-decisions`. Always available via `kb_knowledge`.
+- **Auto-generated summaries**: at end of `/kb init`, an LLM authors three Eden entries: `project-overview`, `architecture-diagram`, `architecture-decisions`. Always available via `kb_knowledge`.
 - **Multi-project, multi-model**: one `~/.hk2/` install manages unlimited projects (UUID-isolated KBs) and unlimited LLM providers/models.
 - **Any language**: C/C++, C#, JavaScript/TypeScript, Python, Go, Rust, Java, Kotlin, Scala, Ruby, PHP, Swift, Bash/Zsh, lex/yacc.
 
@@ -35,8 +35,13 @@ hk2 is not published to npm. Install from source:
 
 ### Option A — install.sh (recommended)
 
-Creates a self-contained copy at `~/.hk2cli`, symlinks `hk2` (and an `hk2cli` alias) into your PATH,
+Creates a self-contained copy of the source tree at `~/.hk2`, symlinks `hk2` into your PATH,
 and runs `npm install` to build Tree-sitter native bindings.
+
+> `~/.hk2` serves two roles: it is the **config / data home** (`HK2_HOME` -
+> `models.json`, `projects.json`, `kb/`, `sessions/`, `logs/`) *and* the default
+> **install dir** for the source copy. Because of this overlap, prefer `npm link`
+> if you already have a checkout, or set `HK2_INSTALL_DIR` to a separate path.
 
 ```bash
 git clone <repo-url> hk2 && cd hk2
@@ -48,17 +53,24 @@ Custom prefix or install location (prefix also settable via the `HK2_PREFIX` env
 ```bash
 ./install.sh --prefix=$HOME/.local
 ./install.sh --prefix /usr/local          # same as default
-HK2_INSTALL_DIR=/opt/hk2 ./install.sh
+HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # keep the source copy out of the config home
 ./install.sh --no-npm-install             # skip Tree-sitter (regex fallback)
 ```
 
 Optional PDF / Word parsing:
 
 ```bash
-cd ~/.hk2cli && npm install               # installs pdf-parse + mammoth
+cd ~/.hk2 && npm install                  # installs pdf-parse + mammoth
 ```
 
-Uninstall: `rm -rf ~/.hk2cli /usr/local/bin/hk2`
+Uninstall: remove the symlink and the source copy. Because `~/.hk2` also holds
+your config and KBs, deleting the whole directory wipes those too - back up
+`models.json` / `projects.json` / `kb/` first, or just remove the symlink:
+
+```bash
+rm -f /usr/local/bin/hk2                  # drop the launcher
+rm -rf ~/.hk2/node_modules ~/.hk2/bin      # remove the installed source copy, keep config + KBs
+```
 
 ### Option B — npm link (for developers)
 
@@ -409,8 +421,8 @@ Updates live during streaming, tool calls, and phase transitions.
 | `HK2_KB_DIR` | Override KB root | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |
 | `HK2_PROJECT_SOURCE` | Project source root for tool sandbox (set automatically in interactive mode) | - |
-| `HK2_PREFIX` | Install prefix used by `install.sh` for the `hk2` / `hk2cli` symlinks | `/usr/local` |
-| `HK2_INSTALL_DIR` | Self-contained copy location used by `install.sh` | `~/.hk2cli` |
+| `HK2_PREFIX` | Install prefix used by `install.sh` for the `hk2` symlink | `/usr/local` |
+| `HK2_INSTALL_DIR` | Self-contained copy location used by `install.sh` (defaults to `HK2_HOME`, i.e. `~/.hk2`) | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | When 1, hk2 uses an LLM call to rewrite each user query to English function names + keywords before BM25 retrieval (both at turn start and on each `kb_search` tool call). | `1` |
 | `HK2_ENABLE_REQUEST_ASSESS` | When 1 (and `HK2_ENABLE_QUERYREWRITE=1`), hk2 first asks the LLM whether a user request is clear. If not, it surfaces the unclear aspects plus candidate interpretations as a numbered menu (with a free-text "something else" option) and feeds the chosen clarification back into the query rewrite. Active only in interactive TTY mode; one bounded round. Best-effort: any failure falls through to the normal rewrite. | `1` |
 | `HK2_ENABLE_AUTOUPDATEKB` | When 1, hk2 silently runs an incremental `/kb update` (Index Space) at end of any turn where the agent fell back to bash to search source files. | `0` |
@@ -447,12 +459,21 @@ hk2 --run-mode=serve
 
 ## Supported languages
 
-The KB indexer uses dedicated parsers for C/C++ and lex/yacc sources, and a generic regex-based parser for:
+The KB indexer prefers **native tree-sitter grammars** for AST-accurate symbol
+extraction across 14 grammars (13 packages, since `tree-sitter-typescript`
+exports both `typescript` and `tsx`):
 
-- Python, JavaScript, TypeScript, JSX/TSX
-- Go, Rust, Java, Kotlin, Scala
-- Ruby, PHP, Swift
-- Shell (bash, zsh)
+- C, C++, C#
+- JavaScript, TypeScript, JSX/TSX
+- Python, Go, Rust
+- Java, Kotlin, Scala
+- Ruby, PHP
+- Bash / Zsh
+
+If a grammar or the `tree-sitter` native binding is unavailable, hk2 transparently
+falls back to regex-based parsers (lower coverage, same Symbol[] shape). C/C++
+and lex/yacc (`.y`/`.l`) sources additionally have dedicated regex parsers used
+in the fallback path.
 
 ## Directory layout
 

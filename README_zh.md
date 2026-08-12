@@ -13,7 +13,7 @@
 - **按请求构建知识图谱**：对每条用户消息，hk2 会从知识库中检索相关符号、调用链、类成员、知识条目与文档，并在 LLM 响应前将其作为上下文注入。
 - **知识库优先策略**：代理总是优先使用知识库工具（`kb_search`、`kb_symbol`、`kb_callchain`、`kb_class`、`kb_refs`、`kb_implements`、`kb_knowledge` 等），再回退到 `bash grep`/`find`。中途的守卫逻辑会检测违规行为并将代理引导回知识库。
 - **可恢复构建**：`/kb init` 每处理 100 个文件保存一次检查点（可配置）。若被中断，重新运行会从检查点恢复，无需重新解析。
-- **自动生成摘要**：在 `/kb init` 结束时，LLM 会撰写三个 Eden 条目：`project-overview`、`api-docs`、`architecture-decisions`，始终可通过 `kb_knowledge` 获取。
+- **自动生成摘要**：在 `/kb init` 结束时，LLM 会撰写三个 Eden 条目：`project-overview`、`architecture-diagram`、`architecture-decisions`，始终可通过 `kb_knowledge` 获取。
 - **多项目、多模型**：一份 `~/.hk2/` 安装可管理不限数量的项目（以 UUID 隔离的知识库）与不限数量的 LLM 提供商/模型。
 - **支持任意语言**：C/C++、C#、JavaScript/TypeScript、Python、Go、Rust、Java、Kotlin、Scala、Ruby、PHP、Swift、Bash/Zsh、lex/yacc。
 
@@ -34,7 +34,11 @@ hk2 未发布到 npm。请从源码安装：
 
 ### 方式 A——install.sh（推荐）
 
-在 `~/.hk2cli` 创建一份自包含副本，把 `hk2`（及 `hk2cli` 别名）通过符号链接加入 PATH，并运行 `npm install` 构建 tree-sitter 原生绑定。
+在 `~/.hk2` 创建一份源码树的自包含副本，把 `hk2` 通过符号链接加入 PATH，并运行 `npm install` 构建 tree-sitter 原生绑定。
+
+> `~/.hk2` 同时承担两个角色：它既是**配置 / 数据主目录**（`HK2_HOME`—
+> `models.json`、`projects.json`、`kb/`、`sessions/`、`logs/`），也是源码副本的默认**安装目录**。
+> 由于两者重叠，若你已有仓库检出，建议改用 `npm link`；或通过 `HK2_INSTALL_DIR` 指定一个独立路径。
 
 ```bash
 git clone <repo-url> hk2 && cd hk2
@@ -46,17 +50,24 @@ git clone <repo-url> hk2 && cd hk2
 ```bash
 ./install.sh --prefix=$HOME/.local
 ./install.sh --prefix /usr/local          # 等同于默认值
-HK2_INSTALL_DIR=/opt/hk2 ./install.sh
+HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # 将源码副本置于配置主目录之外
 ./install.sh --no-npm-install             # 跳过 tree-sitter（使用正则回退）
 ```
 
 可选的 PDF / Word 解析：
 
 ```bash
-cd ~/.hk2cli && npm install               # 安装 pdf-parse + mammoth
+cd ~/.hk2 && npm install                  # 安装 pdf-parse + mammoth
 ```
 
-卸载：`rm -rf ~/.hk2cli /usr/local/bin/hk2`
+卸载：移除符号链接与源码副本。由于 `~/.hk2` 同时存放你的配置与知识库，
+直接删除整个目录会一并清除它们—请先备份 `models.json` / `projects.json` / `kb/`，
+或仅移除符号链接：
+
+```bash
+rm -f /usr/local/bin/hk2                  # 移除启动器
+rm -rf ~/.hk2/node_modules ~/.hk2/bin      # 移除已安装的源码副本，保留配置与知识库
+```
 
 ### 方式 B——npm link（面向开发者）
 
@@ -407,8 +418,8 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
 | `HK2_PROJECT_SOURCE` | 工具沙箱的项目源码根（交互模式下自动设置） | - |
-| `HK2_PREFIX` | `install.sh` 用于放置 `hk2` / `hk2cli` 符号链接的安装前缀 | `/usr/local` |
-| `HK2_INSTALL_DIR` | `install.sh` 创建的自包含副本位置 | `~/.hk2cli` |
+| `HK2_PREFIX` | `install.sh` 用于放置 `hk2` 符号链接的安装前缀 | `/usr/local` |
+| `HK2_INSTALL_DIR` | `install.sh` 创建的自包含副本位置（默认为 `HK2_HOME`，即 `~/.hk2`） | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | 为 1 时，hk2 会在 BM25 检索前（每轮开始及每次 `kb_search` 工具调用时）用一次 LLM 调用将用户查询重写为英文函数名 + 关键词。 | `1` |
 | `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
 | `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
@@ -445,12 +456,16 @@ hk2 --run-mode=serve
 
 ## 支持的语言
 
-知识库索引器对 C/C++ 与 lex/yacc 源码使用专用解析器，对其余语言使用通用正则解析器：
+知识库索引器优先使用 **原生 tree-sitter 语法** 进行 AST 精确符号提取，覆盖 14 个语法（13 个包，因为 `tree-sitter-typescript` 同时导出 `typescript` 与 `tsx`）：
 
-- Python、JavaScript、TypeScript、JSX/TSX
-- Go、Rust、Java、Kotlin、Scala
-- Ruby、PHP、Swift
-- Shell（bash、zsh）
+- C、C++、C#
+- JavaScript、TypeScript、JSX/TSX
+- Python、Go、Rust
+- Java、Kotlin、Scala
+- Ruby、PHP
+- Bash / Zsh
+
+若某个语法或 `tree-sitter` 原生绑定不可用，hk2 会透明回退到基于正则的解析器（覆盖率略低，但 Symbol[] 结构相同）。C/C++ 与 lex/yacc（`.y`/`.l`）源码在回退路径中还额外配有专用正则解析器。
 
 ## 目录结构
 

@@ -4,8 +4,7 @@
   "description": "Knowledge-base-driven coding agent with per-project KB",
   "type": "module",
   "bin": {
-    "hk2": "./bin/hk2",
-    "hk2cli": "./bin/hk2"
+    "hk2": "./bin/hk2"
   },
   "engines": {
     "node": ">=18"

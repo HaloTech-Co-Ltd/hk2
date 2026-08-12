@@ -7,7 +7,7 @@
 #   curl -fsSL https://your-host/install.sh | sh
 #
 # Behavior:
-#   - Clones/copies the project to $HK2_INSTALL_DIR (default: ~/.hk2cli)
+#   - Clones/copies the project to $HK2_INSTALL_DIR (default: ~/.hk2)
 #     If the script is run from inside the repo, it uses the current dir.
 #   - Symlinks $PREFIX/bin/hk2 to ./bin/hk2
 #   - Prints install location + PATH hint
@@ -19,7 +19,7 @@
 set -e
 
 PREFIX="${HK2_PREFIX:-/usr/local}"
-INSTALL_DIR="${HK2_INSTALL_DIR:-$HOME/.hk2cli}"
+INSTALL_DIR="${HK2_INSTALL_DIR:-$HOME/.hk2}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 
 # Parse arguments. Supports both --prefix=value and --prefix value forms.
