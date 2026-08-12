@@ -54,6 +54,8 @@
  */
 import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
+  normalizePhaseName, supportedPhaseNames,
+  setPhaseModelRef, clearPhaseModelRef,
 } from '../../lib/config/home.js';
 
 export async function cmdModel(args, ctx) {
@@ -64,17 +66,19 @@ export async function cmdModel(args, ctx) {
     case 'use': return useModel(rest, ctx);
     case 'set-default': return setDefaultModel(rest, ctx);
     case 'set': return setModel(rest, ctx);
+    case 'set-phase': return setPhaseModel(rest, ctx);
     case 'add': return addModel(rest, ctx);
     case 'del': case 'rm': return delModel(rest, ctx);
     case 'show': return showModel(ctx);
     default:
-      ctx.print(`/model subcommands: list | use | set-default | set | add | del | show`);
+      ctx.print(`/model subcommands: list | use | set-default | set | set-phase | add | del | show`);
       ctx.print(`Examples:`);
       ctx.print(`  /model list`);
       ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000`);
       ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
       ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
       ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192`);
+      ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o   (per-project, rewrite phase)`);
       ctx.print(`  /model del openai-local/gpt-4o`);
   }
 }
@@ -339,6 +343,86 @@ function parseFlags(tokens) {
     }
   }
   return out;
+}
+
+/**
+ * /model set-phase --phase=<name> <provider>/<model-id> [--clear]
+ * Configure a per-phase model override for the CURRENT project. When set,
+ * that phase uses the configured model instead of the current session model.
+ * Defaults to the session model when unset (the default state).
+ *
+ * Currently supported phases: rewrite-query.
+ *   /model set-phase --phase=rewrite-query prov/model
+ *   /model set-phase --phase=rewrite-query --clear
+ */
+async function setPhaseModel(rest, ctx) {
+  const flags = parseFlags(rest);
+  // After parseFlags consumes the --phase=... and --clear tokens, the
+  // remaining positional is the model ref (if any). Re-derive it from the raw
+  // tokens so an order-independent UX works: take the first token that is
+  // neither a flag nor a value captured for phase/clear.
+  const usedValues = new Set([typeof flags.phase === 'string' ? flags.phase : '', typeof flags.clear === 'string' ? flags.clear : '']);
+  const positional = rest.filter((t) => !t.startsWith('--') && !usedValues.has(t));
+  const phaseRaw = flags.phase;
+  const wantClear = parseBoolFlag(flags.clear === undefined ? false : flags.clear);
+
+  if (!phaseRaw) {
+    ctx.print(`Usage: /model set-phase --phase=<name> <provider>/<model-id> [--clear]`);
+    ctx.print(`Supported phases: ${supportedPhaseNames().join(', ')}`);
+    ctx.print(`Examples:`);
+    ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o`);
+    ctx.print(`  /model set-phase --phase=rewrite-query --clear`);
+    return;
+  }
+  const phaseKey = normalizePhaseName(phaseRaw);
+  if (!phaseKey) {
+    ctx.print(`Unknown phase: ${phaseRaw}`);
+    ctx.print(`Supported phases: ${supportedPhaseNames().join(', ')}`);
+    return;
+  }
+
+  // Resolve the project this session is operating on. Falls back to the shared
+  // global current for non-interactive callers (serve / one-shot), so the
+  // command still works there.
+  const getter = ctx.getCurrentProject || (async () => (await import('../../lib/config/home.js')).getCurrentProject());
+  const cur = await getter.call(ctx);
+  if (!cur) {
+    ctx.print(`No current project. Run /project init or /project set current <id> first.`);
+    return;
+  }
+
+  if (wantClear) {
+    const updated = await clearPhaseModelRef(cur.id, phaseRaw);
+    if (!updated) {
+      ctx.print(`Failed to clear phase model (project or phase unknown).`);
+      return;
+    }
+    ctx.print(`Cleared phase model for ${phaseRaw} on project ${cur.name}.`);
+    ctx.print(`  (phase will now use the current session model)`);
+    ctx.noteReloadProject?.();
+    return;
+  }
+
+  const ref = positional[0];
+  if (!ref) {
+    ctx.print(`Usage: /model set-phase --phase=${phaseRaw} <provider>/<model-id> [--clear]`);
+    return;
+  }
+  const split = splitModelRef(ref);
+  if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
+  const { providers } = await loadModels();
+  const prov = providers[split.provider];
+  if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
+  const m = (prov.models || []).find(x => x.id === split.model);
+  if (!m) { ctx.print(`Model not found: ${ref}`); return; }
+
+  const updated = await setPhaseModelRef(cur.id, phaseRaw, ref);
+  if (!updated) {
+    ctx.print(`Failed to set phase model (project or phase unknown).`);
+    return;
+  }
+  ctx.print(`Phase model set: ${phaseRaw} -> ${ref} (project: ${cur.name})`);
+  ctx.noteReloadProject?.();
 }
 
 /** Normalize a reasoning flag value to a boolean. Accepts on/off/true/false/1/0. */

@@ -53,7 +53,7 @@
  * Reload: project / model / KB changes flag a reload; next prompt redraws state.
  */
 import readline from 'node:readline';
-import { ensureHome, getCurrentProject, getProject, setCurrentProject, resolveDefaultModel, resolveModelRef } from '../../lib/config/home.js';
+import { ensureHome, getCurrentProject, getProject, setCurrentProject, resolveDefaultModel, resolveModelRef, getPhaseModelRef } from '../../lib/config/home.js';
 import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
@@ -1090,6 +1090,32 @@ async function runAgentTurn(userText, session, ctx) {
   const canAssess = enableAssess && session.llm && !!(session.rl && session.rl.terminal);
   let rewrite = null;
 
+  // Resolve a per-phase model override for the rewrite phase. When the current
+  // project has configured /model set-phase --phase=rewrite-query <ref>, the
+  // rewrite runs on that model instead of the session model; otherwise we use
+  // session.llm (the default, unchanged behavior). The phase model is resolved
+  // once per turn and reused for both the pass-1 rewrite and the post-
+  // clarification pass-2 rewrite, so the two passes stay consistent.
+  // resolvePhaseLlm returns null when no override is configured or the
+  // override can't be resolved (in which case we fall back to session.llm and
+  // warn, rather than silently running on the wrong model).
+  const resolvePhaseLlm = async (phase) => {
+    const ref = getPhaseModelRef(session.project, phase);
+    if (!ref) return null;
+    const cfg = await resolveModelRef(ref);
+    if (!cfg) return null;
+    return new LLMClient(cfg);
+  };
+  let rewriteLlm = null;
+  if (enableRewrite && session.llm) {
+    try {
+      rewriteLlm = await resolvePhaseLlm('rewrite-query');
+    } catch (err) {
+      ctx.print(`[warn] could not resolve phase model for rewrite, using session model: ${err.message}`);
+      rewriteLlm = null;
+    }
+  }
+
   // Start the spinner on the FIRST piece of real work: the rewrite (when
   // enabled), else KB retrieval. Assessment runs later, after retrieval.
   if (enableRewrite && session.llm) {
@@ -1108,7 +1134,9 @@ async function runAgentTurn(userText, session, ctx) {
     }
     try {
       const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
-      rewrite = await rewriteQuery(session.llm, userText, {
+      // Use the per-phase model when configured; otherwise the session model.
+      const llmForRewrite = rewriteLlm || session.llm;
+      rewrite = await rewriteQuery(llmForRewrite, userText, {
         timeoutMs: 15000,
       });
       await session.transcript?.logMeta('rewrite', {
@@ -1117,6 +1145,7 @@ async function runAgentTurn(userText, session, ctx) {
         keywords: rewrite.keywords,
         rewrittenQuery: rewrite.rewrittenQuery,
         fallback: rewrite.fallback,
+        phaseModelRef: rewriteLlm ? (getPhaseModelRef(session.project, 'rewrite-query') || null) : null,
       });
     } catch (err) {
       progress.done();
@@ -1219,7 +1248,10 @@ async function runAgentTurn(userText, session, ctx) {
       }
       try {
         const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
-        rewrite = await rewriteQuery(session.llm, userText, {
+        // Reuse the per-phase model resolved at the top of the turn so the
+        // post-clarification pass stays on the same model as pass-1.
+        const llmForRewrite = rewriteLlm || session.llm;
+        rewrite = await rewriteQuery(llmForRewrite, userText, {
           timeoutMs: 15000,
           clarification,
         });
@@ -1230,6 +1262,7 @@ async function runAgentTurn(userText, session, ctx) {
           rewrittenQuery: rewrite.rewrittenQuery,
           fallback: rewrite.fallback,
           afterClarification: true,
+          phaseModelRef: rewriteLlm ? (getPhaseModelRef(session.project, 'rewrite-query') || null) : null,
         });
       } catch (err) {
         ctx.print(`[warn] post-clarification rewrite failed, keeping prior query: ${err.message}`);

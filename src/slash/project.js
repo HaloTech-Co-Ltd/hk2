@@ -228,6 +228,14 @@ async function showProject(ctx) {
   }
   ctx.print(`  kbBuiltAt: ${cur.kbBuiltAt || '(not built, run /kb init)'}`);
   ctx.print(`  createdAt: ${cur.createdAt}`);
+  const phaseModels = (cur.phaseModels && typeof cur.phaseModels === 'object' && !Array.isArray(cur.phaseModels)) ? cur.phaseModels : {};
+  const phaseEntries = Object.entries(phaseModels).filter(([, v]) => typeof v === 'string' && v);
+  if (phaseEntries.length) {
+    ctx.print(`  phase models:`);
+    for (const [phase, ref] of phaseEntries) ctx.print(`    ${phase} -> ${ref}`);
+  } else {
+    ctx.print(`  phase models: (none; rewrite phase uses the current session model)`);
+  }
 }
 
 async function dropProject(rest, ctx) {

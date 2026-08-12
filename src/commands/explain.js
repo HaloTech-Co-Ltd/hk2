@@ -50,7 +50,7 @@
  * once mode: internal getRuntime + new LLMClient
  * serve mode: caller passes rt / llm
  */
-import { resolveDefaultModel } from '../../lib/config/home.js';
+import { resolveDefaultModel, getCurrentProject, getPhaseModelRef, resolveModelRef } from '../../lib/config/home.js';
 import { printTopics, printSymbols, printCachedAnswer } from '../format.js';
 import { ProgressIndicator } from '../progress.js';
 import { resolveKbName } from '../kb_name.js';
@@ -66,11 +66,29 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
   const llm = providedLlm || (cfg ? new (await import('../../lib/llm/client.js')).LLMClient(cfg) : null);
   if (!llm) throw new Error('No default model configured. Use /model add + /model set-default, or set ANTHROPIC_API_KEY / OPENAI_API_KEY.');
 
+  // Per-phase model override for the rewrite phase: when the current project
+  // has /model set-phase --phase=rewrite-query configured, the rewrite (and
+  // therefore retrieval) runs on that model; the final answer still streams on
+  // `llm`. Falls back to `llm` when unset or unresolvable (the default).
+  let rewriteLlm = llm;
+  try {
+    const project = await getCurrentProject();
+    const ref = getPhaseModelRef(project, 'rewrite-query');
+    if (ref) {
+      const phaseCfg = await resolveModelRef(ref);
+      if (phaseCfg) {
+        rewriteLlm = new (await import('../../lib/llm/client.js')).LLMClient(phaseCfg);
+      }
+    }
+  } catch (err) {
+    console.error(`[warn] could not resolve phase model for rewrite, using default model: ${err.message}`);
+  }
+
   // principle mode: check saved answers first (unless --force)
   if (mode === 'principle' && !force) {
     let rewriteInfo = null;
     if (enableRewrite) {
-      const r = await rewriteQuery(llm, query);
+      const r = await rewriteQuery(rewriteLlm, query);
       if (!r.fallback && (r.functionNames?.length || r.keywords?.length)) {
         rewriteInfo = { functionNames: r.functionNames, keywords: r.keywords };
       }
@@ -89,8 +107,8 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
 
   const acc = { rewrite: null, topics: [], symbols: [], text: '' };
   const gen = mode === 'principle'
-    ? explainPrinciple(rt, llm, query, { maxChars: cfg.maxChars, skipRewrite: !enableRewrite })
-    : suggestImplementation(rt, llm, query, { maxChars: cfg.maxChars, skipRewrite: !enableRewrite });
+    ? explainPrinciple(rt, llm, query, { maxChars: cfg.maxChars, skipRewrite: !enableRewrite, rewriteLlm })
+    : suggestImplementation(rt, llm, query, { maxChars: cfg.maxChars, skipRewrite: !enableRewrite, rewriteLlm });
 
   const progress = new ProgressIndicator();
   progress.start(enableRewrite ? 'rewriting query' : 'waiting for model');
