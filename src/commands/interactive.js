@@ -536,11 +536,25 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
   }
 }
 
+/**
+ * Compact, *provider-distinguishing* model label for the prompt, status bar,
+ * and welcome card. We show the full `provider/model-id` ref (not just the
+ * model-id segment) so that two providers hosting the same model id are
+ * visually distinct - e.g. `volcengine/glm-5.2[1m]` vs
+ * `volcengine2/glm-5.2[1m]`. A trailing bracketed context-window hint
+ * (e.g. `[1m]`) is PRESERVED so the active context length stays visible.
+ * Returns the empty string when no model is configured (caller styles it).
+ */
+function modelTagFor(session) {
+  if (!session.modelCfg || !session.modelCfg.ref) return '';
+  return session.modelCfg.ref;
+}
+
 function promptFor(session) {
   // Colored prompt. Compact; live state lives in the status bar.
   const projTag = session.project ? style.accent(session.project.name) : style.dim('no-project');
   const kbTag = kbBrief(session);
-  const modelTag = session.modelCfg ? style.muted(session.modelCfg.ref.split('/').pop()) : style.warning('no-model');
+  const modelTag = session.modelCfg ? style.muted(modelTagFor(session)) : style.warning('no-model');
   const sep = style.dim('|');
   return `${style.dim('hk2')}(${projTag}${sep}${kbTag}${sep}${modelTag})${style.accent('>')} `;
 }
@@ -618,7 +632,7 @@ function formatPlanProgressLines(session) {
 function formatStatusLine(session) {
   const projTag = session.project ? style.accent(session.project.name) : style.dim('no-project');
   const kbTag = kbBrief(session);
-  const modelTag = session.modelCfg ? style.muted(session.modelCfg.ref.split('/').pop()) : style.warning('no-model');
+  const modelTag = session.modelCfg ? style.muted(modelTagFor(session)) : style.warning('no-model');
   const usage = formatUsage(session.tokens, session.modelCfg?.maxChars || 0);
   const phase = session.phase || 'idle';
   const sep = style.dim(style.BOX.vertical);
@@ -716,11 +730,12 @@ function printBanner(session, ctx) {
   // Welcome card — rounded border with title in the top edge.
   const projTag = session.project ? session.project.name : style.warning('no project');
   const kbTag = kbBrief(session);
-  // Trim the model ref to its last segment so "provider/model-id" doesn't
-  // push the Project/KB/Model row past the card width. Matches prompt and
-  // status bar behaviour.
+  // Show the full provider/model ref (incl. a trailing [ctx] hint) so two
+  // providers hosting the same model id are distinguishable in the welcome
+  // card, and the active context length stays visible. Matches the prompt
+  // and status bar via modelTagFor().
   const modelTag = session.modelCfg
-    ? session.modelCfg.ref.split('/').pop()
+    ? modelTagFor(session)
     : style.warning('no-model');
   // Cap at 96 cols (was 72) so the Project/KB/Model row has breathing room
   // once KB shows Eden/N Holy/N. Still shrinks to term width on narrow
