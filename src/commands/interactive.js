@@ -600,6 +600,24 @@ function kbBrief(session) {
  * The chosen strategy for the current (in_progress) step is shown on a
  * second indented line so the user can see what approach is in flight.
  */
+/**
+ * End-of-turn plan-progress reconciliation.
+ *
+ * The `plan_step` tool clears `session.planProgress` to null the moment the
+ * last step is marked done. But a model can finish all the real work and emit
+ * its final answer WITHOUT calling `plan_step` on the last step (or at all),
+ * leaving the plan block pinned with the final step stuck `in_progress`. This
+ * clears the block when every step is already `done`, so the panel never
+ * lingers past actual completion. Safe to call when no plan is active.
+ */
+function finalizePlanProgress(session) {
+  const p = session.planProgress;
+  if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return;
+  if (p.steps.every(st => st.status === 'done')) {
+    session.planProgress = null;
+  }
+}
+
 function formatPlanProgressLines(session) {
   const p = session.planProgress;
   if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return [];
@@ -1262,26 +1280,30 @@ async function runAgentTurn(userText, session, ctx) {
       if (typeof stepIndex === 'number' && Number.isInteger(stepIndex)) idx = stepIndex - 1;
       else if (typeof stepIndex === 'string' && /^\d+$/.test(stepIndex.trim())) idx = parseInt(stepIndex, 10) - 1;
       const cur = (typeof p.current === 'number' && p.current >= 0 && p.current < p.steps.length) ? p.current : 0;
-      if (idx < 0 || idx >= p.steps.length) {
-        // Invalid / 0-based / missing step -> mark the current step.
-        idx = cur;
-      } else if (idx > cur) {
-        // The model passed a step AHEAD of the current one. Fast reasoning
-        // models (observed: deepseek-v4-flash) often pass the NEXT step number
-        // to signal "I finished the current step, now at step N". If we only
-        // mark `idx` done, every step before it stays in_progress forever -
-        // the exact "status not updated" symptom. Mark the current step done
-        // so the panel reflects that the just-finished work completed.
-        idx = cur;
-      }
-      p.steps[idx].status = 'done';
-      if (note) p.steps[idx].note = String(note).slice(0, 160);
-      // Advance to the FIRST step that is not done. (Looking only for the
-      // first 'pending' step let a wrong-but-valid step number leave an
-      // earlier in_progress step stuck forever, rendering two '>' rows.)
+      // Always treat the CURRENT step as the one just finished, regardless of
+      // what step number the model passed. Fast reasoning models (observed:
+      // deepseek-v4-flash) emit numeric strings, 0-based indices, ahead-of-
+      // current "next step" values, or re-confirm an already-done earlier
+      // step. Trusting the passed idx to mark-done left the *current*
+      // in_progress step stranded: (a) the panel showed a stale in_progress
+      // step while the agent had moved on, and (b) when the current step was
+      // the last one, it never flipped to done so `next` never reached -1 and
+      // the plan block never cleared. Marking cur done guarantees the actual
+      // in-flight step advances and the panel stays in sync with reality.
+      const markIdx = cur;
+      p.steps[markIdx].status = 'done';
+      if (note) p.steps[markIdx].note = String(note).slice(0, 160);
+      // Defensively clear any stale in_progress markers left by earlier
+      // ahead-of-current calls, then advance to the FIRST non-done step.
+      // (Looking only for the first 'pending' step let a wrong-but-valid step
+      // number leave an earlier in_progress step stuck forever, rendering two
+      // '>' rows and blocking the all-done clear.)
       let next = -1;
       for (let i = 0; i < p.steps.length; i++) {
-        if (p.steps[i].status !== 'done') { next = i; break; }
+        if (p.steps[i].status !== 'done') {
+          if (p.steps[i].status === 'in_progress') p.steps[i].status = 'pending';
+          if (next === -1) next = i;
+        }
       }
       if (next === -1) {
         // All steps done - clear the plan progress block.
@@ -1291,7 +1313,7 @@ async function runAgentTurn(userText, session, ctx) {
         p.current = next;
       }
       session.statusBar?.update();
-      return idx + 1;
+      return markIdx + 1;
     },
   });
 
@@ -1542,6 +1564,7 @@ async function runAgentTurn(userText, session, ctx) {
 
     session.phase = 'idle';
     session.turnStart = 0;
+    finalizePlanProgress(session);
     session.statusBar?.update();
   } catch (err) {
     progress.done();
@@ -1560,6 +1583,7 @@ async function runAgentTurn(userText, session, ctx) {
       session.phase = 'error';
     }
     session.turnStart = 0;
+    finalizePlanProgress(session);
     session.statusBar?.update();
   } finally {
     if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);

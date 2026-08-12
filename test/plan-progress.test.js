@@ -160,21 +160,27 @@ function populateProgress(session, plan, choices) {
   };
 }
 
-// Mirrors the planStep callback body (interactive.js ~line 1196).
+// Mirrors the planStep callback body (interactive.js). Always marks the
+// CURRENT step done regardless of the step arg, then advances to the first
+// non-done step (defensively clearing any stale in_progress markers first).
 function advanceStep(session, stepIndex, note) {
   const p = session.planProgress;
   if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return null;
+  // Parse the model-supplied step for the return value only; the CURRENT
+  // step is what gets marked done (mirrors the real fix).
   let idx = -1;
   if (typeof stepIndex === 'number' && Number.isInteger(stepIndex)) idx = stepIndex - 1;
   else if (typeof stepIndex === 'string' && /^\d+$/.test(stepIndex.trim())) idx = parseInt(stepIndex, 10) - 1;
   const cur = (typeof p.current === 'number' && p.current >= 0 && p.current < p.steps.length) ? p.current : 0;
-  if (idx < 0 || idx >= p.steps.length) idx = cur;
-  else if (idx > cur) idx = cur; // ahead-of-current -> mark the current step
-  p.steps[idx].status = 'done';
-  if (note) p.steps[idx].note = String(note).slice(0, 160);
+  const markIdx = cur;
+  p.steps[markIdx].status = 'done';
+  if (note) p.steps[markIdx].note = String(note).slice(0, 160);
   let next = -1;
   for (let i = 0; i < p.steps.length; i++) {
-    if (p.steps[i].status !== 'done') { next = i; break; }
+    if (p.steps[i].status !== 'done') {
+      if (p.steps[i].status === 'in_progress') p.steps[i].status = 'pending';
+      if (next === -1) next = i;
+    }
   }
   if (next === -1) {
     session.planProgress = null;
@@ -182,7 +188,7 @@ function advanceStep(session, stepIndex, note) {
     p.steps[next].status = 'in_progress';
     p.current = next;
   }
-  return idx + 1;
+  return markIdx + 1;
 }
 
 test('planStep tolerates string, 0-based, out-of-range and missing step args', () => {
@@ -246,6 +252,76 @@ test('planStep with a wrong-but-valid step still converges (first non-done advan
   assert.equal(s.planProgress.steps[0].status, 'done');
   assert.equal(s.planProgress.steps[1].status, 'done');
   assert.equal(s.planProgress.steps[2].status, 'in_progress');
+});
+
+test('BUG A: re-marking an already-done / earlier step keeps the panel in sync with the actual frontier', () => {
+  // Scenario: the model finishes step 2 (current=1) but re-calls plan_step(1)
+  // (an already-done earlier step) instead of plan_step(2). The current step
+  // MUST still advance so the panel reflects reality, and no earlier step is
+  // left stranded in_progress.
+  const s = makeSession();
+  populateProgress(s, samplePlan(), [
+    { goal: 'step A', text: 'alpha' },
+    { goal: 'step B', text: 'gamma' },
+    { goal: 'step C', text: 'eps' },
+  ]);
+  advanceStep(s, 1);            // step A done, step B in_progress (current=1)
+  advanceStep(s, 1);            // BUG A: model re-marks step 1 (already done)
+  assert.equal(s.planProgress.steps[0].status, 'done');
+  assert.equal(s.planProgress.steps[1].status, 'done', 'current step B advanced to done');
+  assert.equal(s.planProgress.steps[2].status, 'in_progress', 'step C is now in flight');
+  assert.equal(s.planProgress.current, 2);
+  // Exactly one in_progress step, at the frontier.
+  const inProgress = s.planProgress.steps.filter(st => st.status === 'in_progress');
+  assert.equal(inProgress.length, 1, 'exactly one in_progress step');
+});
+
+test('BUG B: marking the last step done clears the plan even when the model passed an earlier step number', () => {
+  // Scenario: current is the LAST step (current=2, steps 0+1 done). The model
+  // calls plan_step(1) (an earlier step) instead of plan_step(3). Before the
+  // fix, the last step stayed in_progress and `next` never reached -1, so the
+  // plan block never cleared. Now the current step advances to done -> clear.
+  const s = makeSession();
+  populateProgress(s, samplePlan(), [
+    { goal: 'step A', text: 'alpha' },
+    { goal: 'step B', text: 'gamma' },
+    { goal: 'step C', text: 'eps' },
+  ]);
+  advanceStep(s, 1);            // -> current=1 (step B)
+  advanceStep(s, 2);            // -> current=2 (step C, last step)
+  assert.equal(s.planProgress.current, 2);
+  assert.equal(s.planProgress.steps[2].status, 'in_progress');
+  // Model passes the WRONG (earlier) step number on the final call.
+  advanceStep(s, 1);
+  assert.equal(s.planProgress, null, 'plan cleared even though model passed an earlier step');
+  // The rendered panel is now empty (no stale block).
+  assert.deepEqual(renderProgress(s), [], 'rendered panel is empty after clear');
+});
+
+test('BUG B (end-of-turn): a plan whose every step is done is finalized even if the model skipped the last plan_step', () => {
+  // Scenario: the model did the work for all steps but emitted its final answer
+  // without calling plan_step on the last step. finalizePlanProgress() (called
+  // at runAgentTurn exit) must clear the block. This mirrors the helper added
+  // to interactive.js.
+  function finalizePlanProgress(session) {
+    const p = session.planProgress;
+    if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return;
+    if (p.steps.every(st => st.status === 'done')) session.planProgress = null;
+  }
+  const s = makeSession();
+  populateProgress(s, samplePlan(), [
+    { goal: 'step A', text: 'alpha' },
+    { goal: 'step B', text: 'gamma' },
+    { goal: 'step C', text: 'eps' },
+  ]);
+  // Simulate the model doing all the work but forgetting the final plan_step:
+  // mark every step done directly (as if work completed) without clearing.
+  for (const st of s.planProgress.steps) st.status = 'done';
+  // The block would linger here without the end-of-turn reconciliation.
+  assert.notEqual(s.planProgress, null, 'plan still pinned before finalize');
+  finalizePlanProgress(s);
+  assert.equal(s.planProgress, null, 'plan cleared at end of turn');
+  assert.deepEqual(renderProgress(s), [], 'panel empty after finalize');
 });
 
 test('planStep with an ahead-of-current step (observed deepseek behavior) never strands a step', () => {
