@@ -62,6 +62,27 @@ function makeResp() {
   };
 }
 
+// Build a Response whose SSE body is a caller-supplied list of {event,data}
+// objects. Used by the streaming-event tests (tool_call flush, usage).
+function makeRespWithEvents(events) {
+  const buf = events
+    .map(e => `event: ${e.event}\ndata: ${JSON.stringify(e.data)}\n\n`)
+    .join('');
+  const enc = new TextEncoder().encode(buf);
+  return {
+    ok: true,
+    status: 200,
+    text: async () => '',
+    body: {
+      [Symbol.asyncIterator]: async function* () { yield enc; },
+      getReader() {
+        let pushed = false;
+        return { read: async () => { if (pushed) return { done: true, value: undefined }; pushed = true; return { done: false, value: enc }; } };
+      },
+    },
+  };
+}
+
 async function captureRequestBody(messages) {
   let captured = null;
   const originalFetch = globalThis.fetch;
@@ -244,4 +265,76 @@ test('drops a tool_use whose result is non-adjacent (landed in a later message)'
   assertPairing(body);
   const useIds = new Set(blocksOfType(body, 'tool_use', 'id'));
   assert.ok(!useIds.has('call_01_gap'), 'non-adjacent tool_use was not stripped');
+});
+
+/* ----------------------------------------------------------------------
+ * Streaming-event tests: the tool_use / tool_result sanitization pass above
+ * only covers the REQUEST body. The tests below cover the RESPONSE stream:
+ *   - a tool_use block that never got a content_block_stop must still be
+ *     yielded as a tool_call (otherwise plan_step is silently dropped and
+ *     the live progress panel never advances)
+ *   - a message_delta carrying input_tokens (Volcengine ark / glm-5.2) must
+ *     surface a real input count so the status bar stops showing 0/estimate
+ * ----------------------------------------------------------------------*/
+
+async function collectStreamEvents(events) {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, _init) => makeRespWithEvents(events);
+  const out = [];
+  try {
+    for await (const evt of streamAnthropic({
+      baseUrl: 'https://example.com',
+      apiKey: 'k',
+      model: 'm',
+      messages: [{ role: 'user', content: 'hi' }],
+      maxChars: 8192,
+      enableReasoning: false,
+      timeoutMs: 1000,
+    })) {
+      out.push(evt);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return out;
+}
+
+test('flushes a tool_use that never received content_block_stop (plan_step not dropped)', async () => {
+  // Simulates a stream that started a tool_use block, streamed its input_json
+  // deltas, but then ended (message_stop) WITHOUT the closing
+  // content_block_stop. This is the exact shape that would silently drop a
+  // plan_step call: the agent loop would see zero pending tool calls and never
+  // execute the step, leaving the progress panel stuck on in_progress.
+  const events = [
+    { event: 'message_start', data: { message: { usage: { input_tokens: 10, output_tokens: 0 } } } },
+    { event: 'content_block_start', data: { index: 0, content_block: { type: 'tool_use', id: 'call_planstep_1', name: 'plan_step', input: {} } } },
+    { event: 'content_block_delta', data: { index: 0, delta: { type: 'input_json_delta', partial_json: '{"step":' } } },
+    { event: 'content_block_delta', data: { index: 0, delta: { type: 'input_json_delta', partial_json: '1}' } } },
+    // NOTE: no content_block_stop for index 0.
+    { event: 'message_delta', data: { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } },
+    { event: 'message_stop', data: {} },
+  ];
+  const out = await collectStreamEvents(events);
+  const toolCalls = out.filter(e => e.type === 'tool_call');
+  assert.equal(toolCalls.length, 1, 'tool_use without content_block_stop was dropped (plan_step would never run)');
+  assert.equal(toolCalls[0].name, 'plan_step');
+  assert.equal(toolCalls[0].id, 'call_planstep_1');
+  assert.equal(toolCalls[0].arguments, '{"step":1}', 'accumulated input_json deltas were not assembled');
+});
+
+test('message_delta input_tokens surface as a real usage input (glm-5.2 via Volcengine)', async () => {
+  // Volcengine ark reports input_tokens=0 in message_start and the real
+  // input_tokens (e.g. 190) only in message_delta. The adapter must forward
+  // it so the status bar shows the real input count instead of an estimate.
+  const events = [
+    { event: 'message_start', data: { message: { usage: { input_tokens: 0, output_tokens: 0 } } } },
+    { event: 'message_delta', data: { delta: { stop_reason: 'end_turn' }, usage: { input_tokens: 190, output_tokens: 27 } } },
+    { event: 'message_stop', data: {} },
+  ];
+  const out = await collectStreamEvents(events);
+  const usages = out.filter(e => e.type === 'usage');
+  // The message_delta usage must carry the real input count (190), not 0.
+  const deltaUsage = usages.find(u => u.input === 190);
+  assert.ok(deltaUsage, 'message_delta input_tokens (190) was not forwarded as a usage event');
+  assert.equal(deltaUsage.output, 27, 'output_tokens from message_delta was lost');
 });
