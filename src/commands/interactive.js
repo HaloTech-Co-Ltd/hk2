@@ -75,6 +75,7 @@ import { MarkdownStream } from '../../lib/agent/markdown.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { exists } from '../../lib/util/fs_atomic.js';
+import { saveTaskState, loadTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 
 /**
  * Build a bare session object (no readline / status bar). Shared by
@@ -118,6 +119,14 @@ export function createSession(pinnedProjectId = null) {
     phase: 'idle',
     turnStart: 0,
     planProgress: null,
+    // In-session task context for interruption recovery. Updated at the start
+    // of each turn with the user's request + a text snapshot of the live plan
+    // progress. When the user types "请继续/continue" after an interruption,
+    // runAgentTurn injects this as a system message so the LLM can rebuild
+    // "what was I doing, which step, what's next" instead of seeing a bare
+    // continuation cue with no memory. Mirrored to disk via task_state.js so
+    // a process restart (not just an in-session error) can also recover.
+    lastTask: null,
     kbGuard: new KbFirstGuard(),
   };
 }
@@ -505,6 +514,29 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
       session.transcript = new Transcript(session.project.id);
       await session.transcript.logMeta('start', { pid: process.pid, cwd: process.cwd() });
     }
+    // Cross-process interruption recovery: if a previous process for this
+    // project was interrupted mid-task and persisted its task state, restore
+    // it into session.lastTask / planProgress so a "请继续 / continue" cue can
+    // resume the work. Only on the initial project load (flags.project) and
+    // only when we don't already have in-session context (a reloaded session
+    // keeps its own lastTask).
+    if (flags.project && !session.lastTask && session.project) {
+      const saved = await loadTaskState(session.project.id);
+      if (saved && saved.userRequest) {
+        session.lastTask = {
+          userRequest: saved.userRequest,
+          capturedAt: saved.interruptedAt,
+          restored: true,
+        };
+        // Restore the live progress panel too, so the user sees where the
+        // interrupted task left off as soon as the REPL comes up.
+        if (saved.planProgress && Array.isArray(saved.planProgress.steps) &&
+            saved.planProgress.steps.some(st => st.status !== 'done')) {
+          session.planProgress = saved.planProgress;
+          session.statusBar?.update();
+        }
+      }
+    }
     session.kbMeta = session.project ? await getKbMeta(session.project.id) : null;
   }
   if (flags.kb) {
@@ -850,6 +882,54 @@ async function processLine(line, session, ctx) {
   await handleLine(line, session, ctx);
 }
 
+/**
+ * Detect whether a trimmed user line is a short continuation cue
+ * ("continue" / "请继续" / "go ahead" / ...) rather than a fresh task.
+ *
+ * Used by handleLine to decide whether to keep the live planProgress block
+ * (a continuation preserves the in-flight plan; a fresh prompt clears it)
+ * and by runAgentTurn to inject interruption-recovery context. Supports both
+ * English and Chinese cues - without the Chinese branch, a 中文 "请继续" after
+ * an interrupted task used to be misclassified as a new task, wiping the live
+ * planProgress and leaving the progress panel empty.
+ */
+export function isContinuationCue(text) {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.trim();
+  if (!t) return false;
+  const contRe = /^(y|yes|ok|okay|continue|cont|go|next|done|keep going|proceed|go on|go ahead|please continue)\b/i;
+  // Chinese cues: \b does NOT match at CJK character boundaries (\w is ASCII
+  // only), so we omit the trailing \b here. The alternation anchors at ^ so a
+  // cue followed by more Chinese text ("继续，把剩下的做完") still matches.
+  const contZhRe = /^(请继续|继续吧|继续做|继续|接着做|接着来|接着|往下做|往下|进行)/i;
+  return contRe.test(t) || contZhRe.test(t);
+}
+
+/**
+ * Build the system-message text injected when the user asks to continue an
+ * interrupted task. Combines the last user request (from session.lastTask)
+ * with a text snapshot of the live planProgress (so the model knows which
+ * step is in_progress and what's next). Returns null when there is no
+ * lastTask to resume from.
+ *
+ * Exported so the resume-injection logic is unit-testable without spinning
+ * up the full agent loop (which needs an LLM, KB, and readline).
+ */
+export function buildResumeContext(session) {
+  if (!session || !session.lastTask) return null;
+  const planLines = formatPlanProgressLines(session);
+  const planText = planLines.length > 0
+    ? '\n\nCurrent plan progress:\n' + planLines.join('\n')
+    : '\n\n(No structured plan was active when the task was interrupted; the plan may have been proposed but not yet confirmed, or the interruption happened before the plan tool fired.)';
+  return `## Resuming an interrupted task
+You are resuming a task that was interrupted before it finished. The user just asked you to continue. Here is the context you need to pick up where you left off:
+
+Original user request:
+${session.lastTask.userRequest || '(unavailable)'}${planText}
+
+Do NOT restart from scratch or re-confirm the plan. Continue the in-flight work: complete the current step, then proceed to the next. If the plan is already fully done, summarize what was accomplished and stop.`;
+}
+
 async function handleLine(line, session, ctx) {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -877,15 +957,15 @@ async function handleLine(line, session, ctx) {
   }
 
   // Plan-progress lifecycle: a fresh prompt that is not a short
-  // continuation (yes/ok/continue/go/next/done) starts a new task, so any
-  // stale plan block from a previous task is cleared. Multi-turn
+  // continuation (yes/ok/continue/go/next/done/请继续/继续/接着) starts a new
+  // task, so any stale plan block from a previous task is cleared. Multi-turn
   // continuation of an in-progress plan keeps the block.
-  const contRe = /^(y|yes|ok|okay|continue|cont|go|next|done|keep going|proceed)\b/i;
-  if (session.planProgress && !contRe.test(trimmed)) {
+  const isContinuation = isContinuationCue(trimmed);
+  if (session.planProgress && !isContinuation) {
     session.planProgress = null;
     session.statusBar?.update();
   }
-  await runAgentTurn(trimmed, session, ctx);
+  await runAgentTurn(trimmed, session, ctx, { continuation: isContinuation });
 }
 
 /**
@@ -1044,7 +1124,7 @@ async function confirmClarification(assessment, session) {
   return assessment.interpretations[choice.index];
 }
 
-async function runAgentTurn(userText, session, ctx) {
+async function runAgentTurn(userText, session, ctx, opts = {}) {
   const progress = new ProgressIndicator();
   session.turnStart = Date.now();
   const setPhase = (p) => {
@@ -1067,6 +1147,29 @@ async function runAgentTurn(userText, session, ctx) {
   if (canInterrupt) {
     readline.emitKeypressEvents(rlInput);  // idempotent; readline already set this up
     rlInput.on('keypress', onKeypress);
+  }
+
+  // ---- Interruption recovery: task context ----
+  // When a task is interrupted (LLM error / ESC / crash) and the user types a
+  // continuation cue ("请继续 / continue / go ahead"), the LLM has lost all
+  // memory of what it was doing. session.lastTask carries the most recent
+  // user request + a text snapshot of the live plan progress; inject it as a
+  // system message so the model can resume instead of flailing on a bare
+  // "continue". For a fresh (non-continuation) task, refresh lastTask now so a
+  // *later* interruption can be recovered the same way.
+  if (opts.continuation && session.lastTask) {
+    const resumeMsg = buildResumeContext(session);
+    if (resumeMsg) session.messages.push({ role: 'system', content: resumeMsg });
+  } else {
+    // Fresh task: snapshot the request + current plan progress so a future
+    // interruption can be recovered. The planProgress text is re-derived lazily
+    // on recovery (it may have advanced since), but capturing the request now
+    // is essential because the interruption may happen before the plan tool
+    // ever fires.
+    session.lastTask = {
+      userRequest: userText,
+      capturedAt: new Date().toISOString(),
+    };
   }
 
   // Phase ordering: the LLM query rewrite (when enabled) runs before KB
@@ -1647,6 +1750,14 @@ async function runAgentTurn(userText, session, ctx) {
     session.turnStart = 0;
     finalizePlanProgress(session);
     session.statusBar?.update();
+    // Task completed normally and (if a plan existed) all steps are done:
+    // clear the persisted task state so the next session doesn't resume a
+    // finished task. We only clear when there's no planProgress left, because a
+    // multi-step plan that's mid-flight should remain recoverable across turns.
+    if (!session.planProgress) {
+      session.lastTask = null;
+      await clearTaskState(session.project?.id);
+    }
   } catch (err) {
     progress.done();
     // An abort/error can leave a trailing assistant `tool_use` (tool_calls)
@@ -1666,6 +1777,21 @@ async function runAgentTurn(userText, session, ctx) {
     session.turnStart = 0;
     finalizePlanProgress(session);
     session.statusBar?.update();
+    // Task interrupted: persist the current task context + plan progress to
+    // disk so a process restart (not just an in-session error) can also be
+    // recovered via "请继续 / continue". For in-session errors session.lastTask
+    // is already set, so the recovery injection above handles the next turn;
+    // this write covers the cross-process case.
+    if (session.lastTask) {
+      const planLines = formatPlanProgressLines(session);
+      await saveTaskState(session.project?.id, {
+        userRequest: session.lastTask.userRequest,
+        taskSummary: planLines.length > 0 ? planLines.join('\n') : '(no active plan)',
+        planProgress: session.planProgress,
+        sessionId: session.transcript?.sessionId || null,
+        reason: abortCtrl.signal.aborted ? 'interrupted' : 'error',
+      });
+    }
   } finally {
     if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
   }
