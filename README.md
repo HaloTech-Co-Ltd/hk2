@@ -6,7 +6,7 @@ English | [简体中文](README_zh.md)
 
 ## Key ideas
 
-- **Tree-sitter AST parsing**: hk2 uses native tree-sitter grammars for precise symbol extraction across 13+ languages. Falls back to regex-based parsers if grammars are not installed.
+- **Tree-sitter AST parsing**: hk2 uses native tree-sitter grammars for precise symbol extraction across 14 packages (15 grammars, since `tree-sitter-typescript` exports both `typescript` and `tsx`). Falls back to regex-based parsers if grammars are not installed.
 - **Code knowledge graph**: call chains, class hierarchy, imports, and inheritance are stored as a graph under `~/.hk2/kb/<projectId>/graph/`. Traversable via `kb_callchain`, `kb_class`, `kb_refs`, `kb_implements`.
 - **Three-space KB**: every project KB is split into Holy Space (stable design knowledge), Eden Space (frequently-updated catalogs/patterns), and Index Space (BM25 + graph + per-space indexes).
 - **Document parsing**: Markdown, JSON, YAML, HTML, SGML, plain text are parsed with stdlib. PDF and Word (.docx) supported via optional `pdf-parse` and `mammoth`. Legacy Office binaries (.doc, .pptx, .ppt) are extracted dependency-free. Docs are routed into Eden Space as `doc:<relpath>` entries.
@@ -255,6 +255,7 @@ The agent can call these tools mid-turn (OpenAI/Anthropic native tool-calling):
 | `ast_edit` | Structural rewrite across files. Returns a unified-diff preview + `proposalId`; never writes itself. Optional `tag` validates target files at preview time. |
 | `resolve` | Apply or discard a previously-previewed `ast_edit` proposal. Re-validates tags at apply time, rolls back on any failure. |
 | `plan` | The triage assistant's interface for surfacing a user-confirmed execution plan. The LLM calls it when it decides a task is complex enough to warrant a strategy decision (multiple distinct phases, a design choice the user should confirm, or several affected subsystems); simple tasks skip straight to execution. It returns a one-line summary plus 2–5 ordered steps, each with 2–4 candidate strategies (one marked recommended), and surfaces the plan for per-step strategy selection. |
+| `plan_step` | Mark a step of a currently confirmed plan as done and advance the live progress panel. Call it exactly once after finishing each confirmed plan step (the one returned by `plan`); `step` is 1-based (omit to advance the current step). Pure progress-UX signal - no-op when no plan is active, and the panel clears automatically after the last step. Do not call it before `plan` returns a confirmed plan. |
 | `kb_search` | BM25 symbol search (with LLM query rewrite by default) |
 | `kb_symbol` | Look up symbol by exact name |
 | `kb_outline` | File outline from the KB index — name / kind / lines / signature per symbol. Cheaper than `read` for "what's in this file?" questions. Returns a `tag` for downstream edit safety. |
@@ -324,6 +325,25 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 - `1.0M` — context window size
 
 Updates live during streaming, tool calls, and phase transitions.
+
+### Progress panel
+
+When a task is complex enough, the agent calls `plan` to surface a user-confirmed
+execution plan. A live progress panel is then pinned above the status bar showing
+the plan's steps - which are done, which is in progress, and which are pending:
+
+```
+▣ Plan: sync README docs with code
+  ✓ 1. Add missing plan_step tool
+  ▶ 2. Document the progress panel
+    3. Fix tree-sitter package count
+    4. Commit and push
+```
+
+After finishing each confirmed step, the agent calls `plan_step` once to advance
+the panel. Marking the last step done clears the panel automatically - no
+separate finish call is needed. Simple tasks that skip `plan` never show a
+panel. See the `plan` and `plan_step` entries in [Agent tools](#agent-tools).
 
 ## Configuration layout
 
@@ -460,7 +480,7 @@ hk2 --run-mode=serve
 ## Supported languages
 
 The KB indexer prefers **native tree-sitter grammars** for AST-accurate symbol
-extraction across 14 grammars (13 packages, since `tree-sitter-typescript`
+extraction across 14 packages (15 grammars, since `tree-sitter-typescript`
 exports both `typescript` and `tsx`):
 
 - C, C++, C#

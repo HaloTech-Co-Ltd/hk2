@@ -58,6 +58,8 @@ import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { runLoop } from '../../lib/agent/loop.js';
+import { buildKbStats, fallbackKind } from '../../lib/agent/kb_stats.js';
+import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
@@ -105,6 +107,12 @@ export function createSession(pinnedProjectId = null) {
     startedAt: new Date().toISOString(),
     toolCallCount: 0,
     bashSearchCommands: [],
+    // Per-loop KB-hit-rate / token-savings tracking. Reset at the start of
+    // each turn's first LLM call (onTurnStart _turnIdx===1). Each entry is
+    // `{ call, result }` so the stats helper can stat the referenced files
+    // and estimate how much disk the KB saved the agent from pulling.
+    loopKbCalls: [],
+    loopFallbackCalls: [],
     tokens: { callIn: 0, callOut: 0, loopIn: 0, loopOut: 0, loopPeakIn: 0, loopPeakOut: 0, cumIn: 0, cumOut: 0, cacheRead: 0, cacheCreation: 0 },
     statusBar: null,
     phase: 'idle',
@@ -1389,6 +1397,13 @@ async function runAgentTurn(userText, session, ctx) {
       session.tokens.callOut = 0;
       // Reset the KB-first guardrail so each call gets a fresh "haven't used KB yet" check.
       session.kbGuard?.reset();
+      // Reset per-loop KB-stats tracking on the first turn of the turn's loop.
+      // (onTurnStart fires for every LLM call inside the loop; only _turnIdx===1
+      // marks the start of a fresh user turn.)
+      if (_turnIdx === 1) {
+        session.loopKbCalls = [];
+        session.loopFallbackCalls = [];
+      }
       // Fresh markdown renderer for the new LLM call.
       mdStream = new MarkdownStream();
       session.statusBar?.update();
@@ -1506,6 +1521,17 @@ async function runAgentTurn(userText, session, ctx) {
           }
         } catch { /* ignore */ }
       }
+      // Per-loop KB-hit-rate tracking: record every call as either a KB call
+      // or a no-KB fallback (bash-search / source-file read). Cached cache
+      // hits still count - the agent still *chose* the KB. The result is the
+      // unwrapped tool payload (result.result when ok) so the stats helper
+      // can stat the referenced files and estimate token savings.
+      const payload = result && result.ok ? result.result : null;
+      if (typeof call.name === 'string' && call.name.startsWith('kb_')) {
+        session.loopKbCalls.push({ call, result: payload });
+      } else if (fallbackKind(call)) {
+        session.loopFallbackCalls.push({ call, result: payload });
+      }
     },
   };
 
@@ -1545,7 +1571,29 @@ async function runAgentTurn(userText, session, ctx) {
     // Status line — show usage for the WHOLE LOOP plus cumulative session totals.
     if (session.tokens.loopIn > 0 || session.tokens.loopOut > 0) {
       const usage = formatUsage(session.tokens, session.modelCfg?.maxChars || 0);
-      process.stderr.write(`${style.success(style.ICON.ok + ' usage')} ${style.dim(style.ICON.dot)} ${usage}\n`);
+      // KB hit-rate + estimated token savings for this loop. Computed from the
+      // per-loop call log (kb_* vs bash-search/source-read fallbacks). The
+      // savings are an estimate (stat referenced files - KB result bytes ->
+      // tokens), so they're labelled with `~`. Appended on the same stderr
+      // line as usage, dot-separated, to match the existing status style.
+      let kbPart = '';
+      try {
+        const stats = await buildKbStats(session.loopKbCalls, session.loopFallbackCalls, {
+          root: session.project?.sourcePath || '',
+          estTokens: estimateTokensFromChars,
+        });
+        if (stats.kbCalls > 0 || stats.fallbackCalls > 0) {
+          const pct = Math.round(stats.hitRate * 100);
+          kbPart = ` ${style.dim(style.ICON.dot)} ${style.accent('kb ' + pct + '%')} ${style.dim(style.ICON.dot)} ${style.muted('~' + fmtTok(stats.estimatedTokensSaved) + ' saved')}`;
+        }
+        await session.transcript?.logMeta('kb-stats', {
+          kbCalls: stats.kbCalls,
+          fallbackCalls: stats.fallbackCalls,
+          hitRate: stats.hitRate,
+          estimatedTokensSaved: stats.estimatedTokensSaved,
+        });
+      } catch { /* stats are best-effort; never block the turn on them */ }
+      process.stderr.write(`${style.success(style.ICON.ok + ' usage')} ${style.dim(style.ICON.dot)} ${usage}${kbPart}\n`);
       await session.transcript?.logMeta('usage', {
         loop: { in: session.tokens.loopIn, out: session.tokens.loopOut },
         cumulative: { in: session.tokens.cumIn, out: session.tokens.cumOut },

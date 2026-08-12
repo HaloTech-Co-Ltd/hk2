@@ -6,7 +6,7 @@
 
 ## 核心理念
 
-- **Tree-sitter AST 解析**：hk2 使用原生 tree-sitter 语法对 13+ 种语言精确提取符号。若未安装对应语法，则回退到基于正则的解析器。
+- **Tree-sitter AST 解析**：hk2 使用原生 tree-sitter 语法对符号进行精确提取，覆盖 14 个包（15 个语法，因为 `tree-sitter-typescript` 同时导出 `typescript` 与 `tsx`）。若未安装对应语法，则回退到基于正则的解析器。
 - **代码知识图谱**：调用链、类继承关系、导入与继承关系以图谱形式存储于 `~/.hk2/kb/<projectId>/graph/` 之下，可通过 `kb_callchain`、`kb_class`、`kb_refs`、`kb_implements` 遍历。
 - **三空间知识库**：每个项目的知识库被划分为 Holy Space（稳定的设计知识）、Eden Space（频繁更新的目录/模式）与 Index Space（BM25 + 图谱 + 各空间索引）。
 - **文档解析**：Markdown、JSON、YAML、HTML、SGML、纯文本使用标准库解析；PDF 与 Word（.docx）通过可选的 `pdf-parse` 与 `mammoth` 支持；旧版 Office 二进制（.doc、.pptx、.ppt）采用无依赖方式提取。文档以 `doc:<relpath>` 条目形式归入 Eden Space。
@@ -252,6 +252,7 @@ hk2
 | `ast_edit` | 跨文件结构化重写。返回统一 diff 预览 + `proposalId`；自身不写入。可选 `tag` 在预览时校验目标文件。 |
 | `resolve` | 应用或丢弃先前预览的 `ast_edit` 提案。应用时重新校验 tag，任一失败则回滚。 |
 | `plan` | 分流助手用于呈现需用户确认的执行计划的接口。当 LLM 判定某任务足够复杂、需要策略决策（多个独立阶段、需用户确认的设计选择、或涉及多个子系统）时调用此工具；简单任务则直接进入执行。它返回一行摘要 + 2–5 个有序步骤，每步含 2–4 个候选策略（其中一个标记为推荐），并呈现该计划供逐步选择策略。 |
+| `plan_step` | 将当前已确认计划的某一步标记为完成，并推进实时进度面板。在每个已确认计划步骤（由 `plan` 返回）完成后调用一次；`step` 为从 1 开始的序号（省略则推进当前步骤）。纯进度 UX 信号——无活动计划时为空操作，最后一步完成后面板自动清除。请勿在 `plan` 返回已确认计划之前调用。 |
 | `kb_search` | BM25 符号搜索（默认用 LLM 重写查询） |
 | `kb_symbol` | 按精确名称查找符号 |
 | `kb_outline` | 来自知识库索引的文件大纲——每个符号的名称 / 类型 / 行号 / 签名。对“这个文件里有什么？”这类问题比 `read` 更轻量。返回 `tag` 供后续编辑安全使用。 |
@@ -321,6 +322,20 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 - `1.0M`——上下文窗口大小
 
 在流式输出、工具调用与阶段切换期间实时更新。
+
+### 进度面板
+
+当某任务足够复杂时，代理会调用 `plan` 呈现一个需用户确认的执行计划。随后会在状态栏上方固定一个实时进度面板，展示计划的各个步骤--哪些已完成、哪个进行中、哪些待处理：
+
+```
+▣ Plan: 同步 README 文档与代码
+  ✓ 1. 补全缺失的 plan_step 工具
+  ▶ 2. 记录进度面板
+    3. 修正 tree-sitter 包数量
+    4. 提交并推送
+```
+
+每完成一个已确认步骤后，代理调用一次 `plan_step` 以推进面板。标记最后一步完成后，面板会自动清除--无需单独的完成调用。跳过 `plan` 的简单任务不会显示面板。详见 [代理工具](#代理工具) 中的 `plan` 与 `plan_step` 条目。
 
 ## 配置布局
 
@@ -456,7 +471,7 @@ hk2 --run-mode=serve
 
 ## 支持的语言
 
-知识库索引器优先使用 **原生 tree-sitter 语法** 进行 AST 精确符号提取，覆盖 14 个语法（13 个包，因为 `tree-sitter-typescript` 同时导出 `typescript` 与 `tsx`）：
+知识库索引器优先使用 **原生 tree-sitter 语法** 进行 AST 精确符号提取，覆盖 14 个包（15 个语法，因为 `tree-sitter-typescript` 同时导出 `typescript` 与 `tsx`）：
 
 - C、C++、C#
 - JavaScript、TypeScript、JSX/TSX
