@@ -53,7 +53,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exists } from '../../lib/util/fs_atomic.js';
-import { SESSIONS_ROOT, getCurrentProject } from '../../lib/config/home.js';
+import { SESSIONS_ROOT } from '../../lib/config/home.js';
 
 export async function cmdSession(args, ctx) {
   const sub = args[0];

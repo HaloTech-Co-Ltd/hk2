@@ -56,7 +56,7 @@
  *   hk2 --run-mode=serve                     Legacy REPL
  *   hk2 --help
  */
-import { ensureHome, loadProjects, setCurrentProject } from '../lib/config/home.js';
+import { ensureHome, loadProjects } from '../lib/config/home.js';
 
 const VALID_MODES = new Set(['project-init', 'build-kb', 'update-kb']);
 const VALID_RUN_MODES = new Set(['once', 'serve']);
@@ -214,8 +214,15 @@ export async function run() {
         }
         resolved = matches[0];
       }
-      await setCurrentProject(resolved.id);
+      // NOTE: we intentionally do NOT call setCurrentProject() here. Writing
+      // the shared global `current` pointer would race with a parallel
+      // `hk2 --project=<other>` process and could later flip this session
+      // onto the other project on reload. Instead we pass the resolved id
+      // into interactive(), which pins it per-session.
       console.error(`Selected project: ${resolved.name} (id=${resolved.id})`);
+      const { interactive } = await import('./commands/interactive.js');
+      await interactive({ projectId: resolved.id });
+      return;
     }
 
     const { interactive } = await import('./commands/interactive.js');

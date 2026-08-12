@@ -145,16 +145,24 @@ async function setProject(rest, ctx) {
     ctx.print(`  /project set exclude <glob1,glob2,...>`);
     return;
   }
-  const cur = await getCurrentProject();
+  // Resolve the project via the session pin (ctx.getCurrentProject) when the
+  // host provides it, falling back to the shared global pointer otherwise.
+  // This keeps /project set/show operating on THIS session's project even
+  // when a parallel `hk2 --project=<other>` has rewritten the global current.
+  const getter = ctx.getCurrentProject || (() => getCurrentProject());
+  const cur = await getter.call(ctx);
   if (!cur) {
     ctx.print(`No current project. Run /project init or /project set current <id> first.`);
     return;
   }
   if (key === 'current') {
-    const target = await setCurrentProject(val);
+    // Switch BOTH the shared global pointer and this session's pin.
+    const switcher = ctx.setCurrentProject || (async (v) => setCurrentProject(v));
+    const target = await switcher.call(ctx, val);
     if (!target) { ctx.print(`Not found: ${val}`); return; }
     ctx.print(`current = ${target.name} (${target.id})`);
-    ctx.noteReloadProject?.();
+    // ctx.setCurrentProject already flagged reload; only flag for the fallback.
+    if (!ctx.setCurrentProject) ctx.noteReloadProject?.();
     return;
   }
   if (key === 'name') {
@@ -203,7 +211,8 @@ async function setProject(rest, ctx) {
 }
 
 async function showProject(ctx) {
-  const cur = await getCurrentProject();
+  const getter = ctx.getCurrentProject || (() => getCurrentProject());
+  const cur = await getter.call(ctx);
   if (!cur) {
     ctx.print(`No current project.`);
     return;

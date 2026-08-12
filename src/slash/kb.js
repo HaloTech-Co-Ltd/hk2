@@ -95,7 +95,12 @@ export async function cmdKb(args, ctx) {
 }
 
 async function getProjectOrFail(ctx) {
-  const p = await getCurrentProject();
+  // Prefer the session-pinned project (ctx.getCurrentProject) over the shared
+  // global current pointer, so parallel `hk2 --project=` sessions don't
+  // cross-resolve onto each other's project. Falls back to the legacy import
+  // when the host doesn't supply ctx.getCurrentProject (e.g. serve / one-shot).
+  const getter = ctx.getCurrentProject || (() => getCurrentProject());
+  const p = await getter.call(ctx);
   if (!p) {
     ctx.print(`No current project. Run /project init or /project set current <id> first.`);
     return null;

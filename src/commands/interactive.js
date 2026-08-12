@@ -53,7 +53,7 @@
  * Reload: project / model / KB changes flag a reload; next prompt redraws state.
  */
 import readline from 'node:readline';
-import { ensureHome, getCurrentProject, resolveDefaultModel, resolveModelRef } from '../../lib/config/home.js';
+import { ensureHome, getCurrentProject, getProject, setCurrentProject, resolveDefaultModel, resolveModelRef } from '../../lib/config/home.js';
 import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
@@ -74,11 +74,18 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { exists } from '../../lib/util/fs_atomic.js';
 
-export async function interactive(opts = {}) {
-  await ensureHome();
-
-  const session = {
+/**
+ * Build a bare session object (no readline / status bar). Shared by
+ * interactive() and the multi-session isolation tests so the pin logic is
+ * exercised against the exact same shape the REPL uses.
+ *
+ * `pinnedProjectId` is null for a bare launch (resolved from global current
+ * on first reload) or a project id for `--project=<...>` launches.
+ */
+export function createSession(pinnedProjectId = null) {
+  return {
     project: null,
+    pinnedProjectId,
     kbMeta: null,
     rt: null,
     llm: null,
@@ -98,36 +105,29 @@ export async function interactive(opts = {}) {
     startedAt: new Date().toISOString(),
     toolCallCount: 0,
     bashSearchCommands: [],
-    // Token usage. Three scopes:
-    //   callIn / callOut       — LATEST single LLM call's tokens (running max
-    //                            within the call; used as the accumulation
-    //                            input for the two broader scopes)
-    //   loopIn / loopOut       — current loop (= one user prompt = one
-    //                            runAgentTurn / runLoop) total. DISPLAYED in
-    //                            the bottom status bar.
-    //   cumIn / cumOut         — cumulative across the whole session (logged)
-    //   cacheRead / cacheCreation — prompt-cache stats (logged only)
-    // callIn/callOut are reset at the start of each LLM stream call via
-    // onTurnStart (which fires per-call inside the agent loop); the previous
-    // call's values are committed to loopIn/loopOut and cumIn/cumOut first.
-    // loopIn/loopOut are reset at the start of each user prompt.
     tokens: { callIn: 0, callOut: 0, loopIn: 0, loopOut: 0, loopPeakIn: 0, loopPeakOut: 0, cumIn: 0, cumOut: 0, cacheRead: 0, cacheCreation: 0 },
-    // Persistent status bar - pinned to the bottom of the terminal
     statusBar: null,
-    phase: 'idle',     // current phase string for the status bar
-    turnStart: 0,      // epoch ms of current turn start (for elapsed display)
-    // Active plan-execution progress, shown as a pinned multi-line block just
-    // above the status bar. null when no plan is active. Set when a plan is
-    // confirmed (confirmPlan); advanced step-by-step by the `plan_step` tool;
-    // cleared when the last step completes or a fresh user prompt arrives.
-    //   { summary, steps: [{ goal, strategy, status }], current }
-    // status is one of 'done' | 'in_progress' | 'pending'.
+    phase: 'idle',
+    turnStart: 0,
     planProgress: null,
-    // Per-turn KB-first guardrail — tracks whether the agent used KB tools
-    // this turn, so we can nudge it away from bash-grep / source-read when
-    // the KB has what it needs.
     kbGuard: new KbFirstGuard(),
   };
+}
+
+export async function interactive(opts = {}) {
+  await ensureHome();
+
+  // Per-session project pin: the project this REPL instance is working on.
+  // Set explicitly via --project (opts.projectId), or snapshotted from the
+  // global `current` pointer on a bare launch. Once pinned, reloads and
+  // slash commands resolve the project from the pin instead of re-reading
+  // the shared projects.json `current` - so two parallel `hk2 --project=X`
+  // processes no longer fight over the global pointer (session A's
+  // /model-use reload can't flip session B onto A's project).
+  // null = not yet resolved (bare launch with no current project).
+  const initialProjectId = opts.projectId || null;
+
+  const session = createSession(initialProjectId);
 
   const ctx = buildCtx(session);
 
@@ -268,7 +268,7 @@ export async function interactive(opts = {}) {
 
 /* ------------------------------------------------------------------ */
 
-function buildCtx(session) {
+export function buildCtx(session) {
   return {
     print: (text) => console.error(text),
     confirm: async (promptText) => {
@@ -377,6 +377,41 @@ function buildCtx(session) {
       session.tokens.cumIn += session.tokens.callIn;
       session.tokens.cumOut += session.tokens.callOut;
     },
+    /**
+     * Resolve the project this session is operating on. Honors the session
+     * pin (set at launch via --project or migrated by setCurrentProject);
+     * only falls back to the shared global `current` when no pin is set
+     * (bare launch with no project chosen yet). Slash commands should call
+     * THIS instead of importing getCurrentProject directly, so two parallel
+     * `hk2 --project=` sessions never cross-resolve onto each other's project.
+     */
+    getCurrentProject: async () => {
+      if (session.pinnedProjectId) {
+        const p = await getProject(session.pinnedProjectId);
+        if (p) return p;
+      }
+      const p = await getCurrentProject();
+      if (p) session.pinnedProjectId = p.id;
+      return p;
+    },
+    /**
+     * Switch this session onto a different project AND update the shared
+     * global `current` pointer (so /project show etc. stay consistent).
+     * Migrating the pin means the switch takes effect in THIS session even
+     * if another parallel process later rewrites the global pointer.
+     * Returns the resolved project record, or null if not found.
+     */
+    setCurrentProject: async (idOrName) => {
+      const target = await setCurrentProject(idOrName);
+      if (target) {
+        session.pinnedProjectId = target.id;
+        session.reloadFlags.project = true;
+        session.reloadFlags.kb = true;
+      }
+      return target;
+    },
+    /** Read-only accessor for the session pin (null when unpinned). */
+    get pinnedProjectId() { return session.pinnedProjectId; },
     noteReloadModels: () => { session.reloadFlags.model = true; },
     noteReloadProject: () => { session.reloadFlags.project = true; session.reloadFlags.kb = true; },
     noteReloadKb: () => { session.reloadFlags.kb = true; },
@@ -440,9 +475,21 @@ function buildCtx(session) {
   };
 }
 
-async function reloadAll(session, ctx, flags = { project: true, kb: true, model: true }) {
+export async function reloadAll(session, ctx, flags = { project: true, kb: true, model: true }) {
   if (flags.project) {
-    session.project = await getCurrentProject();
+    // Resolve the project from the session pin when set, falling back to the
+    // global `current` pointer for a bare launch. The pin is (re)synced after
+    // resolution so a bare launch captures the global current as its pin
+    // (and subsequent global-current churn in another process can't pull
+    // this session onto a different project).
+    let p = null;
+    if (session.pinnedProjectId) {
+      p = await getProject(session.pinnedProjectId);
+    } else {
+      p = await getCurrentProject();
+      if (p) session.pinnedProjectId = p.id;
+    }
+    session.project = p;
     if (session.project && session.project.sourcePath) {
       process.env.HK2_PROJECT_SOURCE = session.project.sourcePath;
     }
