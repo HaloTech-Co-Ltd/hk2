@@ -9,7 +9,7 @@ English | [简体中文](README_zh.md)
 - **Tree-sitter AST parsing**: hk2 uses native tree-sitter grammars for precise symbol extraction across 13+ languages. Falls back to regex-based parsers if grammars are not installed.
 - **Code knowledge graph**: call chains, class hierarchy, imports, and inheritance are stored as a graph under `~/.hk2/kb/<projectId>/graph/`. Traversable via `kb_callchain`, `kb_class`, `kb_refs`, `kb_implements`.
 - **Three-space KB**: every project KB is split into Holy Space (stable design knowledge), Eden Space (frequently-updated catalogs/patterns), and Index Space (BM25 + graph + per-space indexes).
-- **Document parsing**: Markdown, JSON, YAML, HTML, plain text are parsed with stdlib. PDF and Word (.docx) supported via optional `pdf-parse` and `mammoth`. Docs are routed into Eden Space as `doc:<relpath>` entries.
+- **Document parsing**: Markdown, JSON, YAML, HTML, SGML, plain text are parsed with stdlib. PDF and Word (.docx) supported via optional `pdf-parse` and `mammoth`. Legacy Office binaries (.doc, .pptx, .ppt) are extracted dependency-free. Docs are routed into Eden Space as `doc:<relpath>` entries.
 - **Per-request knowledge graph**: for each user message, hk2 retrieves related symbols, call chains, class membership, knowledge entries, and docs from the KB, then injects them as context before the LLM responds.
 - **KB-first policy**: the agent always tries KB tools (`kb_search`, `kb_symbol`, `kb_callchain`, `kb_class`, `kb_refs`, `kb_implements`, `kb_knowledge`, etc.) before falling back to `bash grep`/`find`. Mid-turn guardrails detect violations and nudge the agent back to the KB.
 - **Resumable builds**: `/kb init` saves a checkpoint every 100 files (configurable). If interrupted, re-running resumes from the checkpoint — no re-parsing.
@@ -20,7 +20,7 @@ English | [简体中文](README_zh.md)
 ## Requirements
 
 - Node.js >= 18 (Node 20 LTS recommended for Tree-sitter native compatibility)
-- `npm install` for Tree-sitter native bindings (15 language packages)
+- `npm install` for Tree-sitter native bindings (14 language packages)
 
 > **Tree-sitter compatibility note**: very new Node versions (e.g. Node 25+)
 > may have N-API / V8 ABI mismatches with the prebuilt Tree-sitter binaries
@@ -35,7 +35,7 @@ hk2 is not published to npm. Install from source:
 
 ### Option A — install.sh (recommended)
 
-Creates a self-contained copy at `~/.hk2cli`, symlinks `hk2` into your PATH,
+Creates a self-contained copy at `~/.hk2cli`, symlinks `hk2` (and an `hk2cli` alias) into your PATH,
 and runs `npm install` to build Tree-sitter native bindings.
 
 ```bash
@@ -43,7 +43,7 @@ git clone <repo-url> hk2 && cd hk2
 ./install.sh
 ```
 
-Custom prefix or install location:
+Custom prefix or install location (prefix also settable via the `HK2_PREFIX` env var):
 
 ```bash
 ./install.sh --prefix=$HOME/.local
@@ -409,14 +409,16 @@ Updates live during streaming, tool calls, and phase transitions.
 | `HK2_KB_DIR` | Override KB root | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |
 | `HK2_PROJECT_SOURCE` | Project source root for tool sandbox (set automatically in interactive mode) | - |
+| `HK2_PREFIX` | Install prefix used by `install.sh` for the `hk2` / `hk2cli` symlinks | `/usr/local` |
+| `HK2_INSTALL_DIR` | Self-contained copy location used by `install.sh` | `~/.hk2cli` |
 | `HK2_ENABLE_QUERYREWRITE` | When 1, hk2 uses an LLM call to rewrite each user query to English function names + keywords before BM25 retrieval (both at turn start and on each `kb_search` tool call). | `1` |
 | `HK2_ENABLE_REQUEST_ASSESS` | When 1 (and `HK2_ENABLE_QUERYREWRITE=1`), hk2 first asks the LLM whether a user request is clear. If not, it surfaces the unclear aspects plus candidate interpretations as a numbered menu (with a free-text "something else" option) and feeds the chosen clarification back into the query rewrite. Active only in interactive TTY mode; one bounded round. Best-effort: any failure falls through to the normal rewrite. | `1` |
-| `HK2_PLAN_NEED_CONFIRM` | (Deprecated / no-op) Planning is now LLM-driven: the system prompt instructs the agent to act as its own triage assistant and call the `plan` tool when it decides a task is complex enough to need a user-confirmed plan. The `plan` tool surfaces the proposed plan for per-step strategy selection. This flag is retained only for backward compatibility and has no effect. | `1` |
-| `HK2_ENABLE_AUTO_UPDATEKB` | When 1, hk2 silently runs an incremental `/kb update` (Index Space) at end of any turn where the agent fell back to bash to search source files. | `0` |
+| `HK2_ENABLE_AUTOUPDATEKB` | When 1, hk2 silently runs an incremental `/kb update` (Index Space) at end of any turn where the agent fell back to bash to search source files. | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | When 1, hk2 silently asks the model to extract a reusable knowledge entry from the just-finished conversation and saves it to Eden Space. Holy Space ALWAYS prompts y/N regardless of this flag. | `0` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | Save `/kb init` checkpoint every N files | `100` |
-| `HK2_KB_RESUME` | When 1, `/kb init` resumes from an existing checkpoint | `1` |
 | `HK2_DEBUG` | Print error stacks | - |
+| `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |
+| `HK2_ASCII` | When 1, force ASCII fallbacks for box-drawing / spinner / icons instead of UTF-8 glyphs (useful on non-UTF-8 terminals). | - |
 | `ANTHROPIC_API_KEY` | Auto-creates an `anthropic` provider on first init | - |
 | `OPENAI_API_KEY` | Auto-creates an `openai` provider on first init | - |
 
@@ -431,6 +433,13 @@ hk2 --mode=build-kb
 
 # Incrementally update the KB
 hk2 --mode=update-kb
+
+# Enter the REPL with a specific project pre-selected
+hk2 --project=myapp                       # by name
+hk2 --project-id=8ce5c38d-214c-4e0d-8ed1-30045dd3c99d   # by UUID
+
+# List all registered projects and exit (current marked with '*')
+hk2 --project-list
 
 # Legacy REPL (command-style, no agent loop)
 hk2 --run-mode=serve
@@ -480,7 +489,7 @@ hk2/
 │   ├── parser/
 │   │   ├── ast.js             # AST dispatcher (tree-sitter → regex fallback)
 │   │   ├── ts_parser.js       # Tree-sitter multi-language parser
-│   │   ├── doc_parser.js      # Document parser (md/json/yaml/html/pdf/docx)
+│   │   ├── doc_parser.js      # Document parser (md/json/yaml/html/sgml/pdf/docx/doc/pptx/ppt)
 │   │   ├── c_parser.js        # Legacy C parser (fallback)
 │   │   ├── ylex_parser.js     # Legacy Y/L parser (fallback)
 │   │   └── generic_parser.js  # Legacy regex parser for other languages (fallback)

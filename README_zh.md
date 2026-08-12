@@ -9,7 +9,7 @@
 - **Tree-sitter AST 解析**：hk2 使用原生 tree-sitter 语法对 13+ 种语言精确提取符号。若未安装对应语法，则回退到基于正则的解析器。
 - **代码知识图谱**：调用链、类继承关系、导入与继承关系以图谱形式存储于 `~/.hk2/kb/<projectId>/graph/` 之下，可通过 `kb_callchain`、`kb_class`、`kb_refs`、`kb_implements` 遍历。
 - **三空间知识库**：每个项目的知识库被划分为 Holy Space（稳定的设计知识）、Eden Space（频繁更新的目录/模式）与 Index Space（BM25 + 图谱 + 各空间索引）。
-- **文档解析**：Markdown、JSON、YAML、HTML、纯文本使用标准库解析；PDF 与 Word（.docx）通过可选的 `pdf-parse` 与 `mammoth` 支持。文档以 `doc:<relpath>` 条目形式归入 Eden Space。
+- **文档解析**：Markdown、JSON、YAML、HTML、SGML、纯文本使用标准库解析；PDF 与 Word（.docx）通过可选的 `pdf-parse` 与 `mammoth` 支持；旧版 Office 二进制（.doc、.pptx、.ppt）采用无依赖方式提取。文档以 `doc:<relpath>` 条目形式归入 Eden Space。
 - **按请求构建知识图谱**：对每条用户消息，hk2 会从知识库中检索相关符号、调用链、类成员、知识条目与文档，并在 LLM 响应前将其作为上下文注入。
 - **知识库优先策略**：代理总是优先使用知识库工具（`kb_search`、`kb_symbol`、`kb_callchain`、`kb_class`、`kb_refs`、`kb_implements`、`kb_knowledge` 等），再回退到 `bash grep`/`find`。中途的守卫逻辑会检测违规行为并将代理引导回知识库。
 - **可恢复构建**：`/kb init` 每处理 100 个文件保存一次检查点（可配置）。若被中断，重新运行会从检查点恢复，无需重新解析。
@@ -20,7 +20,7 @@
 ## 环境要求
 
 - Node.js >= 18（推荐 Node 20 LTS，以获得最佳的 tree-sitter 原生兼容性）
-- 运行 `npm install` 以安装 tree-sitter 原生绑定（15 个语言包）
+- 运行 `npm install` 以安装 tree-sitter 原生绑定（14 个语言包）
 
 > **Tree-sitter 兼容性提示**：过新的 Node 版本（如 Node 25+）
 > 在某些平台上可能与预编译的 tree-sitter 二进制存在 N-API / V8 ABI 不匹配。
@@ -34,14 +34,14 @@ hk2 未发布到 npm。请从源码安装：
 
 ### 方式 A——install.sh（推荐）
 
-在 `~/.hk2cli` 创建一份自包含副本，把 `hk2` 通过符号链接加入 PATH，并运行 `npm install` 构建 tree-sitter 原生绑定。
+在 `~/.hk2cli` 创建一份自包含副本，把 `hk2`（及 `hk2cli` 别名）通过符号链接加入 PATH，并运行 `npm install` 构建 tree-sitter 原生绑定。
 
 ```bash
 git clone <repo-url> hk2 && cd hk2
 ./install.sh
 ```
 
-自定义安装前缀或安装位置：
+自定义安装前缀或安装位置（前缀也可通过 `HK2_PREFIX` 环境变量设置）：
 
 ```bash
 ./install.sh --prefix=$HOME/.local
@@ -407,14 +407,16 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
 | `HK2_PROJECT_SOURCE` | 工具沙箱的项目源码根（交互模式下自动设置） | - |
+| `HK2_PREFIX` | `install.sh` 用于放置 `hk2` / `hk2cli` 符号链接的安装前缀 | `/usr/local` |
+| `HK2_INSTALL_DIR` | `install.sh` 创建的自包含副本位置 | `~/.hk2cli` |
 | `HK2_ENABLE_QUERYREWRITE` | 为 1 时，hk2 会在 BM25 检索前（每轮开始及每次 `kb_search` 工具调用时）用一次 LLM 调用将用户查询重写为英文函数名 + 关键词。 | `1` |
 | `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
-| `HK2_PLAN_NEED_CONFIRM` | （已弃用 / 无效）规划现已由 LLM 驱动：系统提示指示代理充当自身的分流助手，并在判定任务足够复杂、需要用户确认的计划时调用 `plan` 工具。`plan` 工具会呈现该计划供逐步选择策略。此标志仅为向后兼容而保留，无任何效果。 | `1` |
-| `HK2_ENABLE_AUTO_UPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
+| `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden Space。无论此标志如何，Holy Space 始终提示 y/N。 | `0` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
-| `HK2_KB_RESUME` | 为 1 时，`/kb init` 从已有检查点恢复 | `1` |
 | `HK2_DEBUG` | 打印错误堆栈 | - |
+| `HK2_NO_COLOR` | 为 1 时禁用 ANSI 颜色（亦遵从标准 `NO_COLOR` 环境变量）。 | - |
+| `HK2_ASCII` | 为 1 时，强制使用 ASCII 字符替代 UTF-8 的制表/加载动画/图标（适用于非 UTF-8 终端）。 | - |
 | `ANTHROPIC_API_KEY` | 首次初始化时自动创建 `anthropic` 提供商 | - |
 | `OPENAI_API_KEY` | 首次初始化时自动创建 `openai` 提供商 | - |
 
@@ -429,6 +431,13 @@ hk2 --mode=build-kb
 
 # 增量更新知识库
 hk2 --mode=update-kb
+
+# 以预选的指定项目进入 REPL
+hk2 --project=myapp                       # 按名称
+hk2 --project-id=8ce5c38d-214c-4e0d-8ed1-30045dd3c99d   # 按 UUID
+
+# 列出所有已注册的项目并退出（当前项目标记为 '*'）
+hk2 --project-list
 
 # 旧版 REPL（命令式，无代理循环）
 hk2 --run-mode=serve
@@ -478,7 +487,7 @@ hk2/
 │   ├── parser/
 │   │   ├── ast.js             # AST 分发器（tree-sitter -> 正则回退）
 │   │   ├── ts_parser.js       # tree-sitter 多语言解析器
-│   │   ├── doc_parser.js      # 文档解析器（md/json/yaml/html/pdf/docx）
+│   │   ├── doc_parser.js      # 文档解析器（md/json/yaml/html/sgml/pdf/docx/doc/pptx/ppt）
 │   │   ├── c_parser.js        # 旧版 C 解析器（回退）
 │   │   ├── ylex_parser.js     # 旧版 Y/L 解析器（回退）
 │   │   └── generic_parser.js  # 其他语言的旧版正则解析器（回退）
