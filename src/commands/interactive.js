@@ -62,6 +62,7 @@ import { buildKbStats, fallbackKind } from '../../lib/agent/kb_stats.js';
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
 import { reviewPlan } from '../../lib/agent/plan_review.js';
+import { reviewCode, buildCodeReviewContent } from '../../lib/agent/code_review.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -75,6 +76,7 @@ import { renderLogo } from '../../lib/agent/logo.js';
 import { MarkdownStream } from '../../lib/agent/markdown.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 import { VERSION } from '../version.js';
@@ -121,6 +123,11 @@ export function createSession(pinnedProjectId = null) {
     phase: 'idle',
     turnStart: 0,
     planProgress: null,
+    // Set when the agent confirms a plan this turn (planConfirm callback). Used
+    // to decide whether the end-of-turn Code Review step should run. lastPlanText
+    // is the confirmed plan text, captured for the code-review prompt.
+    hadPlanThisTurn: false,
+    lastPlanText: null,
     // In-session task context for interruption recovery. Updated at the start
     // of each turn with the user's request + a text snapshot of the live plan
     // progress. When the user types "请继续/continue" after an interruption,
@@ -1187,9 +1194,187 @@ async function confirmClarification(assessment, session) {
   return assessment.interpretations[choice.index];
 }
 
+/**
+ * Set session.phase + refresh the status bar, swallowing errors so callers can
+ * use it in best-effort finally blocks (e.g. the Code Review teardown).
+ */
+function setPhaseSafe(session, phase) {
+  try {
+    session.phase = phase;
+    session.statusBar?.update();
+  } catch { /* ignore */ }
+}
+
+/**
+ * Run an external command and resolve with { ok, out }. Never rejects - a
+ * non-zero exit or spawn failure resolves with ok:false so callers can degrade
+ * gracefully (used by Code Review to collect a working-tree diff).
+ */
+function execFileAsync(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { ...opts, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+      resolve({ ok: !err, out: (stdout || '').toString() });
+    });
+  });
+}
+
+/**
+ * Collect the working-tree result of a plan execution for Code Review: the
+ * tracked diff (staged + unstaged vs HEAD) plus the contents of untracked text
+ * files (new files the assistant wrote, which `git diff HEAD` does not cover),
+ * and a list of changed files. Best-effort - returns empty fields when git is
+ * unavailable or the project path isn't a git repo.
+ */
+export async function collectWorkingTreeDiff(sourcePath) {
+  const empty = { diffText: '', changedFiles: [] };
+  if (!sourcePath) return empty;
+  try {
+    // NOTE: `-C <path>` is a GLOBAL git option and MUST come BEFORE the
+    // subcommand. `git status --porcelain -C <path>` fails with
+    // "unknown switch `C'" (exit 129), which silently emptied changedFiles
+    // and skipped untracked-file collection entirely.
+    const [diffRes, statusRes, untrackedRes] = await Promise.all([
+      execFileAsync('git', ['-C', sourcePath, 'diff', 'HEAD', '--unified=3']),
+      execFileAsync('git', ['-C', sourcePath, 'status', '--porcelain']),
+      execFileAsync('git', ['-C', sourcePath, 'ls-files', '--others', '--exclude-standard']),
+    ]);
+    if (!diffRes.ok && !statusRes.ok) return empty;
+
+    // Porcelain lines are "XY <path>" (2 status cols + 1 space). Renames are
+    // "R  old -> new": keep the destination. Paths with special chars are
+    // C-quoted by git: strip the surrounding quotes.
+    const changedFiles = statusRes.ok
+      ? statusRes.out.split('\n').map((l) => {
+          let f = l.slice(3).trim();
+          if (f.startsWith('"') && f.endsWith('"')) f = f.slice(1, -1);
+          const arrow = f.indexOf(' -> ');
+          if (arrow >= 0) f = f.slice(arrow + 4);
+          return f;
+        }).filter((f) => f.trim())
+      : [];
+
+    let diffText = diffRes.ok ? diffRes.out : '';
+
+    // Include new (untracked) files, which `git diff HEAD` does not cover.
+    if (untrackedRes.ok && untrackedRes.out.trim()) {
+      const newFiles = untrackedRes.out.split('\n').map((f) => f.trim()).filter(Boolean);
+      for (const f of newFiles.slice(0, 50)) {
+        try {
+          const abs = path.join(sourcePath, f);
+          const stat = await fs.stat(abs);
+          if (!stat.isFile()) continue;
+          // Cap each new file's body so a single huge generated file can't blow
+          // up the review prompt (buildCodeReviewContent truncates again later).
+          const content = (await fs.readFile(abs, 'utf8')).slice(0, 16000);
+          const lines = content.split('\n');
+          if (lines[lines.length - 1] === '') lines.pop(); // trailing newline
+          diffText += `\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n` + content;
+        } catch { /* skip unreadable / binary files */ }
+      }
+    }
+
+    return { diffText, changedFiles };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * End-of-turn Code Review (HK2_ENABLE_CODEREVIEW, default 0). Runs after the
+ * agent finishes executing a plan and the plan block has been finalized. It
+ * collects the working-tree result (diff + changed files) and the final answer,
+ * reviews them with a configurable phase model
+ * (`/model set-phase --phase=code-review`), and prints any issues one-by-one.
+ * Best-effort: any failure is reported and the turn ends normally.
+ */
+async function runCodeReview(session, ctx, { planText, assistantText, resolvePhaseLlm, signal, progress }) {
+  if (!session.llm) return;
+
+  // Resolve a per-phase model override for the code-review phase; fall back to
+  // the session model when unset or unresolvable (matching plan-review).
+  let reviewLlm = session.llm;
+  let usingPhaseModel = false;
+  try {
+    const phaseLlm = await resolvePhaseLlm('code-review');
+    if (phaseLlm) { reviewLlm = phaseLlm; usingPhaseModel = true; }
+  } catch (err) {
+    ctx.print(`[warn] could not resolve phase model for code-review, using session model: ${err.message}`);
+  }
+
+  const reviewModelLabel = usingPhaseModel
+    ? (getPhaseModelRef(session.project, 'code-review') || 'code-review phase model')
+    : 'session model';
+
+  // Explicitly show that a Code Review is running AND what it is reviewing.
+  ctx.print('');
+  ctx.print(style.accent(style.bold('Code Review')));
+  ctx.print(style.dim(`  Reviewing the completed plan result with ${reviewModelLabel}...`));
+  ctx.print(style.dim('  Checks: correctness, completeness, quality, and consistency of the changes.'));
+
+  // Collect the result of the execution: the working-tree diff + changed files.
+  const { diffText, changedFiles } = await collectWorkingTreeDiff(session.project?.sourcePath);
+  ctx.print(style.dim(
+    changedFiles.length > 0
+      ? `  Files changed (${changedFiles.length}): ${changedFiles.slice(0, 12).join(', ')}${changedFiles.length > 12 ? '...' : ''}`
+      : '  Files changed: (none detected - reviewing the plan and final answer only)'
+  ));
+
+  // Show a live "review in progress" indicator while the LLM review runs.
+  // progress.done() has already run for the agent loop, so restart the spinner
+  // for this phase and pause it before printing the result (mirroring the
+  // plan-review UX). In non-TTY mode ProgressIndicator prints a one-line phase
+  // header instead, which keeps the wait visible in piped runs too.
+  let started = false;
+  try {
+    progress.nextPhase('reviewing code');
+    started = true;
+    setPhaseSafe(session, 'reviewing code');
+  } catch { /* progress already finalized - status bar still shows the phase */ }
+
+  try {
+    const reviewText = buildCodeReviewContent({
+      planText: planText || '',
+      changedFiles,
+      diffText,
+      answerText: assistantText || '',
+    });
+    const result = await reviewCode(reviewLlm, reviewText, { signal });
+    await session.transcript?.logMeta('codeReview', {
+      ok: result.ok,
+      issueCount: result.issues ? result.issues.length : 0,
+      changedFileCount: changedFiles.length,
+      phaseModelRef: usingPhaseModel ? (getPhaseModelRef(session.project, 'code-review') || null) : null,
+    });
+
+    if (result.ok || !result.issues || result.issues.length === 0) {
+      ctx.print(style.dim('  Code review complete - no issues found.'));
+    } else {
+      ctx.print(style.warning(`  Code review found ${result.issues.length} issue(s):`));
+      result.issues.forEach((issue, i) => {
+        ctx.print('');
+        ctx.print(style.warning(style.bold(`  Issue ${i + 1}: ${issue.title}`)));
+        if (issue.detail) ctx.print(style.dim(`    ${issue.detail}`));
+        if (issue.suggestion) ctx.print(`    ${style.bold('Suggestion:')} ${issue.suggestion}`);
+      });
+    }
+  } catch (err) {
+    ctx.print(`[warn] code review failed: ${err.message}`);
+  } finally {
+    if (started) {
+      try { progress.pause(); } catch { /* ignore */ }
+    }
+    setPhaseSafe(session, 'idle');
+  }
+}
+
 async function runAgentTurn(userText, session, ctx, opts = {}) {
   const progress = new ProgressIndicator();
   session.turnStart = Date.now();
+  // Track whether a plan was already active when this turn started, so the
+  // end-of-turn Code Review can run on the turn that COMPLETES a multi-turn
+  // plan (not only the turn that first confirmed the plan via the plan tool).
+  const planActiveAtStart = !!session.planProgress;
+  session.hadPlanThisTurn = false;
   const setPhase = (p) => {
     session.phase = p;
     session.statusBar?.update();
@@ -1479,6 +1664,10 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       progress.pause();
       const confirmed = await confirmPlan(plan, session);
       if (confirmed === null) return null; // user cancelled the plan itself
+      // Record that a plan was confirmed this turn and keep the finalized plan
+      // text so the end-of-turn Code Review can compare the result against it.
+      session.hadPlanThisTurn = true;
+      session.lastPlanText = confirmed;
       if (!envFlag('HK2_ENABLE_PLANREVIEW', 0) || !session.llm) return confirmed;
       // Resolve a per-phase model override for the plan-review phase; fall
       // back to the session model when unset or unresolvable (with a warn,
@@ -1911,6 +2100,25 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     if (!session.planProgress) {
       session.lastTask = null;
       await clearTaskState(session.project?.id);
+    }
+
+    // ---- Code Review (HK2_ENABLE_CODEREVIEW, default 0) -------------------
+    // After a plan completes, review the ENTIRE result (working-tree diff +
+    // final answer) for correctness / completeness / quality. Runs only when
+    // the plan is actually complete (planProgress cleared) AND a plan was
+    // involved this turn: either confirmed this turn, or a multi-turn plan that
+    // was already active at turn start. A plan confirmed but still mid-flight
+    // keeps planProgress non-null and does NOT trigger review. Best-effort;
+    // never blocks the turn.
+    const planCompleted = !session.planProgress && (session.hadPlanThisTurn || planActiveAtStart);
+    if (envFlag('HK2_ENABLE_CODEREVIEW', 0) && session.llm && planCompleted) {
+      await runCodeReview(session, ctx, {
+        planText: session.lastPlanText || '',
+        assistantText,
+        resolvePhaseLlm,
+        signal: abortCtrl.signal,
+        progress,
+      });
     }
   } catch (err) {
     progress.done();
