@@ -122,6 +122,10 @@ export function createSession(pinnedProjectId = null) {
     statusBar: null,
     phase: 'idle',
     turnStart: 0,
+    // Last measured context size (input tokens) of the most recent completed
+    // turn. Snapshotted from loopPeakIn/callIn at end-of-turn (those get reset
+    // at the next turn start) and used by auto context compaction.
+    lastContextTokens: 0,
     planProgress: null,
     // Set when the agent confirms a plan this turn (planConfirm callback). Used
     // to decide whether the end-of-turn Code Review step should run. lastPlanText
@@ -1375,6 +1379,13 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   // plan (not only the turn that first confirmed the plan via the plan tool).
   const planActiveAtStart = !!session.planProgress;
   session.hadPlanThisTurn = false;
+
+  // ---- Auto context compaction (safe turn boundary) ------------------------
+  // Runs before any rewrite/retrieval/agent work so it never interrupts an
+  // in-flight action. Uses the context size snapshotted at the previous turn's
+  // end (session.lastContextTokens), falling back to a chars→tokens estimate.
+  await maybeAutoCompact(session, ctx);
+
   const setPhase = (p) => {
     session.phase = p;
     session.statusBar?.update();
@@ -2156,6 +2167,13 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     }
   } finally {
     if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
+    // Snapshot the last measured context size (peak single-call input tokens)
+    // for the next turn's auto-compaction threshold check. loopPeakIn/callIn
+    // are reset at the start of the next turn, so this is the only point that
+    // still holds the exact value from the just-finished turn. Runs on both
+    // success and error/interrupt so a partial turn still leaves a usable
+    // measurement.
+    session.lastContextTokens = Math.max(session.tokens.loopPeakIn, session.tokens.callIn);
   }
 }
 
@@ -2183,8 +2201,55 @@ function stripDanglingToolUse(messages) {
 }
 
 /**
- * Naive context compaction: keep system + last N messages, summarize earlier
- * ones into a single system message via the LLM.
+ * Summarize a list of prior messages into a compact brief using the LLM so the
+ * compressed context retains as much task-relevant information as possible.
+ *
+ * Includes tool results (file contents, bash output, KB hits) because those
+ * carry the real work product; a raw user/assistant dump loses them entirely.
+ * The caller falls back to naive truncation on any LLM error.
+ */
+async function summarizeConversation(llm, messages) {
+  const parts = [];
+  for (const m of messages) {
+    let body = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+    if (m.role === 'tool') {
+      body = `tool_result(${m.tool_call_id || '?'}): ${body}`;
+    } else if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) {
+        body += `\n[tool_call ${tc.name}] ${typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments || {})}`;
+      }
+    }
+    parts.push(`${m.role.toUpperCase()}: ${body}`);
+  }
+  const raw = parts.join('\n\n');
+  // Cap the summarizer input so the summary call itself stays well within the
+  // model context window (keep the most recent, most relevant tail).
+  const input = raw.length > 48000 ? raw.slice(raw.length - 48000) : raw;
+  const summary = await llm.complete([
+    {
+      role: 'system',
+      content: 'You are a context-compaction assistant for an AI coding agent. Produce a dense, faithful summary that preserves everything the agent needs to continue: the user\'s goal, decisions made, completed work, files changed and their paths, code locations, constraints, errors and fixes, and any pending plan steps. Do not invent facts; if a detail is unclear, say "unclear".',
+    },
+    {
+      role: 'user',
+      content: `Summarize the following prior conversation into a compact brief the agent can use as background context:\n\n${input}`,
+    },
+  ], {
+    maxChars: 12000,
+    temperature: 0.1,
+    enableReasoning: false,
+    timeoutMs: 60000,
+  });
+  return (summary || '').trim();
+}
+
+/**
+ * Context compaction: keep system + last N user/assistant turns verbatim,
+ * summarize earlier ones (plus their tool results) into a single system message
+ * via the LLM. Falls back to naive truncation if the LLM is unavailable or
+ * errors. Preserves the leading system messages and any tool results that pair
+ * with the retained tail (Anthropic requires every kept assistant tool_use to
+ * be followed by its tool_result).
  *
  * Returns null if there are too few messages to compact.
  */
@@ -2195,8 +2260,6 @@ async function compactMessages(session) {
   const keep = 4;   // keep the last 4 user/assistant turns verbatim
   const toCompact = conversation.slice(0, conversation.length - keep);
   const kept = conversation.slice(conversation.length - keep);
-
-  const summaryText = toCompact.map(m => `${m.role.toUpperCase()}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`).join('\n\n');
 
   // IMPORTANT: Anthropic requires every assistant tool_use to be immediately
   // followed by its tool_result. We must NOT drop a `tool` message whose
@@ -2218,17 +2281,87 @@ async function compactMessages(session) {
     return session.messages.indexOf(firstKept);
   })();
 
-  // Build a fresh message list: leading non-conversation messages (system),
-  // the summary, then the kept tail WITH its matching tool results preserved.
+  // Classify the leading (pre-keptStart) system messages so compaction is
+  // self-stabilizing across repeated auto-compacts, instead of stacking one
+  // overlapping summary on top of another:
+  //   - PRESERVE verbatim: the main system prompt + any other standing system
+  //     messages (these carry persistent instructions, not turn-scoped state).
+  //   - FOLD into the summary: a prior compaction's `## Prior conversation
+  //     (compacted)` summary (it is superseded once re-summarized alongside
+  //     the newer turns) and every turn-scoped `## Knowledge-base context for
+  //     this turn` injection (those are stale by definition once their turn is
+  //     compacted). Folding keeps the single compressed summary complete.
+  const COMPACTED_HDR = '## Prior conversation (compacted)';
+  const KBCONTEXT_HDR = '## Knowledge-base context for this turn';
+  const foldable = new Set();
+  const leadingSystem = [];
+  if (keptStart >= 0) {
+    for (let i = 0; i < keptStart; i++) {
+      const m = session.messages[i];
+      if (m.role !== 'system') continue;
+      leadingSystem.push(m);
+      const c = typeof m.content === 'string' ? m.content : '';
+      if (c.startsWith(COMPACTED_HDR) || c.startsWith(KBCONTEXT_HDR)) {
+        foldable.add(m);
+      }
+    }
+  }
+
+  // Collect the tool results that pair with the compacted (dropped) assistant
+  // turns. They carry the real file/bash/KB output and must be fed to the
+  // summarizer rather than silently discarded.
+  const compactedToolResults = [];
+  if (keptStart >= 0) {
+    for (let i = 0; i < keptStart; i++) {
+      const m = session.messages[i];
+      if (m.role === 'tool' && m.tool_call_id && !keptToolCallIds.has(m.tool_call_id)) {
+        compactedToolResults.push(m);
+      }
+    }
+  }
+
+  // Merge the compacted user/assistant turns with their tool results AND any
+  // foldable leading system messages (prior summaries + stale per-turn KB
+  // context), in their original conversation order.
+  const toSummarize = [...toCompact, ...compactedToolResults, ...leadingSystem.filter(m => foldable.has(m))].sort((a, b) => {
+    const ia = session.messages.indexOf(a);
+    const ib = session.messages.indexOf(b);
+    return (ia < 0 ? 0 : ia) - (ib < 0 ? 0 : ib);
+  });
+
+  let summaryText = null;
+  if (session.llm) {
+    try {
+      summaryText = await summarizeConversation(session.llm, toSummarize);
+    } catch {
+      summaryText = null;
+    }
+  }
+  if (!summaryText) {
+    // Naive fallback: concatenate + truncate, now including tool results so we
+    // don't silently drop them.
+    summaryText = toSummarize
+      .map(m => `${m.role.toUpperCase()}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+      .join('\n\n');
+  }
+
+  // Build a fresh message list: leading standing system messages (the main
+  // system prompt etc.), the new summary, then the kept tail WITH its matching
+  // tool results preserved. Foldable leading system messages (prior
+  // compaction summaries + stale per-turn KB context) are NOT copied verbatim
+  // — they were folded into the summary above, so the compressed history stays
+  // a single coherent block instead of stacking across repeated compactions.
+  // `tool` messages before keptStart are likewise dropped (summarized above).
   const newMessages = [];
   for (let i = 0; i < (keptStart >= 0 ? keptStart : session.messages.length); i++) {
     const m = session.messages[i];
-    if (m.role === 'user' || m.role === 'assistant') continue;
+    if (m.role === 'user' || m.role === 'assistant' || m.role === 'tool') continue;
+    if (foldable.has(m)) continue;  // superseded by the new summary below
     newMessages.push(m);
   }
   newMessages.push({
     role: 'system',
-    content: `## Prior conversation (compacted)\nThe following is a summary of the previous ${toCompact.length} messages. Treat it as background context.\n\n${summaryText.slice(0, 4000)}${summaryText.length > 4000 ? '...(truncated)' : ''}\n`,
+    content: `## Prior conversation (compacted)\nThe following is a summary of the previous ${toCompact.length} messages (and their tool results). Treat it as background context.\n\n${summaryText.slice(0, 12000)}${summaryText.length > 12000 ? '...(truncated)' : ''}\n`,
   });
   if (keptStart >= 0) {
     for (let i = keptStart; i < session.messages.length; i++) {
@@ -2248,12 +2381,78 @@ async function compactMessages(session) {
 }
 
 /**
+ * Auto context compaction (HK2_ENABLE_AUTOCOMPACT, default 0): if the last
+ * measured context size reached HK2_AUTOCOMPACT_PCTUSED% (default 90) of the
+ * model's context window, compact the prior conversation at the turn boundary
+ * so an in-flight turn is never interrupted.
+ *
+ * Runs only at the start of a new turn (before rewrite/retrieval/agent work),
+ * using the snapshot captured at the previous turn's end. The tolerance comes
+ * from only checking at this safe boundary — never mid-loop.
+ */
+async function maybeAutoCompact(session, ctx) {
+  if (!envFlag('HK2_ENABLE_AUTOCOMPACT', 0)) return;
+  const windowTokens = session.modelCfg?.maxChars || 0;
+  if (!windowTokens) return;
+
+  const pctUsed = envPercent('HK2_AUTOCOMPACT_PCTUSED', 90);
+  const threshold = Math.floor(windowTokens * pctUsed / 100);
+  const current = session.lastContextTokens || estimateMessagesTokens(session.messages);
+  if (current < threshold) return;
+
+  const out = await compactMessages(session);
+  if (!out) return;
+
+  session.messages = out.messages;
+  session.lastContextTokens = estimateMessagesTokens(session.messages);
+  await session.transcript?.logMeta('auto-compact', {
+    beforeTokens: current,
+    afterTokens: session.lastContextTokens,
+    threshold,
+    pctUsed,
+    dropped: out.dropped,
+    kept: out.kept,
+  });
+  ctx.print(`[auto-compact] context ${fmtTok(current)} ≥ ${fmtTok(threshold)} (${pctUsed}% of ${fmtTok(windowTokens)}) → compacted ${out.dropped} messages, kept ${out.kept}.`);
+}
+
+/**
  * Parse a 0/1 env flag. Returns defaultValue if unset; treats 0/no/false/off as false.
  */
 function envFlag(name, defaultValue = 0) {
   const v = process.env[name];
   if (v === undefined || v === null || v === '') return !!defaultValue;
   return /^(1|yes|true|on)$/i.test(v.trim());
+}
+
+/**
+ * Parse an integer-percentage env var (0-100). Returns defaultValue if unset,
+ * unparseable, or out of range (clamped to 1..100 so 0 can't disable the check
+ * by accident).
+ */
+function envPercent(name, defaultValue = 90) {
+  const v = process.env[name];
+  if (v === undefined || v === null || v === '') return defaultValue;
+  const n = Number.parseInt(String(v).trim(), 10);
+  if (!Number.isFinite(n)) return defaultValue;
+  return Math.max(1, Math.min(100, n));
+}
+
+/**
+ * Estimate the input-token size of a message list (chars → tokens, ~4 chars
+ * per token). Used as the fallback when the provider hasn't reported a real
+ * usage value for the last call.
+ */
+function estimateMessagesTokens(messages) {
+  let chars = 0;
+  for (const m of messages || []) {
+    if (typeof m.content === 'string') chars += m.content.length;
+    else if (m.content) chars += JSON.stringify(m.content).length;
+    if (Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls) chars += JSON.stringify(tc).length;
+    }
+  }
+  return estimateTokensFromChars(chars);
 }
 
 // Note: bash search detection lives in lib/agent/tools.js's KbFirstGuard

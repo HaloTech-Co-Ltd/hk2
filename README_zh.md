@@ -447,6 +447,8 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_ENABLE_CODEREVIEW` | 为 1 时，整个计划执行完成后，hk2 会对完成结果（工作区 diff、变更文件、代理的最终总结）执行一步 Code Review，检查正确性、完整性与质量，并将发现的问题逐一列出，给出详细说明与建议。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都会被报告，本轮仍正常结束。 | `0` |
 | `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden Space。无论此标志如何，Holy Space 始终提示 y/N。 | `0` |
+| `HK2_ENABLE_AUTOCOMPACT` | 为 1 时，当已使用的上下文长度达到模型上下文窗口的 `HK2_AUTOCOMPACT_PCTUSED`% 后，hk2 会在下一轮开始时自动压缩历史对话。压缩会原样保留最近 4 轮 user/assistant，并将其之前的对话（含工具结果）用 LLM 总结为一条 system 消息；LLM 失败时回退为朴素截断。仅在轮次边界触发，绝不中断正在进行的动作。 | `0` |
+| `HK2_AUTOCOMPACT_PCTUSED` | 1-100 的整数，上下文使用率触发阈值。仅当已使用的上下文长度 ≥ `模型上下文窗口 × HK2_AUTOCOMPACT_PCTUSED / 100` 时才触发自动压缩。 | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
 | `HK2_INDEX_PARALLEL` | KB 索引解析池的并行度（`/kb init` / `/kb update`）。`0` 或未设置 = 自动（取当前系统 CPU 数）；正整数 N 则固定为 N。 | `0` |
 | `HK2_DEBUG` | 打印错误堆栈 | - |
