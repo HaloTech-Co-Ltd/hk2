@@ -267,3 +267,67 @@ test('runAgentTurn resolves a phase LLM for rewrite when the project has an over
   assert.equal(phaseLlm.config?.apiKey, 'sk-b', 'phase LLM uses provider B credentials');
   assert.notEqual(phaseLlm.config?.apiKey, session.llm?.config?.apiKey, 'phase LLM differs from session LLM');
 });
+
+// ---------------------------------------------------------------------------
+// 4. /project show enumerates every supported phase (set + unset)
+// ---------------------------------------------------------------------------
+//
+// Regression for the reported bug: `/project show` only listed the phases that
+// had a SET override, so a project with no plan-review override printed
+// nothing for plan-review. That read as "plan-review config is missing" even
+// though the machinery was fine - it just falls back to the session model.
+// showProject now iterates supportedPhaseNames() so every phase always
+// appears, either with its ref or an explicit "(unset; uses the current
+// session model)" marker.
+
+test('/project show lists every supported phase even when unset', async () => {
+  await seedModels();
+  const p = await makeProject('showunset');
+  // Only set rewrite-query; plan-review is left unset.
+  await setPhaseModelRef(p.id, 'rewrite-query', 'provB/model-b');
+
+  const session = createSession(p.id);
+  const ctx = buildCtx(session);
+  const prints = [];
+  ctx.print = (t) => prints.push(t);
+  await reloadAll(session, ctx);
+
+  await dispatchSlash('/project show', ctx);
+  const phaseLines = prints.filter((s) => /^\s+(rewrite-query|plan-review)\b/.test(s));
+  assert.ok(phaseLines.length >= 2, `expected both phase rows, got: ${JSON.stringify(phaseLines)}`);
+  assert.ok(
+    phaseLines.some((s) => s.includes('rewrite-query') && s.includes('provB/model-b')),
+    `rewrite-query shows its set ref: ${JSON.stringify(phaseLines)}`,
+  );
+  // plan-review was NOT set - it must still appear, marked as unset/fallback.
+  const planReviewLine = phaseLines.find((s) => s.includes('plan-review'));
+  assert.ok(planReviewLine, `plan-review row must always be present: ${JSON.stringify(phaseLines)}`);
+  assert.ok(
+    /unset|session model/i.test(planReviewLine),
+    `unset plan-review marked as fallback: ${JSON.stringify(planReviewLine)}`,
+  );
+});
+
+test('/project show shows both phases as set when both are configured', async () => {
+  await seedModels();
+  const p = await makeProject('showboth');
+  await setPhaseModelRef(p.id, 'rewrite-query', 'provB/model-b');
+  await setPhaseModelRef(p.id, 'plan-review', 'provB/model-b');
+
+  const session = createSession(p.id);
+  const ctx = buildCtx(session);
+  const prints = [];
+  ctx.print = (t) => prints.push(t);
+  await reloadAll(session, ctx);
+
+  await dispatchSlash('/project show', ctx);
+  const phaseLines = prints.filter((s) => /^\s+(rewrite-query|plan-review)\b/.test(s));
+  assert.ok(
+    phaseLines.some((s) => s.includes('rewrite-query') && s.includes('provB/model-b')),
+    `rewrite-query row shows its ref: ${JSON.stringify(phaseLines)}`,
+  );
+  assert.ok(
+    phaseLines.some((s) => s.includes('plan-review') && s.includes('provB/model-b')),
+    `plan-review row shows its ref: ${JSON.stringify(phaseLines)}`,
+  );
+});

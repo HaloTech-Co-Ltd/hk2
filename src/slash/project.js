@@ -56,7 +56,7 @@
 import {
   registerProject, loadProjects,
   getCurrentProject, setCurrentProject, updateProject, removeProject,
-  phaseStorageKeyToCliName,
+  phaseStorageKeyToCliName, supportedPhaseNames,
 } from '../../lib/config/home.js';
 
 export async function cmdProject(args, ctx) {
@@ -230,17 +230,29 @@ async function showProject(ctx) {
   ctx.print(`  kbBuiltAt: ${cur.kbBuiltAt || '(not built, run /kb init)'}`);
   ctx.print(`  createdAt: ${cur.createdAt}`);
   const phaseModels = (cur.phaseModels && typeof cur.phaseModels === 'object' && !Array.isArray(cur.phaseModels)) ? cur.phaseModels : {};
-  // Map internal storage keys (rewriteQuery/planReview) back to the user-facing
-  // CLI phase names (rewrite-query/plan-review) so the displayed labels match
-  // what the user typed into `/model set-phase --phase=...`.
-  const phaseEntries = Object.entries(phaseModels)
-    .map(([key, v]) => [phaseStorageKeyToCliName(key) || key, v])
-    .filter(([, v]) => typeof v === 'string' && v);
-  if (phaseEntries.length) {
-    ctx.print(`  phase models:`);
-    for (const [phase, ref] of phaseEntries) ctx.print(`    ${phase} -> ${ref}`);
-  } else {
-    ctx.print(`  phase models: (none; all phases use the current session model)`);
+  // ALWAYS list every supported phase (rewrite-query, plan-review, ...) so a
+  // phase that hasn't been configured is still VISIBLE as an explicit
+  // "(unset)" row. Previously showProject only iterated the SET entries in
+  // phaseModels, so a project with no plan-review override printed nothing
+  // for plan-review, which read as "plan-review config is missing" even though
+  // the machinery was fine - it just falls back to the session model. Mapping
+  // storage keys back to CLI names is preserved so labels match what the user
+  // typed into `/model set-phase --phase=...`.
+  const configured = new Map();
+  for (const [key, v] of Object.entries(phaseModels)) {
+    if (typeof v === 'string' && v) configured.set(phaseStorageKeyToCliName(key) || key, v);
+  }
+  ctx.print(`  phase models:`);
+  for (const phase of supportedPhaseNames()) {
+    const ref = configured.get(phase);
+    ctx.print(`    ${phase} -> ${ref || '(unset; uses the current session model)'}`);
+  }
+  // Surface any leftover storage keys that aren't in PHASE_KEYS (e.g. a phase
+  // that was renamed/removed upstream) so the data isn't silently hidden.
+  for (const [phase, ref] of configured.entries()) {
+    if (!supportedPhaseNames().includes(phase)) {
+      ctx.print(`    ${phase} -> ${ref}  (unknown phase)`);
+    }
   }
 }
 
