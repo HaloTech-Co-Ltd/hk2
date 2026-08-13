@@ -61,6 +61,7 @@ import { runLoop } from '../../lib/agent/loop.js';
 import { buildKbStats, fallbackKind } from '../../lib/agent/kb_stats.js';
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
+import { reviewPlan } from '../../lib/agent/plan_review.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -1050,6 +1051,57 @@ async function confirmPlan(plan, session) {
 }
 
 /**
+ * Surface Plan Review issues to the user one-by-one for confirmation.
+ *
+ * issues = [{ title, detail, suggestion }] from reviewPlan(). For each issue
+ * we print the title + detail + the reviewer's suggestion, then a numbered
+ * menu: (1) accept the suggestion, (2) dismiss this issue, (3) type your own
+ * resolution. The chosen resolution text is recorded for accepted/typed ones;
+ * dismissed issues contribute nothing. Returns an array of
+ * { title, resolution } for the accepted/typed resolutions (empty when the
+ * user dismissed everything), or null if the user cancelled (Ctrl+D / rl
+ * close) - a null return propagates as a plan cancellation upstream.
+ */
+async function confirmPlanReview(issues, session) {
+  if (!issues || issues.length === 0) return [];
+  const resolutions = [];
+  for (let i = 0; i < issues.length; i++) {
+    const issue = issues[i];
+    const lines = [];
+    lines.push('');
+    lines.push(style.accent(style.bold(`Plan Review - Issue ${i + 1}/${issues.length}: ${issue.title}`)));
+    if (issue.detail) lines.push(style.dim(`  ${issue.detail}`));
+    if (issue.suggestion) {
+      lines.push(`  ${style.bold('1')}. ${style.warning('(accept suggestion)')} ${issue.suggestion}`);
+    } else {
+      // No suggestion from the reviewer: only dismiss / type your own.
+      lines.push(`  ${style.bold('1')}. ${style.dim('(no suggestion from reviewer)')}`);
+    }
+    lines.push(`  ${style.bold('2')}. ${style.dim('dismiss this issue')}`);
+    lines.push(`  ${style.bold('3')}. ${style.dim('type your own resolution')}`);
+    for (const ln of lines) process.stderr.write(ln + '\n');
+
+    const choice = await promptChoice(session, 3);
+    if (choice.cancelled) return null;
+    if (choice.index === 0) {
+      // Accept the reviewer's suggestion (if any). A missing suggestion is
+      // treated as a dismissal so we never record an empty resolution.
+      if (issue.suggestion) {
+        resolutions.push({ title: issue.title, resolution: issue.suggestion });
+      }
+    } else if (choice.index === 2) {
+      // "type your own": the next line is the free-form resolution.
+      const free = await promptLine(session, style.accent('  Your resolution: '));
+      if (free.cancelled) return null;
+      const text = (free.text || '').trim();
+      if (text) resolutions.push({ title: issue.title, resolution: text });
+    }
+    // choice.index === 1 -> dismiss: contributes nothing.
+  }
+  return resolutions;
+}
+
+/**
  * Prompt for a single integer choice in [1..max]. Returns {index, cancelled}.
  * Mirrors ctx.confirm's consumeNext + close handling. Re-prompts on bad input.
  */
@@ -1402,9 +1454,55 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     // selection (confirmPlan) and return the finalized plan. The progress
     // spinner is paused while the interactive menu is on screen so its
     // per-200ms \r refresh does not overwrite the "Choose [1-k]" prompt.
+    //
+    // Plan Review (HK2_ENABLE_PLANREVIEW, default 0): AFTER the user confirms
+    // the plan, if enabled, an LLM reviews the finalized plan for problems.
+    // When the reviewer raises issues, each is surfaced to the user one-by-one
+    // for confirmation (accept the reviewer's suggestion / dismiss / type your
+    // own); the confirmed resolutions are appended to the finalized plan text
+    // returned to the agent. The review model is configurable via
+    // `/model set-phase --phase=plan-review <ref>` (same mechanism as
+    // rewrite-query); when unset it uses the session model. Best-effort: any
+    // failure falls through and returns the already-confirmed plan unchanged.
     planConfirm: async (plan) => {
       progress.pause();
-      return await confirmPlan(plan, session);
+      const confirmed = await confirmPlan(plan, session);
+      if (confirmed === null) return null; // user cancelled the plan itself
+      if (!envFlag('HK2_ENABLE_PLANREVIEW', 0) || !session.llm) return confirmed;
+      // Resolve a per-phase model override for the plan-review phase; fall
+      // back to the session model when unset or unresolvable (with a warn,
+      // matching the rewrite-query phase handling).
+      let reviewLlm = session.llm;
+      try {
+        const phaseLlm = await resolvePhaseLlm('plan-review');
+        if (phaseLlm) reviewLlm = phaseLlm;
+      } catch (err) {
+        ctx.print(`[warn] could not resolve phase model for plan-review, using session model: ${err.message}`);
+      }
+      try {
+        const result = await reviewPlan(reviewLlm, confirmed, {
+          signal: abortCtrl.signal,
+        });
+        await session.transcript?.logMeta('planReview', {
+          ok: result.ok,
+          issueCount: result.issues ? result.issues.length : 0,
+          phaseModelRef: reviewLlm !== session.llm ? (getPhaseModelRef(session.project, 'plan-review') || null) : null,
+        });
+        if (result.ok || !result.issues || result.issues.length === 0) {
+          return confirmed;
+        }
+        const resolutions = await confirmPlanReview(result.issues, session);
+        if (resolutions === null) return null; // user cancelled during review
+        if (resolutions.length === 0) return confirmed; // dismissed every issue
+        const annex = resolutions
+          .map((r) => `Plan review issue: ${r.title} -> ${r.resolution}`)
+          .join('\n');
+        return `${confirmed}\n${annex}`;
+      } catch (err) {
+        // Review is best-effort: never block the confirmed plan on a failure.
+        ctx.print(`[warn] plan review failed, using confirmed plan as-is: ${err.message}`);
+        return confirmed;
+      }
     },
     // Plan-step advancement: the agent calls the `plan_step` tool to mark
     // the current step done and move to the next. This updates the pinned

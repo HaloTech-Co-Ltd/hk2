@@ -345,6 +345,10 @@ the panel. Marking the last step done clears the panel automatically - no
 separate finish call is needed. Simple tasks that skip `plan` never show a
 panel. See the `plan` and `plan_step` entries in [Agent tools](#agent-tools).
 
+When `HK2_ENABLE_PLANREVIEW=1` (default off), after the user confirms a plan,
+an LLM reviews it and surfaces any issues one-by-one for confirmation before
+execution begins; see the env-var table.
+
 ## Configuration layout
 
 ```
@@ -445,6 +449,7 @@ panel. See the `plan` and `plan_step` entries in [Agent tools](#agent-tools).
 | `HK2_INSTALL_DIR` | Self-contained copy location used by `install.sh` (defaults to `HK2_HOME`, i.e. `~/.hk2`) | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | When 1, hk2 uses an LLM call to rewrite each user query to English function names + keywords before BM25 retrieval (both at turn start and on each `kb_search` tool call). | `1` |
 | `HK2_ENABLE_REQUEST_ASSESS` | When 1 (and `HK2_ENABLE_QUERYREWRITE=1`), hk2 first asks the LLM whether a user request is clear. If not, it surfaces the unclear aspects plus candidate interpretations as a numbered menu (with a free-text "something else" option) and feeds the chosen clarification back into the query rewrite. Active only in interactive TTY mode; one bounded round. Best-effort: any failure falls through to the normal rewrite. | `1` |
+| `HK2_ENABLE_PLANREVIEW` | When 1, after the user confirms a plan, hk2 asks an LLM to review the finalized plan for problems (missing steps, wrong order, ambiguous goals, risky strategies). If the reviewer finds issues, each is surfaced to the user one-by-one for confirmation (accept the reviewer's suggestion / dismiss / type your own); the confirmed resolutions are appended to the plan returned to the agent. The review model is configurable via `/model set-phase --phase=plan-review <ref>` (same mechanism as `rewrite-query`); when unset it uses the session model. Active only in interactive TTY mode. Best-effort: any failure returns the already-confirmed plan unchanged. | `0` |
 | `HK2_ENABLE_AUTOUPDATEKB` | When 1, hk2 silently runs an incremental `/kb update` (Index Space) at end of any turn where the agent fell back to bash to search source files. | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | When 1, hk2 silently asks the model to extract a reusable knowledge entry from the just-finished conversation and saves it to Eden Space. Holy Space ALWAYS prompts y/N regardless of this flag. | `0` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | Save `/kb init` checkpoint every N files | `100` |

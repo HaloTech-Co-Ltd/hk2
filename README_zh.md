@@ -337,6 +337,8 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 
 每完成一个已确认步骤后，代理调用一次 `plan_step` 以推进面板。标记最后一步完成后，面板会自动清除--无需单独的完成调用。跳过 `plan` 的简单任务不会显示面板。详见 [代理工具](#代理工具) 中的 `plan` 与 `plan_step` 条目。
 
+当 `HK2_ENABLE_PLANREVIEW=1`（默认关闭）时，用户确认计划后，LLM 会复审该计划，并在执行开始前将发现的问题逐一呈现给用户确认；详见环境变量表。
+
 ## 配置布局
 
 ```
@@ -437,6 +439,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_INSTALL_DIR` | `install.sh` 创建的自包含副本位置（默认为 `HK2_HOME`，即 `~/.hk2`） | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | 为 1 时，hk2 会在 BM25 检索前（每轮开始及每次 `kb_search` 工具调用时）用一次 LLM 调用将用户查询重写为英文函数名 + 关键词。 | `1` |
 | `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
+| `HK2_ENABLE_PLANREVIEW` | 为 1 时，在用户确认计划后，hk2 会请求 LLM 复审已定稿的计划，查找问题（缺失步骤、顺序错误、目标模糊、策略有风险等）。若复审发现有问题，会将每个问题逐一呈现给用户确认（采纳复审建议 / 忽略该问题 / 自定义解决方案）；确认后的解决方案会附加到返回给代理的计划中。复审模型可通过 `/model set-phase --phase=plan-review <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都返回已确认的计划，不做更改。 | `0` |
 | `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden Space。无论此标志如何，Holy Space 始终提示 y/N。 | `0` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |

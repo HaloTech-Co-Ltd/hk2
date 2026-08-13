@@ -79,6 +79,7 @@ export async function cmdModel(args, ctx) {
       ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
       ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192`);
       ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o   (per-project, rewrite phase)`);
+      ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o     (per-project, plan-review phase)`);
       ctx.print(`  /model del openai-local/gpt-4o`);
   }
 }
@@ -351,9 +352,10 @@ function parseFlags(tokens) {
  * that phase uses the configured model instead of the current session model.
  * Defaults to the session model when unset (the default state).
  *
- * Currently supported phases: rewrite-query.
+ * Currently supported phases: rewrite-query, plan-review.
  *   /model set-phase --phase=rewrite-query prov/model
  *   /model set-phase --phase=rewrite-query --clear
+ *   /model set-phase --phase=plan-review prov/model
  */
 async function setPhaseModel(rest, ctx) {
   const flags = parseFlags(rest);
@@ -372,6 +374,7 @@ async function setPhaseModel(rest, ctx) {
     ctx.print(`Examples:`);
     ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o`);
     ctx.print(`  /model set-phase --phase=rewrite-query --clear`);
+    ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o`);
     return;
   }
   const phaseKey = normalizePhaseName(phaseRaw);
