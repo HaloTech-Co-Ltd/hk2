@@ -376,6 +376,8 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 
 ### models.json 结构
 
+每个模型有 `id` 和 `name` 两个字段。`id` 是 `provider/id` 引用（如 `local/glm-4.7`）里的账户/索引键，可以携带尾部括号形式的上下文窗口提示（例如 `[1m]`）。`name` 才是**实际发送到 API 请求体**的模型代码（wire `model` 字段）——请把它设为服务商期望的精确字符串（例如 `glm-4.7`，而非 `GLM 4.7`）。把提示留在 `id` 上、把干净代码放在 `name` 里，可避免部分网关拒绝 `glm-4.7[1m]` 而报 `[modelCode不存在]`。
+
 ```json
 {
   "providers": {
@@ -386,7 +388,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
       "models": [
         {
           "id": "glm-4.7",
-          "name": "GLM 4.7",
+          "name": "glm-4.7",
           "contextWindow": 131072,
           "maxTokens": 32768,
           "temperature": 0.2,
@@ -398,7 +400,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
       "api": "anthropic",
       "apiKey": "...",
       "models": [
-        { "id": "claude-opus-4-7", "name": "Claude Opus 4.7", "contextWindow": 200000, "maxTokens": 32000, "reasoning": true }
+        { "id": "claude-opus-4-7", "name": "claude-opus-4-7", "contextWindow": 200000, "maxTokens": 32000, "reasoning": true }
       ]
     }
   },

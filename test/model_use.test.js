@@ -25,7 +25,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   ensureHome, loadModels, saveModels,
-  resolveModelRef, stripContextHint,
+  resolveModelRef,
 } from '../lib/config/home.js';
 import { createSession, buildCtx, reloadAll } from '../src/commands/interactive.js';
 import { dispatchSlash } from '../src/slash/index.js';
@@ -40,13 +40,13 @@ async function seedModels() {
         api: 'openai',
         baseUrl: 'http://a.example/v1',
         apiKey: 'sk-a',
-        models: [{ id: 'model-a', name: 'A', contextWindow: 8192, temperature: 0.2 }],
+        models: [{ id: 'model-a', name: 'model-a', contextWindow: 8192, temperature: 0.2 }],
       },
       provB: {
         api: 'openai',
         baseUrl: 'http://b.example/v1',
         apiKey: 'sk-b',
-        models: [{ id: 'model-b', name: 'B', contextWindow: 8192, temperature: 0.2 }],
+        models: [{ id: 'model-b', name: 'model-b', contextWindow: 8192, temperature: 0.2 }],
       },
     },
     default: 'provA/model-a',
@@ -212,25 +212,17 @@ test('/model use between two providers sharing a model id is visible in the disp
     'trailing [ctx] hint stripped from the display tag');
 });
 
-// Regression for the reported BigModel 400: a model id carrying a trailing
-// bracketed context-window hint (e.g. `glm-5.2[1m]`, a Volcengine ark
-// convention) was sent VERBATIM as the `model` field to the API. The BigModel
-// Anthropic-compatible gateway (open.bigmodel.cn/api/anthropic) treats the
-// whole `glm-5.2[1m]` as the model code and rejects it with
-// `[1214][modelCode：不存在]`. The stored id / display ref must KEEP the
-// `[1m]` (so two providers hosting the same base model stay visually distinct
-// and the active context length stays visible), but the WIRE model code sent
-// in the request body must be the bare id. This is enforced centrally in
+// The WIRE model code sent to the API request body comes from the model's
+// `name` (the value configured via /model add|set --name), NOT from `id`.
+// `id` is the provider/accounting key used in `provider/id` refs and MAY
+// carry a trailing bracketed context-window hint (e.g. `glm-5.2[1m]`, a
+// Volcengine ark convention) that some Anthropic-compatible gateways reject
+// (BigModel open.bigmodel.cn/api/anthropic returns `[1214][modelCode：不存在]`
+// when the whole `glm-5.2[1m]` is treated as the model code). So a user puts
+// the exact API code in --name and keeps the `[1m]` hint on the id; the
+// request body sends only `name`. This is enforced centrally in
 // resolveModelRef so both the OpenAI and Anthropic adapters inherit it.
-test('stripContextHint removes a trailing [ctx] suffix from a model id', () => {
-  assert.equal(stripContextHint('glm-5.2[1m]'), 'glm-5.2', '[1m] stripped');
-  assert.equal(stripContextHint('deepseek-v4-flash[1m]'), 'deepseek-v4-flash');
-  assert.equal(stripContextHint('glm-5.2 [200k]'), 'glm-5.2', 'spaced [200k] stripped');
-  assert.equal(stripContextHint('plain-model'), 'plain-model', 'no-op without a bracketed suffix');
-  assert.equal(stripContextHint(''), '', 'empty stays empty');
-});
-
-test('resolveModelRef strips the [1m] hint from the wire model but keeps it in the ref', async () => {
+test('resolveModelRef uses --name as the wire model code, keeping [1m] in the id/ref', async () => {
   await ensureHome();
   await saveModels({
     providers: {
@@ -246,8 +238,30 @@ test('resolveModelRef strips the [1m] hint from the wire model but keeps it in t
 
   const cfg = await resolveModelRef('bigmodel1/glm-5.2[1m]');
   assert.ok(cfg, 'model resolved');
-  // The user-facing ref keeps [1m] (display / provider distinction).
-  assert.equal(cfg.ref, 'bigmodel1/glm-5.2[1m]', 'ref keeps the [1m] hint');
-  // The wire model code sent to the API is bare - no [1m].
-  assert.equal(cfg.model, 'glm-5.2', 'wire model code is the bare id without [1m]');
+  // The user-facing ref keeps [1m] (it is the id used in provider/id refs).
+  assert.equal(cfg.ref, 'bigmodel1/glm-5.2[1m]', 'ref keeps the [1m] hint on the id');
+  // The wire model code sent to the API is the configured --name, which has no
+  // [1m] suffix - so the BigModel gateway accepts it.
+  assert.equal(cfg.model, 'glm-5.2', 'wire model code is the --name, not the id');
+});
+
+test('resolveModelRef falls back to id for legacy records that never set a name', async () => {
+  await ensureHome();
+  await saveModels({
+    providers: {
+      leg: {
+        api: 'openai',
+        baseUrl: '',
+        apiKey: 'k',
+        // No `name` field at all - simulates a record written before --name
+        // became the wire code.
+        models: [{ id: 'plain-model', contextWindow: 65536, maxTokens: 8192, temperature: 0.2, reasoning: false }],
+      },
+    },
+    default: 'leg/plain-model',
+  });
+
+  const cfg = await resolveModelRef('leg/plain-model');
+  assert.ok(cfg, 'legacy model resolved');
+  assert.equal(cfg.model, 'plain-model', 'wire code falls back to id when name is absent');
 });

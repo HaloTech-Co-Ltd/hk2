@@ -99,7 +99,12 @@ async function listModels(ctx) {
     for (const m of (p.models || [])) {
       const ref = `${pname}/${m.id}`;
       const marker = ref === def ? '* ' : '  ';
-      ctx.print(`${marker}${m.id.padEnd(28)} ${m.name || ''}`);
+      // `name` is now the WIRE model code (sent to the API), so only append it
+      // to the listing when it DIFFERS from `id` - otherwise the row would read
+      // `gpt-4o gpt-4o`. When they differ, showing both lets the user see the
+      // ref key (id) and the wire code (name) side by side.
+      const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
+      ctx.print(`${marker}${label}`);
       ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2}`);
     }
   }

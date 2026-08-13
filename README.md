@@ -386,6 +386,14 @@ execution begins; see the env-var table.
 
 ### models.json schema
 
+Each model has an `id` and a `name`. The `id` is the accounting key used in
+`provider/id` refs (e.g. `local/glm-4.7`) and may carry a trailing bracketed
+context-window hint such as `[1m]`. The `name` is the model code actually
+**sent in the API request body** (the wire `model` field) — set it to the
+exact string the provider expects (e.g. `glm-4.7`, never `GLM 4.7`). Keeping
+the hint on `id` and the clean code on `name` avoids `[modelCode不存在]` on
+gateways that reject `glm-4.7[1m]`.
+
 ```json
 {
   "providers": {
@@ -396,7 +404,7 @@ execution begins; see the env-var table.
       "models": [
         {
           "id": "glm-4.7",
-          "name": "GLM 4.7",
+          "name": "glm-4.7",
           "contextWindow": 131072,
           "maxTokens": 32768,
           "temperature": 0.2,
@@ -408,7 +416,7 @@ execution begins; see the env-var table.
       "api": "anthropic",
       "apiKey": "...",
       "models": [
-        { "id": "claude-opus-4-7", "name": "Claude Opus 4.7", "contextWindow": 200000, "maxTokens": 32000, "reasoning": true }
+        { "id": "claude-opus-4-7", "name": "claude-opus-4-7", "contextWindow": 200000, "maxTokens": 32000, "reasoning": true }
       ]
     }
   },
