@@ -1459,6 +1459,27 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       session.statusBar?.update();
       return markIdx + 1;
     },
+    // Knowledge-save approval gate: the agent calls `kb_save_knowledge` to
+    // persist learned entries. Holy Space is the source of truth - it MUST
+    // prompt the user y/N before every commit, regardless of env vars. Eden
+    // auto-commits only when HK2_ENABLE_AUTO_LEARN=1; otherwise it also
+    // prompts. The progress spinner is paused while the prompt is on screen
+    // (same reason as planConfirm). Returns true to proceed, false to refuse.
+    knowledgeConfirm: async (targetSpace, entry) => {
+      progress.pause();
+      const label = targetSpace === 'holy'
+        ? style.warning('HOLY space')
+        : style.accent('Eden space');
+      process.stderr.write(`\n[kb save] Model proposes ${label} entry "${entry?.id}": ${entry?.title || ''}\n`);
+      if (targetSpace === 'holy') {
+        process.stderr.write(`  Holy Space is the source of truth for stable design knowledge.\n`);
+      }
+      const confirmed = await ctx.confirm(`Write "${entry?.id}" to ${targetSpace} space? (y/N) `);
+      if (!confirmed) {
+        process.stderr.write(`${style.dim('  Cancelled - nothing was written to the KB.')}\n`);
+      }
+      return confirmed;
+    },
   });
 
   if (session.messages.length === 0) {
