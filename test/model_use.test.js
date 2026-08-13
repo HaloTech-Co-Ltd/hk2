@@ -25,6 +25,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   ensureHome, loadModels, saveModels,
+  resolveModelRef, stripContextHint,
 } from '../lib/config/home.js';
 import { createSession, buildCtx, reloadAll } from '../src/commands/interactive.js';
 import { dispatchSlash } from '../src/slash/index.js';
@@ -209,4 +210,44 @@ test('/model use between two providers sharing a model id is visible in the disp
   // The [1m] hint is stripped so the tag stays compact.
   assert.ok(!tagAlpha.includes('[1m]') && !tagBeta.includes('[1m]'),
     'trailing [ctx] hint stripped from the display tag');
+});
+
+// Regression for the reported BigModel 400: a model id carrying a trailing
+// bracketed context-window hint (e.g. `glm-5.2[1m]`, a Volcengine ark
+// convention) was sent VERBATIM as the `model` field to the API. The BigModel
+// Anthropic-compatible gateway (open.bigmodel.cn/api/anthropic) treats the
+// whole `glm-5.2[1m]` as the model code and rejects it with
+// `[1214][modelCode：不存在]`. The stored id / display ref must KEEP the
+// `[1m]` (so two providers hosting the same base model stay visually distinct
+// and the active context length stays visible), but the WIRE model code sent
+// in the request body must be the bare id. This is enforced centrally in
+// resolveModelRef so both the OpenAI and Anthropic adapters inherit it.
+test('stripContextHint removes a trailing [ctx] suffix from a model id', () => {
+  assert.equal(stripContextHint('glm-5.2[1m]'), 'glm-5.2', '[1m] stripped');
+  assert.equal(stripContextHint('deepseek-v4-flash[1m]'), 'deepseek-v4-flash');
+  assert.equal(stripContextHint('glm-5.2 [200k]'), 'glm-5.2', 'spaced [200k] stripped');
+  assert.equal(stripContextHint('plain-model'), 'plain-model', 'no-op without a bracketed suffix');
+  assert.equal(stripContextHint(''), '', 'empty stays empty');
+});
+
+test('resolveModelRef strips the [1m] hint from the wire model but keeps it in the ref', async () => {
+  await ensureHome();
+  await saveModels({
+    providers: {
+      bigmodel1: {
+        api: 'anthropic',
+        baseUrl: 'https://open.bigmodel.cn/api/anthropic',
+        apiKey: 'bm-key',
+        models: [{ id: 'glm-5.2[1m]', name: 'glm-5.2', contextWindow: 1000000, maxTokens: 128000, temperature: 0.2, reasoning: true }],
+      },
+    },
+    default: 'bigmodel1/glm-5.2[1m]',
+  });
+
+  const cfg = await resolveModelRef('bigmodel1/glm-5.2[1m]');
+  assert.ok(cfg, 'model resolved');
+  // The user-facing ref keeps [1m] (display / provider distinction).
+  assert.equal(cfg.ref, 'bigmodel1/glm-5.2[1m]', 'ref keeps the [1m] hint');
+  // The wire model code sent to the API is bare - no [1m].
+  assert.equal(cfg.model, 'glm-5.2', 'wire model code is the bare id without [1m]');
 });
