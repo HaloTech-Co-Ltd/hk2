@@ -1484,22 +1484,38 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       // back to the session model when unset or unresolvable (with a warn,
       // matching the rewrite-query phase handling).
       let reviewLlm = session.llm;
+      let usingPhaseModel = false;
       try {
         const phaseLlm = await resolvePhaseLlm('plan-review');
-        if (phaseLlm) reviewLlm = phaseLlm;
+        if (phaseLlm) { reviewLlm = phaseLlm; usingPhaseModel = true; }
       } catch (err) {
         ctx.print(`[warn] could not resolve phase model for plan-review, using session model: ${err.message}`);
       }
+      // Surface the Plan Review so the user knows it is running AND what it
+      // is checking. The review is a best-effort LLM call (up to ~20s); show
+      // an animated spinner phase (mirroring rewrite-query / KB retrieval)
+      // so the wait is never silent, then pause it before any output / menu.
+      const reviewModelLabel = usingPhaseModel
+        ? (getPhaseModelRef(session.project, 'plan-review') || 'plan-review phase model')
+        : 'session model';
+      ctx.print('');
+      ctx.print(style.accent(style.bold('Plan Review')));
+      ctx.print(style.dim(`  Reviewing the confirmed plan for problems with ${reviewModelLabel}...`));
+      ctx.print(style.dim('  Checks: missing steps, wrong order, ambiguous goals, risky strategies, unstated assumptions.'));
+      progress.nextPhase('reviewing plan');
+      setPhase('reviewing plan');
       try {
         const result = await reviewPlan(reviewLlm, confirmed, {
           signal: abortCtrl.signal,
         });
+        progress.pause(); // stop the spinner before printing the menu / result
         await session.transcript?.logMeta('planReview', {
           ok: result.ok,
           issueCount: result.issues ? result.issues.length : 0,
-          phaseModelRef: reviewLlm !== session.llm ? (getPhaseModelRef(session.project, 'plan-review') || null) : null,
+          phaseModelRef: usingPhaseModel ? (getPhaseModelRef(session.project, 'plan-review') || null) : null,
         });
         if (result.ok || !result.issues || result.issues.length === 0) {
+          ctx.print(style.dim('  Plan review complete - no issues found. Proceeding with the confirmed plan.'));
           return confirmed;
         }
         const resolutions = await confirmPlanReview(result.issues, session);
@@ -1511,6 +1527,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         return `${confirmed}\n${annex}`;
       } catch (err) {
         // Review is best-effort: never block the confirmed plan on a failure.
+        progress.pause();
         ctx.print(`[warn] plan review failed, using confirmed plan as-is: ${err.message}`);
         return confirmed;
       }
