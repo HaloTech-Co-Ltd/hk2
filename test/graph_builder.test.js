@@ -108,3 +108,74 @@ test('large parent/child graph builds in linear time (no O(N^2) scan)', () => {
   // blew well past this). Generous ceiling to avoid CI flakiness.
   assert.ok(ms < 2000, `build took ${ms}ms for ${N * 2} symbols — expected linear`);
 });
+
+// --- import edges (regression: previously 0 because filesByBasename keyed on
+// the extension-bearing basename while basenameOfImport stripped it). ---
+
+function importSym(id, imports, overrides = {}) {
+  return sym(id, { imports, kind: 'const', ...overrides });
+}
+
+test('import edge resolves by basename with the extension stripped', () => {
+  // src/a.js imports './tools.js' → should resolve to src/tools.js.
+  const symbols = [
+    importSym('1:1', ['./tools.js'], { name: 'a', fileId: 1 }),
+    importSym('2:1', [], { name: 'tools', fileId: 2 }),
+  ];
+  const files = {
+    1: { path: 'src/a.js' },
+    2: { path: 'src/tools.js' },
+  };
+  const graph = buildKnowledgeGraph(symbols, files);
+
+  assert.deepEqual(graph.edges.imports['g1:1'], ['g2:1']);
+});
+
+test('import edge resolves an extensionless relative import', () => {
+  // TypeScript-style: import './tools' (no extension) → matches tools.ts.
+  const symbols = [
+    importSym('1:1', ['./tools'], { name: 'a', fileId: 1 }),
+    importSym('2:1', [], { name: 'tools', fileId: 2 }),
+  ];
+  const files = {
+    1: { path: 'src/a.ts' },
+    2: { path: 'src/tools.ts' },
+  };
+  const graph = buildKnowledgeGraph(symbols, files);
+
+  assert.deepEqual(graph.edges.imports['g1:1'], ['g2:1']);
+});
+
+test('node: built-in imports never produce an import edge', () => {
+  // 'node:fs/promises' must not match a local file named 'promises.js'.
+  const symbols = [
+    importSym('1:1', ['node:fs/promises', 'node:path'], { name: 'a', fileId: 1 }),
+    importSym('2:1', [], { name: 'promises', fileId: 2 }),
+    importSym('3:1', [], { name: 'path', fileId: 3 }),
+  ];
+  const files = {
+    1: { path: 'src/a.js' },
+    2: { path: 'src/promises.js' },
+    3: { path: 'src/path.js' },
+  };
+  const graph = buildKnowledgeGraph(symbols, files);
+
+  assert.equal(graph.edges.imports['g1:1'], undefined);
+});
+
+test('import edge prefers the same-directory file when basename collides', () => {
+  // 'tools.js' exists in both lib/ and src/; import from src/ should pick src/.
+  const symbols = [
+    importSym('1:1', ['./tools.js'], { name: 'a', fileId: 1 }),
+    importSym('2:1', [], { name: 'tools', fileId: 2 }),
+    importSym('3:1', [], { name: 'tools', fileId: 3 }),
+  ];
+  const files = {
+    1: { path: 'src/a.js' },
+    2: { path: 'lib/tools.js' },
+    3: { path: 'src/tools.js' },
+  };
+  const graph = buildKnowledgeGraph(symbols, files);
+
+  assert.deepEqual(graph.edges.imports['g1:1'], ['g3:1']);
+});
