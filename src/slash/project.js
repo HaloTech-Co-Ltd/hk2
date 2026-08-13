@@ -56,6 +56,7 @@
 import {
   registerProject, loadProjects,
   getCurrentProject, setCurrentProject, updateProject, removeProject,
+  phaseStorageKeyToCliName,
 } from '../../lib/config/home.js';
 
 export async function cmdProject(args, ctx) {
@@ -229,12 +230,17 @@ async function showProject(ctx) {
   ctx.print(`  kbBuiltAt: ${cur.kbBuiltAt || '(not built, run /kb init)'}`);
   ctx.print(`  createdAt: ${cur.createdAt}`);
   const phaseModels = (cur.phaseModels && typeof cur.phaseModels === 'object' && !Array.isArray(cur.phaseModels)) ? cur.phaseModels : {};
-  const phaseEntries = Object.entries(phaseModels).filter(([, v]) => typeof v === 'string' && v);
+  // Map internal storage keys (rewriteQuery/planReview) back to the user-facing
+  // CLI phase names (rewrite-query/plan-review) so the displayed labels match
+  // what the user typed into `/model set-phase --phase=...`.
+  const phaseEntries = Object.entries(phaseModels)
+    .map(([key, v]) => [phaseStorageKeyToCliName(key) || key, v])
+    .filter(([, v]) => typeof v === 'string' && v);
   if (phaseEntries.length) {
     ctx.print(`  phase models:`);
     for (const [phase, ref] of phaseEntries) ctx.print(`    ${phase} -> ${ref}`);
   } else {
-    ctx.print(`  phase models: (none; rewrite phase uses the current session model)`);
+    ctx.print(`  phase models: (none; all phases use the current session model)`);
   }
 }
 
