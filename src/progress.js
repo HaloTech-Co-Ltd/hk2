@@ -80,6 +80,29 @@ export class ProgressIndicator {
     this._beginPhase(phase);
   }
 
+  /**
+   * Transition the spinner into the reasoning ("thinking") phase.
+   *
+   * Reasoning models (e.g. deepseek-v4-pro, GLM-4.7) emit a long stream of
+   * reasoning_content BEFORE any body text. Unlike tick() — which finalizes
+   * the spinner because body output is about to take over the line — this
+   * keeps the spinner animating under a 'thinking' label so the user sees
+   * live progress instead of a stale 'waiting for model' that never advances.
+   *
+   * It does NOT set `stopped`, so a later tick() (first body delta) still
+   * clears the line cleanly and streaming proceeds normally. Idempotent:
+   * repeated calls while already on 'thinking' are a no-op, so it is safe to
+   * invoke on every reasoning delta.
+   */
+  reason() {
+    // No active phase (e.g. reasoning delta arrived after the spinner was
+    // already finalized by tick()): don't fabricate a new phase. Also skip
+    // when already on 'thinking' so repeated reasoning deltas are idempotent.
+    if (!this.phase || this.phase === 'thinking') return;
+    this._endPhase();
+    this._beginPhase('thinking');
+  }
+
   _beginPhase(phase) {
     this.phase = phase;
     this.phaseStart = Date.now();

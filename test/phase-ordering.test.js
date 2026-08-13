@@ -96,6 +96,76 @@ test('assessment path: rewriting query -> retrieving KB -> assessing request', (
     `expected rewriting < retrieving < assessing, got idx ${ri}/${ki}/${ai}`);
 });
 
+test('reasoning models advance spinner to thinking instead of stalling on waiting for model', () => {
+  // Regression for the deepseek-v4-pro bug: reasoning models emit a long
+  // reasoning_content stream BEFORE any body text. The interactive REPL's
+  // onReasoning callback must drive progress.reason() so the spinner shows
+  // 'thinking' (live progress) rather than freezing on 'waiting for model'
+  // for the entire reasoning window. This mirrors the Eden KB entry
+  // `interactive-repl-session-and-context-api` runAgentTurn flow.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  // Enter the model-wait phase (as runAgentTurn does before the agent loop).
+  progress.start('waiting for model');
+  // First reasoning delta arrives — must transition to 'thinking'.
+  progress.reason();
+  // More reasoning deltas — reason() is idempotent, no duplicate phase.
+  progress.reason();
+  progress.done();
+
+  const phases = stream.recordedPhases();
+  const wi = phases.indexOf('waiting for model');
+  const ti = phases.indexOf('thinking');
+  assert.ok(wi !== -1, 'waiting for model phase recorded');
+  assert.ok(ti !== -1, 'thinking phase recorded after reasoning delta');
+  assert.ok(wi < ti, `waiting (idx ${wi}) must come before thinking (idx ${ti})`);
+  // Idempotent: exactly one 'thinking' header despite two reason() calls.
+  assert.equal(phases.filter((p) => p === 'thinking').length, 1,
+    'reason() must not re-emit the thinking phase on repeated calls');
+});
+
+
+test('reasoning then body delta: tick() still finalizes the spinner after reason()', () => {
+  // Critical invariant: reason() must NOT set `stopped`, so the first body
+  // delta's tick() still clears the spinner line and streaming proceeds. If
+  // reason() leaked the stopped flag, the spinner would persist into body
+  // output (the original bug's mirror image).
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('waiting for model');
+  progress.reason();                  // reasoning window
+  progress.tick('Hello');             // first body delta
+  progress.done();
+
+  // tick() finalizes the active phase, so 'thinking' is recorded as ended.
+  // done() then must NOT re-print a phase header (stopped is already true).
+  const phases = stream.recordedPhases();
+  assert.ok(phases.includes('thinking'), 'thinking phase recorded before tick');
+  // After tick(), the spinner is stopped; done() prints only the final stats
+  // line, never a second 'thinking' header.
+  assert.equal(phases.filter((p) => p === 'thinking').length, 1,
+    'thinking phase finalized exactly once by tick()');
+});
+
+
+test('reason() is a no-op when no phase is active (defensive)', () => {
+  // runAgentTurn wires onReasoning unconditionally; if a reasoning delta
+  // ever arrived while no spinner phase was running (e.g. after tick()),
+  // reason() must not crash or fabricate a phase. It simply does nothing.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+  progress.start('waiting for model');
+  progress.tick('body');              // stops the spinner, phase -> null
+  progress.reason();                  // no active phase → no-op
+  progress.done();
+  const phases = stream.recordedPhases();
+  assert.ok(!phases.includes('thinking'),
+    'reason() after tick() must not start a new thinking phase');
+});
+
+
 test('regression canary: retrieving-before-rewriting order is detectable as wrong', () => {
   // This encodes the EXACT regression we are guarding against. If someone
   // reintroduces `progress.start('retrieving KB')` unconditionally and then

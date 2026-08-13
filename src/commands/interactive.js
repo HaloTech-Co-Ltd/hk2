@@ -1685,6 +1685,13 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       else session.statusBar?.update();
     },
     onReasoning: () => {
+      // Reasoning models (deepseek-v4-pro, GLM-4.7, ...) emit a long
+      // reasoning_content stream before any body text. Advance the spinner
+      // into a 'thinking' phase so it reflects live progress instead of
+      // stalling on 'waiting for model' for the whole reasoning window.
+      // reason() is idempotent and does not finalize the spinner, so the
+      // later first body delta still drives tick() -> streaming normally.
+      progress.reason();
       if (session.phase !== 'thinking') setPhase('thinking');
     },
     onUsage: (u) => {

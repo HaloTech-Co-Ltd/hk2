@@ -126,7 +126,14 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
       progress.nextPhase('retrieving');
       continue;
     }
-    if (evt.type === 'reasoning') continue;
+    if (evt.type === 'reasoning') {
+      // Same fix as the interactive REPL: reasoning models (deepseek-v4-pro,
+      // GLM-4.7, ...) stream reasoning_content before body text. Advance the
+      // spinner to 'thinking' instead of stalling on the prior phase for the
+      // whole reasoning window. reason() is idempotent.
+      progress.reason();
+      continue;
+    }
     if (evt.type === 'topic') {
       acc.topics = evt.topics || [];
       if (verbose) printTopics(evt.topics);
