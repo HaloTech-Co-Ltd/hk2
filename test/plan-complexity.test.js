@@ -30,7 +30,7 @@ import {
 
 test('isObviouslyTrivial: empty / whitespace / greetings are trivial', () => {
   assert.equal(isObviouslyTrivial(''), true);
-  assert.equal(isObviouslyTrivial('   \\t\\n  '), true);
+  assert.equal(isObviouslyTrivial('   \t\n  '), true);
   assert.equal(isObviouslyTrivial('hi'), true);
   assert.equal(isObviouslyTrivial('hello there'), true);
   assert.equal(isObviouslyTrivial('thanks!'), true);
