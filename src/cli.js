@@ -57,11 +57,12 @@
  *   hk2 --help
  */
 import { ensureHome, loadProjects } from '../lib/config/home.js';
+import { VERSION } from './version.js';
 
 const VALID_MODES = new Set(['project-init', 'build-kb', 'update-kb']);
 const VALID_RUN_MODES = new Set(['once', 'serve']);
 
-const BOOL_FLAGS = new Set(['help', 'h', 'project-list']);
+const BOOL_FLAGS = new Set(['help', 'h', 'project-list', 'version', 'V']);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -90,7 +91,7 @@ export function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`hk2 - knowledge-base-driven coding agent
+  console.log(`hk2 ${VERSION} - knowledge-base-driven coding agent
 
 Default: enter the interactive REPL (agent loop with tool use + automatic KB context).
 
@@ -123,6 +124,9 @@ Usage:
   hk2 --run-mode=serve
       Legacy REPL (command-style, no agent loop).
 
+  hk2 --version
+      Print the version and exit.
+
   hk2 --help
       Print this help.
 
@@ -150,6 +154,11 @@ Environment variables:
 
 export async function run() {
   const { positional, flags } = parseArgs(process.argv.slice(2));
+
+  if (flags.version || flags.V) {
+    console.log(`${VERSION} (hk2)`);
+    return;
+  }
 
   if (flags.help || flags.h) {
     printHelp();

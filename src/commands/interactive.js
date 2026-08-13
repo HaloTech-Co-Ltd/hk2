@@ -77,6 +77,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../../lib/agent/task_state.js';
+import { VERSION } from '../version.js';
 
 /**
  * Build a bare session object (no readline / status bar). Shared by
@@ -804,7 +805,7 @@ function printBanner(session, ctx) {
   // active palette so it stays readable on any theme.
   const logoRows = renderLogo(style);
   const tagline = [
-    style.bold(style.accent('hk2')) + ' ' + style.muted('— KB-driven coding agent'),
+    style.bold(style.accent('hk2')) + ' ' + style.muted(VERSION + ' — KB-driven coding agent'),
     '',
     style.dim('interactive REPL · per-project KB'),
     '',
