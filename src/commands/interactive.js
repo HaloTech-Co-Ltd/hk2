@@ -185,8 +185,10 @@ export async function interactive(opts = {}) {
     // a clean viewport.
     process.stderr.write('\x1b[H\x1b[2J');
     session.statusBar.start();
-    // Refresh every 500ms while running — keeps elapsed-time display fresh
-    session.statusBar.poll(500);
+    // Refresh frequently while running — keeps the spinner animating and the
+    // elapsed-time display fresh. Output is static when idle so the extra
+    // redraws are invisible (same bytes, no flicker).
+    session.statusBar.poll(200);
     // Restore terminal if Node crashes or user kills the process
     const restoreOnce = () => { session.statusBar?.stop(); };
     process.once('exit', restoreOnce);
@@ -696,7 +698,15 @@ function formatStatusLine(session) {
   const usage = formatUsage(session.tokens, session.modelCfg?.maxChars || 0);
   const phase = session.phase || 'idle';
   const sep = style.dim(style.BOX.vertical);
-  let line = `${style.accent(phase)} ${sep} ${projTag} ${style.dim('|')} ${kbTag} ${style.dim('|')} ${modelTag} ${sep} ${usage}`;
+  // Animated braille spinner before the phase (the leftmost dynamic item)
+  // so the user can see at a glance that work is in progress. Time-based
+  // frame selection makes the animation independent of how often the bar
+  // redraws; only shown while actually working (not idle / not error).
+  const working = phase !== 'idle' && phase !== 'error';
+  const spinner = working
+    ? style.accent(style.SPINNER[Math.floor(Date.now() / 120) % style.SPINNER.length]) + ' '
+    : '';
+  let line = `${spinner}${style.accent(phase)} ${sep} ${projTag} ${style.dim('|')} ${kbTag} ${style.dim('|')} ${modelTag} ${sep} ${usage}`;
   if (session.turnStart > 0) {
     const secs = ((Date.now() - session.turnStart) / 1000).toFixed(1);
     line += ` ${sep} ${style.muted(secs + 's')} ${style.dim(style.ICON.dot)} ${style.italic(style.dim('esc to interrupt'))}`;
