@@ -202,8 +202,8 @@ Type `/help` for the full list. Common commands:
 | Command | Description |
 |---|---|
 | `/model list` | List all providers / models |
-| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | Add a model (`--model-options` sets model-specific feature options as a JSON object, e.g. `--model-options='{"enable_thinking":true}'`; default is no options) |
-| `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings (`--id` renames the model id / ref; the wire model code sent to the API is unaffected; `--model-options` replaces the model-specific options object wholesale — pass `'{}'` to clear) |
+| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | Add a model (`--model-options` sets model-specific feature options as a JSON object, e.g. `--model-options='{"enable_thinking":true}'`; default is no options; model types with declared features validate the options — e.g. `--model-type=glm-5.3` accepts `{"reasoning_effort":"max"}` with max the default/recommended, or high/low) |
+| `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings (`--id` renames the model id / ref; the wire model code sent to the API is unaffected; `--model-options` replaces the model-specific options object wholesale — pass `'{}'` to clear; validated against the model type's declared features, e.g. glm-5.3 `reasoning_effort` ∈ max/high/low) |
 | `/model set-default <prov>/<id>` | Set global default (persisted) |
 | `/model use <prov>/<id>` | Choose model for current session only |
 | `/model del <prov>/<id>` | Delete |

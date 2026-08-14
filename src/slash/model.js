@@ -59,7 +59,8 @@ import {
   normalizePhaseName, supportedPhaseNames,
   setPhaseModelRef, clearPhaseModelRef,
   normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
-  normalizeModelOptions,
+  normalizeModelOptions, modelTypeFeatures, modelTypeDefaultReasoning,
+  validateModelOptionsForType,
 } from '../../lib/config/home.js';
 
 export async function cmdModel(args, ctx) {
@@ -79,7 +80,7 @@ export async function cmdModel(args, ctx) {
       ctx.print(`Examples:`);
       ctx.print(`  /model list`);
       ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000 --model-type=gpt-5.6-sol`);
-      ctx.print(`  /model add qwen-local qwen-max --model-options='{"enable_thinking":true}'     (model-specific feature options)`);
+      ctx.print(`  /model add bigmodel glm-5.3 --model-type=glm-5.3 --model-options='{"reasoning_effort":"max"}'   (glm-5.3 effort: max default | high | low)`);
       ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
       ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
       ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192 --model-type=gpt-5.6-sol`);
@@ -215,7 +216,9 @@ async function setModel(rest, ctx) {
     }
   }
 
-  // Validate --model-options (must be a JSON object) before mutating anything.
+  // Validate --model-options JSON shape before touching the registry. The
+  // per-type enum check (e.g. glm-5.3 reasoning_effort) runs below, once the
+  // entry's effective model type is known.
   let modelOptions;
   if (flags['model-options'] !== undefined) {
     modelOptions = normalizeModelOptions(flags['model-options']);
@@ -230,6 +233,18 @@ async function setModel(rest, ctx) {
   if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
   const entry = (prov.models || []).find(m => m.id === split.model);
   if (!entry) { ctx.print(`Model not found: ${ref} (use /model add to create it first)`); return; }
+  // Effective model type for option validation: the new --model-type when
+  // given, else the entry's current (already-normalized) stored type.
+  const effectiveModelType = modelType || entry.modelType || DEFAULT_MODEL_TYPE;
+  if (modelOptions) {
+    // Enum validation against the model type's declared feature options
+    // (e.g. glm-5.3 reasoning_effort: max|high|low). Still before any write.
+    const typeErr = validateModelOptionsForType(effectiveModelType, modelOptions);
+    if (typeErr) {
+      ctx.print(`Invalid --model-options: ${typeErr}`);
+      return;
+    }
+  }
 
   // Optional id rename: /model set <provider>/<old-id> --id=<new-id>.
   // `id` is the provider/accounting key used in provider/id refs; renaming it
@@ -365,6 +380,13 @@ async function addModel(rest, ctx) {
       ctx.print(`Invalid --model-options: expected a JSON object, e.g. --model-options='{"enable_thinking":true}'`);
       return;
     }
+    // Enum validation against the model type's declared feature options
+    // (e.g. glm-5.3 reasoning_effort: max|high|low).
+    const typeErr = validateModelOptionsForType(flags['model-type'], mo);
+    if (typeErr) {
+      ctx.print(`Invalid --model-options: ${typeErr}`);
+      return;
+    }
     flags['model-options'] = mo;
   }
 
@@ -397,7 +419,7 @@ async function addModel(rest, ctx) {
   if (flags.temperature !== undefined) entry.temperature = parseFloat(flags.temperature);
   else if (entry.temperature === undefined) entry.temperature = 0.2;
   if (flags.reasoning !== undefined) entry.reasoning = parseBoolFlag(flags.reasoning);
-  else if (entry.reasoning === undefined) entry.reasoning = false;
+  else if (entry.reasoning === undefined) entry.reasoning = modelTypeDefaultReasoning(flags['model-type']) ? true : false;
   if (flags['model-type']) entry.modelType = flags['model-type'];
   else if (entry.modelType === undefined) entry.modelType = DEFAULT_MODEL_TYPE;
   // Model-specific feature options: free-form JSON object, default empty

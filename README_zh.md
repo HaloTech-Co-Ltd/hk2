@@ -199,8 +199,8 @@ hk2
 | 命令 | 说明 |
 |---|---|
 | `/model list` | 列出所有提供商 / 模型 |
-| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | 添加模型（`--model-options` 以 JSON 对象设置模型特性参数，如 `--model-options='{"enable_thinking":true}'`；默认无特性参数） |
-| `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | 修改模型配置（持久化；`--id` 重命名模型 id / 引用键，不影响发送给 API 的模型代码；`--model-options` 整体替换特性参数对象，传 `'{}'` 即清空） |
+| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | 添加模型（`--model-options` 以 JSON 对象设置模型特性参数，如 `--model-options='{"enable_thinking":true}'`；默认无特性参数；声明了特性的模型类型会校验取值，如 `--model-type=glm-5.3` 接受 `{"reasoning_effort":"max"}`，默认且推荐 max（深度推理），可选 high（增强）/ low（轻度）） |
+| `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | 修改模型配置（持久化；`--id` 重命名模型 id / 引用键，不影响发送给 API 的模型代码；`--model-options` 整体替换特性参数对象，传 `'{}'` 即清空；取值会按模型类型声明的特性校验，如 glm-5.3 的 `reasoning_effort` ∈ max/high/low） |
 | `/model set-default <prov>/<id>` | 设为全局默认（持久化） |
 | `/model use <prov>/<id>` | 仅当前会话选用模型 |
 | `/model del <prov>/<id>` | 删除 |
