@@ -53,6 +53,7 @@
 import { resolveDefaultModel, getCurrentProject, getPhaseModelRef, resolveModelRef } from '../../lib/config/home.js';
 import { printTopics, printSymbols, printCachedAnswer } from '../format.js';
 import { ProgressIndicator } from '../progress.js';
+import { ReasoningStream } from '../../lib/agent/reasoning_stream.js';
 import { resolveKbName } from '../kb_name.js';
 
 export async function explain(query, { mode, enableRewrite, force, verbose, rt: providedRt, llm: providedLlm }) {
@@ -112,6 +113,9 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
 
   const progress = new ProgressIndicator();
   progress.start(enableRewrite ? 'rewriting query' : 'waiting for model');
+  // Same reasoning renderer as the interactive REPL, so reasoning models show
+  // their thinking live instead of only a static 'thinking' spinner.
+  const reasoningStream = new ReasoningStream();
 
   for await (const evt of gen) {
     if (evt.type === 'rewrite') {
@@ -127,11 +131,18 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
       continue;
     }
     if (evt.type === 'reasoning') {
-      // Same fix as the interactive REPL: reasoning models (deepseek-v4-pro,
-      // GLM-4.7, ...) stream reasoning_content before body text. Advance the
-      // spinner to 'thinking' instead of stalling on the prior phase for the
-      // whole reasoning window. reason() is idempotent.
+      // Reasoning models (deepseek-v4-pro, GLM-4.7, ...) stream
+      // reasoning_content before body text. Advance the spinner to 'thinking'
+      // (idempotent) and surface the reasoning text to the user so they can
+      // follow the model's thought process instead of staring at a static
+      // spinner. On the first delta we pause the spinner so its \r refresh on
+      // stderr can't clobber the reasoning text streamed to stdout.
       progress.reason();
+      if (evt.text) {
+        if (!reasoningStream.headerShown) progress.pause();
+        const rendered = reasoningStream.feed(evt.text);
+        if (rendered) process.stdout.write(rendered);
+      }
       continue;
     }
     if (evt.type === 'topic') {
@@ -143,11 +154,17 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
       if (verbose) printSymbols(evt.symbols);
     }
     if (evt.type === 'delta') {
+      // Body text begins: finalize any open reasoning window first.
+      const reasoningTail = reasoningStream.end();
+      if (reasoningTail) process.stdout.write(reasoningTail);
       progress.tick(evt.text);
       process.stdout.write(evt.text || '');
       acc.text += evt.text || '';
     }
   }
+  // Finalize any trailing reasoning line before the closing newline.
+  const finalReasoning = reasoningStream.end();
+  if (finalReasoning) process.stdout.write(finalReasoning);
   process.stdout.write('\n');
   progress.done();
 

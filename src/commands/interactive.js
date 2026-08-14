@@ -74,6 +74,7 @@ import { MultiLineCollector } from '../../lib/agent/multiline.js';
 import * as style from '../../lib/agent/style.js';
 import { renderLogo } from '../../lib/agent/logo.js';
 import { MarkdownStream } from '../../lib/agent/markdown.js';
+import { ReasoningStream } from '../../lib/agent/reasoning_stream.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -1865,6 +1866,13 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     const out = mdStream.flush();
     return out;
   };
+  // Per-LLM-call reasoning renderer. Reasoning models (deepseek-v4-pro,
+  // GLM-4.7, ...) stream reasoning_content BEFORE any body text. We surface
+  // it live in a dim/italic style so the user can follow the model's thought
+  // process instead of staring at a static 'thinking' spinner with no content.
+  // Reset on every turn; ended before body text / tool cards so output stays clean.
+  let reasoningStream = new ReasoningStream();
+  const flushReasoning = () => reasoningStream.end();
   const callbacks = {
     onTurnStart: (_turnIdx) => {
       // Each LLM stream call inside the agent loop starts a new "turn".
@@ -1897,9 +1905,16 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       }
       // Fresh markdown renderer for the new LLM call.
       mdStream = new MarkdownStream();
+      // Fresh reasoning renderer for the new LLM call's reasoning window.
+      reasoningStream = new ReasoningStream();
       session.statusBar?.update();
     },
     onDelta: (text) => {
+      // First body delta ends the reasoning window (if any). Flush any
+      // trailing partial reasoning line so it renders cleanly before the
+      // answer text begins, then finalize the reasoning stream.
+      const reasoningTail = flushReasoning();
+      if (reasoningTail) process.stdout.write(reasoningTail);
       progress.tick(text);
       // Style the delta through the markdown stream; raw text still
       // accumulates into assistantText for the transcript.
@@ -1909,15 +1924,27 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       if (session.phase !== 'streaming') setPhase('streaming');
       else session.statusBar?.update();
     },
-    onReasoning: () => {
+    onReasoning: (text) => {
       // Reasoning models (deepseek-v4-pro, GLM-4.7, ...) emit a long
-      // reasoning_content stream before any body text. Advance the spinner
-      // into a 'thinking' phase so it reflects live progress instead of
-      // stalling on 'waiting for model' for the whole reasoning window.
-      // reason() is idempotent and does not finalize the spinner, so the
-      // later first body delta still drives tick() -> streaming normally.
+      // reasoning_content stream before any body text. We BOTH advance the
+      // spinner into a 'thinking' phase (live progress instead of stalling on
+      // 'waiting for model') AND surface the reasoning text to the user so
+      // they can follow what the model is doing. The previous fix only
+      // switched the spinner label and threw the text away — the user saw
+      // 'thinking'/'waiting for model' flip back and forth with no content.
+      //
+      // progress.reason() is idempotent (no-op when already on 'thinking').
+      // On the FIRST reasoning delta we pause the spinner so its per-200ms \r
+      // refresh on stderr can't clobber the reasoning text we stream to stdout;
+      // subsequent deltas just continue the text stream (re-pausing would
+      // re-clear the line and eat the trailing reasoning line we just wrote).
       progress.reason();
       if (session.phase !== 'thinking') setPhase('thinking');
+      if (text) {
+        if (!reasoningStream.headerShown) progress.pause();
+        const rendered = reasoningStream.feed(text);
+        if (rendered) process.stdout.write(rendered);
+      }
     },
     onUsage: (u) => {
       // Usage events from the LLM client are cumulative-within-call snapshots
@@ -1949,6 +1976,12 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     onToolCallStart: (call) => {
       // Stream ended for this LLM call. Flush any partial markdown line so
       // the trailing text renders before the tool card opens.
+      // Also flush any open reasoning window: reasoning models may emit
+      // reasoning_content then tool_calls with NO body text, so we must
+      // finalize the reasoning stream (trailing newline) and clear the
+      // spinner line before the card takes over.
+      const reasoningTail = flushReasoning();
+      if (reasoningTail) process.stdout.write(reasoningTail);
       const flushed = flushMarkdown();
       if (flushed) process.stdout.write(flushed);
       // Finalize the spinner so its per-200ms \r refresh can't overwrite the
@@ -2061,6 +2094,8 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     // Final flush of the markdown renderer in case the last LLM call left a
     // trailing partial line (no terminating newline). Renders it before the
     // closing blank line so the layout stays clean.
+    const finalReasoning = flushReasoning();
+    if (finalReasoning) process.stdout.write(finalReasoning);
     const finalFlush = flushMarkdown();
     if (finalFlush) process.stdout.write(finalFlush);
 

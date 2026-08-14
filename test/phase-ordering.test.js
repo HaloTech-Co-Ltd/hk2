@@ -314,3 +314,108 @@ test('multi-turn with body text: spinner re-arms after tick() too', () => {
   assert.equal(phases.filter((p) => p === 'thinking').length, 2,
     'resume() must re-arm the spinner even after a tick()-stopped turn');
 });
+
+
+// ===========================================================================
+// Reasoning CONTENT rendering regression tests (the bug v1.1.37 + multi-turn
+// fixes BOTH missed). The earlier fixes only made the spinner ADVANCE into a
+// 'thinking' phase — but the interactive REPL's onReasoning callback DISCARDED
+// the reasoning text (it took no `text` argument), so the user saw the spinner
+// flicker between 'thinking' and 'waiting for model' with NO description of
+// what the model was actually thinking. These tests guard the ReasoningStream
+// that now surfaces reasoning_content live.
+// ===========================================================================
+
+import { ReasoningStream } from '../lib/agent/reasoning_stream.js';
+
+/** Strip ANSI escapes for readable assertions on rendered reasoning output. */
+function stripAnsiForTest(s) {
+  return String(s).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+}
+
+test('ReasoningStream surfaces reasoning content instead of discarding it', () => {
+  // THE core regression: onReasoning(text) must render the reasoning delta, not
+  // throw it away. Previously the REPL only switched the spinner label to
+  // 'thinking' and dropped evt.text entirely.
+  const rs = new ReasoningStream();
+  let out = '';
+  out += rs.feed('Let me analyze the file.\n');
+  out += rs.feed('The callback ignores its argument.\n');
+  out += rs.end();
+
+  const visible = stripAnsiForTest(out);
+  assert.ok(visible.includes('✎ thinking'), 'a thinking header marks the reasoning window');
+  assert.ok(visible.includes('Let me analyze the file.'),
+    'the FIRST reasoning delta must be rendered, not discarded');
+  assert.ok(visible.includes('The callback ignores its argument.'),
+    'subsequent reasoning deltas must be rendered too');
+});
+
+test('ReasoningStream emits the thinking header exactly once per window', () => {
+  // Multiple reasoning deltas arrive in one window. The '✎ thinking' header
+  // must appear once (not once per delta, which would spam the output).
+  const rs = new ReasoningStream();
+  let out = '';
+  out += rs.feed('a');
+  out += rs.feed('b');
+  out += rs.feed('c\n');
+  out += rs.end();
+  const headerCount = (stripAnsiForTest(out).match(/✎ thinking/g) || []).length;
+  assert.equal(headerCount, 1, 'exactly one thinking header per reasoning window');
+});
+
+test('ReasoningStream.end() finalizes and ignores later deltas until reset()', () => {
+  // After a reasoning window ends (body text or a tool card takes over), late
+  // reasoning deltas must not leak into the body / card output. They resume
+  // only after reset() (called at the next turn boundary).
+  const rs = new ReasoningStream();
+  let out = '';
+  out += rs.feed('window one\n');
+  out += rs.end();
+  const afterEnd = rs.feed('should be ignored');
+  assert.equal(afterEnd, '', 'feed() after end() is ignored');
+  // reset() re-arms for the next reasoning window.
+  rs.reset();
+  out = rs.feed('window two\n');
+  assert.ok(stripAnsiForTest(out).includes('window two'),
+    'after reset() a new reasoning window renders again');
+  assert.ok(stripAnsiForTest(out).includes('✎ thinking'),
+    'the new window emits its own header');
+});
+
+test('ReasoningStream accumulates partial deltas into complete lines', () => {
+  // Providers chunk reasoning_content into tiny deltas that often split mid-
+  // line. The stream must buffer and only render on newline boundaries so
+  // the displayed text isn't fragmented.
+  const rs = new ReasoningStream();
+  let out = '';
+  out += rs.feed('Step 1: ');          // no newline yet — buffered, not emitted as a line
+  out += rs.feed('read the file.\n'); // now the complete line renders
+  out += rs.end();
+  const visible = stripAnsiForTest(out);
+  assert.ok(visible.includes('Step 1: read the file.'),
+    'partial deltas must be joined into a complete line before rendering');
+  // The header line + one reasoning line = 2 lines of content.
+  assert.equal(visible.split('\n').filter((l) => l.length > 0).length, 2,
+    'exactly the header line plus one reasoning line');
+});
+
+test('reasoning then body: tick() still finalizes the spinner after reason()', () => {
+  // End-to-end invariant via the ProgressIndicator: the reasoning-content fix
+  // must not disturb the spinner state machine. After reason() + pause() (what
+  // onReasoning does on the first delta) the first body delta's tick() must
+  // still finalize cleanly, and the spinner records exactly one thinking phase.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('waiting for model');
+  progress.reason();        // first reasoning delta -> 'thinking'
+  progress.pause();         // let reasoning text own the line (as onReasoning does)
+  progress.tick('answer');  // first body delta
+  progress.done();
+
+  const phases = stream.recordedPhases();
+  assert.ok(phases.includes('thinking'), 'thinking phase still recorded');
+  assert.equal(phases.filter((p) => p === 'thinking').length, 1,
+    'pause() must not cause a duplicate thinking phase, and tick() finalizes once');
+});
