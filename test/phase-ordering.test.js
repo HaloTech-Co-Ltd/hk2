@@ -187,3 +187,130 @@ test('regression canary: retrieving-before-rewriting order is detectable as wron
     'canary shows the bad order (retrieving announced before rewriting); ' +
     'the positive tests above must reject this ordering');
 });
+
+
+// ===========================================================================
+// Multi-turn agent-loop regression tests (the bug class v1.1.37 missed).
+//
+// In a multi-turn loop the first turn's first body delta runs tick()
+// (stopped=true, phase=null). On every subsequent LLM call the spinner MUST
+// be re-armed, otherwise reason()/tick() are no-ops for the rest of the loop
+// and every phase label after turn 1 is "lost" (the original deepseek-v4-pro
+// bug, re-reported as the spinner repeating 'thinking' / 'waiting for model').
+//
+// A SINGLE-turn test passes even when this bug is present; only a multi-turn
+// sequence (two full LLM calls with reasoning) catches it. See Holy KB entry
+// `progress-indicator-multi-turn-reasoning`.
+// ===========================================================================
+
+test('stop() finalizes the spinner so a tool card can take the line', () => {
+  // Regression for the EXACT reported symptom: reasoning models (deepseek-
+  // v4-pro) emit reasoning_content then tool_calls with NO body text. tick()
+  // never fires, so the spinner keeps animating under 'thinking' and its per-
+  // 200ms \r refresh overwrites the tool header. stop() sets `stopped` and
+  // drops the phase so the spinner stays down for the tool round.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('waiting for model');
+  progress.reason();        // reasoning window -> 'thinking' (animated, not stopped)
+  progress.stop();          // tool_calls arrived: hand the line to the card
+  progress.done();
+
+  const phases = stream.recordedPhases();
+  assert.ok(phases.includes('thinking'), 'thinking phase recorded before the tool round');
+  // After stop(), the spinner is stopped; a stray reasoning delta must NOT
+  // restart it (that is what overwrote the tool card).
+  progress.reason();
+  assert.equal(phases.filter((p) => p === 'thinking').length, 1,
+    'stop() must suppress a post-stop reason() so it cannot overwrite the card');
+});
+
+test('stop() is a no-op when no phase is active (does not disturb body output)', () => {
+  // tick() already cleared the line for clean body streaming. A redundant
+  // stop() must do nothing — never print an extra clear / blank line that
+  // would shift already-rendered output.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('waiting for model');
+  progress.tick('Hello');   // body streaming starts, line already cleared
+  const writesBefore = stream.chunks.length;
+  progress.stop();          // redundant — must be a no-op
+  assert.equal(stream.chunks.length, writesBefore,
+    'stop() after tick() must not emit anything');
+  progress.done();
+});
+
+test('resume() re-arms a stopped spinner without resetting totalStart', () => {
+  // Mirrors interactive.js onTurnStart(_turnIdx > 1): after turn 1's tick()
+  // stopped the spinner, resume() must bring it back so turn 2's reasoning
+  // window / model wait shows a live phase instead of a dead line.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('rewriting query');          // turn 1 prelude
+  progress.nextPhase('waiting for model');
+  progress.tick('answer');                     // turn 1 body delta -> stopped
+  // Simulate the agent loop starting turn 2.
+  progress.resume('waiting for model');        // <-- the fix
+  progress.reason();                           // turn 2 reasoning window
+  progress.done();
+
+  const phases = stream.recordedPhases();
+  // Turn 2's reasoning window MUST produce a fresh 'thinking' phase. Without
+  // resume(), reason() is a no-op (phase is null) and 'thinking' never appears
+  // for turn 2 — this is exactly the lost-phase-description bug.
+  assert.ok(phases.includes('thinking'),
+    'resume() must let a subsequent reason() reach the thinking phase');
+  assert.ok(phases.includes('waiting for model'),
+    'resume() must begin a fresh waiting-for-model phase');
+});
+
+test('multi-turn reasoning loop: BOTH turns record a thinking phase', () => {
+  // THE regression test that v1.1.37 was missing. Simulates two full LLM turns
+  // in an agent loop where each turn has a reasoning window, mirroring the
+  // interactive REPL callback sequence for a reasoning model (deepseek-v4-pro):
+  //   prelude -> nextPhase('waiting for model')
+  //   turn 1: onReasoning -> reason(); ... tick() / onToolCallStart -> stop()
+  //   turn 2: onTurnStart(2) -> resume('waiting for model'); onReasoning -> reason()
+  //   done()
+  // Before the fix, turn 2's reason() was a no-op so only ONE thinking phase
+  // was recorded and the phase description was "lost" for the rest of the loop.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  // --- Turn 1 prelude + LLM call ---
+  progress.nextPhase('waiting for model');
+  progress.reason();                         // turn 1 reasoning window
+  progress.stop();                           // turn 1 ends with tool_calls (no body)
+  // --- Turn 2 (after a tool round) ---
+  progress.resume('waiting for model');      // onTurnStart(2) re-arms the spinner
+  progress.reason();                         // turn 2 reasoning window
+  progress.done();
+
+  const phases = stream.recordedPhases();
+  const thinkingCount = phases.filter((p) => p === 'thinking').length;
+  assert.equal(thinkingCount, 2,
+    `both turns must record a thinking phase (got ${thinkingCount}); ` +
+    'a single-turn test passes even when the multi-turn bug is present');
+});
+
+test('multi-turn with body text: spinner re-arms after tick() too', () => {
+  // Variant where turn 1 ends with real body text (tick), not a tool card.
+  // Same invariant: turn 2 must still reach 'thinking' because resume()
+  // cleared the stopped flag that tick() set.
+  const stream = new RecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.nextPhase('waiting for model');
+  progress.reason();
+  progress.tick('body text');                 // turn 1 body delta -> stopped
+  progress.resume('waiting for model');       // turn 2
+  progress.reason();
+  progress.done();
+
+  const phases = stream.recordedPhases();
+  assert.equal(phases.filter((p) => p === 'thinking').length, 2,
+    'resume() must re-arm the spinner even after a tick()-stopped turn');
+});

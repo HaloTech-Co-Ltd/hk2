@@ -1886,6 +1886,14 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       if (_turnIdx === 1) {
         session.loopKbCalls = [];
         session.loopFallbackCalls = [];
+      } else {
+        // Re-arm the spinner for this LLM call. The previous call's first body
+        // delta ran tick() (stopped=true, phase=null), so without re-arming
+        // reason()/tick() would be no-ops for the rest of the loop and the
+        // spinner would stay dead — every subsequent reasoning window / model
+        // wait would render with NO phase label. Turn 1 is handled by the
+        // prelude's nextPhase('waiting for model') above, so it is skipped.
+        progress.resume('waiting for model');
       }
       // Fresh markdown renderer for the new LLM call.
       mdStream = new MarkdownStream();
@@ -1943,6 +1951,14 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       // the trailing text renders before the tool card opens.
       const flushed = flushMarkdown();
       if (flushed) process.stdout.write(flushed);
+      // Finalize the spinner so its per-200ms \r refresh can't overwrite the
+      // tool card. This is the exact bug for reasoning models: when the model
+      // emits reasoning_content then tool_calls with NO body text, tick() never
+      // fires, so the spinner keeps animating under 'thinking' and its \r refresh
+      // clobbers the tool header that onToolCallStart writes below. stop() sets
+      // `stopped` so the spinner stays down for the tool round; the next turn's
+      // onTurnStart re-arms it via resume(). (No-op when already stopped.)
+      progress.stop();
       setPhase(`tool: ${call.name}`);
       // Open the card: top border with the tool name as title + header line.
       // Default width matches the welcome bar so all cards line up visually;

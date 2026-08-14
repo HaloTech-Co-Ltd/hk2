@@ -96,11 +96,62 @@ export class ProgressIndicator {
    */
   reason() {
     // No active phase (e.g. reasoning delta arrived after the spinner was
-    // already finalized by tick()): don't fabricate a new phase. Also skip
-    // when already on 'thinking' so repeated reasoning deltas are idempotent.
+    // already finalized by tick()/stop()): don't fabricate a new phase. Also
+    // skip when already on 'thinking' so repeated reasoning deltas are idempotent.
     if (!this.phase || this.phase === 'thinking') return;
     this._endPhase();
     this._beginPhase('thinking');
+  }
+
+  /**
+   * Re-arm a previously finalized spinner WITHOUT resetting totalStart.
+   *
+   * In a multi-turn agent loop the first LLM call's first body delta drives
+   * tick(), which sets `stopped=true` and clears `phase`. On EVERY subsequent
+   * LLM call (after a tool round) the spinner must animate again for that
+   * call's reasoning/body window. But reason()/tick() are no-ops once the
+   * spinner is stopped (phase is null), so without re-arming the spinner stays
+   * dead for the rest of the loop.
+   *
+   * resume() clears the stopped flag and begins a fresh phase, leaving
+   * totalStart untouched (so the final per-turn stats line is still measured
+   * from the original start()). Distinct from start(), which resets totalStart
+   * and is meant for the very first phase of an indicator's life. Safe to call
+   * on every turn > 1; safe to call when a phase is already active (it just
+   * advances to the new phase like nextPhase).
+   */
+  resume(phase = 'waiting for model') {
+    this.stopped = false;
+    if (this.phase && this.phase !== phase) {
+      this.nextPhase(phase);
+    } else if (!this.phase) {
+      this._beginPhase(phase);
+    }
+  }
+
+  /**
+   * Finalize the active spinner phase so another writer can take over the line
+   * cleanly (e.g. a tool-call card printed to stderr). Sets `stopped` so the
+   * spinner won't restart on its own; resume() re-arms it for the next turn.
+   *
+   * Safe to call when no phase is active (post-tick / non-TTY): a no-op, so it
+   * never disturbs already-clean body output. This is the key difference from
+   * pause() — pause() deliberately does NOT set `stopped` (it expects a later
+   * nextPhase()/tick() to resume the same phase), whereas stop() finalizes for
+   * real and is what callers should use when handing the line to a tool card.
+   */
+  stop() {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    if (this.isTTY) {
+      this.stream.write('\r\x1b[K');
+    } else if (this.phase) {
+      this.stream.write('\n');
+    }
+    this.phase = null;
+    this.stopped = true;
   }
 
   _beginPhase(phase) {
@@ -138,11 +189,17 @@ export class ProgressIndicator {
   }
 
   /**
-   * Temporarily stop the spinner without finalizing the phase, so an
+   * Temporarily stop the spinner WITHOUT finalizing the phase, so an
    * interactive prompt (e.g. the plan-mode "Choose [1-k]" menu) can take
-   * over the line cleanly. Unlike tick(), this does NOT set `stopped`, so a
-   * later nextPhase()/tick()/done() still works normally. Safe to call when
-   * no phase is active (non-TTY or already stopped).
+   * over the line cleanly. Unlike tick()/stop(), this does NOT set `stopped`,
+   * so a later nextPhase()/tick()/done() still works normally WITHOUT needing
+   * a resume() first. Safe to call when no phase is active (non-TTY or already
+   * stopped).
+   *
+   * Note: for handing the line to a tool-call card (a hard finalization),
+   * prefer stop() — it sets `stopped` so the spinner won't resume until the
+   * next turn's resume(). pause() leaves the spinner "armed" so a stray
+   * delta could restart it mid-card.
    */
   pause() {
     if (this.interval) {
