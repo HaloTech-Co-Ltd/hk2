@@ -203,7 +203,7 @@ Type `/help` for the full list. Common commands:
 |---|---|
 | `/model list` | List all providers / models |
 | `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N]` | Add a model |
-| `/model set <prov>/<id> [--name=...] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings |
+| `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings (`--id` renames the model id / ref; the wire model code sent to the API is unaffected) |
 | `/model set-default <prov>/<id>` | Set global default (persisted) |
 | `/model use <prov>/<id>` | Choose model for current session only |
 | `/model del <prov>/<id>` | Delete |

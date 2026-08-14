@@ -200,7 +200,7 @@ hk2
 |---|---|
 | `/model list` | 列出所有提供商 / 模型 |
 | `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N]` | 添加模型 |
-| `/model set <prov>/<id> [--name=...] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--api=...] [--base-url=...] [--api-key=...]` | 修改模型配置（持久化） |
+| `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--api=...] [--base-url=...] [--api-key=...]` | 修改模型配置（持久化；`--id` 重命名模型 id / 引用键，不影响发送给 API 的模型代码） |
 | `/model set-default <prov>/<id>` | 设为全局默认（持久化） |
 | `/model use <prov>/<id>` | 仅当前会话选用模型 |
 | `/model del <prov>/<id>` | 删除 |

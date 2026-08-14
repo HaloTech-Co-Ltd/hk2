@@ -45,7 +45,7 @@
  *   /model list                                    List all providers / models
  *   /model use <provider>/<model-id>               Choose model for current session only
  *   /model set-default <provider>/<model-id>       Set global default model (persisted)
- *   /model set <provider>/<model-id> [--name=...] [--api=...] [--base-url=...] [--api-key=...]
+ *   /model set <provider>/<model-id> [--name=...] [--id=NEW_ID] [--api=...] [--base-url=...] [--api-key=...]
  *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
  *                                                  Modify a model's persisted settings
  *   /model add <provider> <model-id> [--flags]     Add a new model (creates provider if needed)
@@ -54,6 +54,7 @@
  */
 import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
+  loadProjects, saveProjects,
   normalizePhaseName, supportedPhaseNames,
   setPhaseModelRef, clearPhaseModelRef,
   normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
@@ -79,6 +80,7 @@ export async function cmdModel(args, ctx) {
       ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
       ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
       ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192 --model-type=gpt-5.6-sol`);
+      ctx.print(`  /model set openai-local/gpt-4o --id=gpt-4o-new             (rename the model id / ref key)`);
       ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o   (per-project, rewrite phase)`);
       ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o     (per-project, plan-review phase)`);
       ctx.print(`  /model set-phase --phase=code-review openai-local/gpt-4o     (per-project, code-review phase)`);
@@ -173,6 +175,7 @@ async function setDefaultModel(rest, ctx) {
  *
  * Flags:
  *   --name=NAME
+ *   --id=NEW_ID                     (rename the model's id / ref key)
  *   --api=openai|anthropic          (provider-level)
  *   --base-url=URL                  (provider-level)
  *   --api-key=KEY                   (provider-level)
@@ -185,7 +188,7 @@ async function setDefaultModel(rest, ctx) {
 async function setModel(rest, ctx) {
   const ref = rest[0];
   if (!ref) {
-    ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
+    ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--id=NEW_ID] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]`);
     return;
   }
@@ -210,6 +213,41 @@ async function setModel(rest, ctx) {
   if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
   const entry = (prov.models || []).find(m => m.id === split.model);
   if (!entry) { ctx.print(`Model not found: ${ref} (use /model add to create it first)`); return; }
+
+  // Optional id rename: /model set <provider>/<old-id> --id=<new-id>.
+  // `id` is the provider/accounting key used in provider/id refs; renaming it
+  // changes the ref. The effective WIRE model code (from `name`, falling back
+  // to the old `id` for legacy records) is preserved across the rename.
+  let newRef = ref;
+  let pinnedName = false;
+  if (flags.id !== undefined) {
+    if (typeof flags.id !== 'string' || !flags.id.trim()) {
+      ctx.print(`Invalid --id: expected --id=<new-model-id>`);
+      return;
+    }
+    const newId = flags.id.trim();
+    if (newId.includes('/')) {
+      ctx.print(`Invalid --id: ${flags.id} (model-id must not contain '/')`);
+      return;
+    }
+    if (newId !== split.model && (prov.models || []).some(m => m.id === newId)) {
+      ctx.print(`Model already exists: ${split.provider}/${newId} (choose a different --id)`);
+      return;
+    }
+    // Preserve the effective WIRE model code across the rename.
+    // resolveModelRef falls back to `id` for records that never set `name`, so
+    // renaming those would silently change what is sent to the API (e.g. a
+    // rename to `glm-5.2[1m]` would start sending the bracketed hint). Pin
+    // `name` to the old effective wire code so the rename only changes the
+    // ref key. Records with an explicit name are already pinned by it.
+    if (!(typeof entry.name === 'string' && entry.name)) {
+      entry.name = split.model;
+      pinnedName = true;
+    }
+    entry.id = newId;
+    newRef = `${split.provider}/${newId}`;
+    if (data.default === ref) data.default = newRef;
+  }
 
   // Provider-level fields.
   if (flags.api) prov.api = flags.api;
@@ -236,12 +274,39 @@ async function setModel(rest, ctx) {
   if (modelType) entry.modelType = modelType;
 
   await saveModels(data);
-  ctx.print(`Updated: ${ref}`);
-  ctx.print(`  contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
+
+  // Keep per-project phase overrides pointing at the old id in sync after a
+  // rename, so a pinned phase does not silently fall back to the default.
+  if (newRef !== ref) {
+    const projData = await loadProjects();
+    let phaseChanged = false;
+    for (const p of Object.values(projData.projects || {})) {
+      if (!p || typeof p !== 'object' || !p.phaseModels) continue;
+      for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
+        if (phaseRef === ref) {
+          p.phaseModels[phase] = newRef;
+          phaseChanged = true;
+        }
+      }
+    }
+    if (phaseChanged) {
+      await saveProjects(projData);
+      // The in-memory session.project still holds the old refs; signal a
+      // project reload so phase overrides resolve the new ref this session
+      // (same mechanism /model set-phase uses after editing a phase ref).
+      ctx.noteReloadProject?.();
+    }
+  }
+
+  ctx.print(`Updated: ${newRef}`);
+  ctx.print(`  id=${entry.id} name=${entry.name ?? '?'} contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
+  if (pinnedName) {
+    ctx.print(`  (wire model code preserved: name=${entry.name}; use --name to change what is sent to the API)`);
+  }
   // If the session is currently using this model, hot-swap it so the change
   // takes effect immediately without a full reload.
   if (typeof ctx.setModel === 'function' && ctx.modelCfg?.ref === ref) {
-    const cfg = await resolveModelRef(ref);
+    const cfg = await resolveModelRef(newRef);
     if (cfg) ctx.setModel(cfg);
   }
   ctx.noteReloadModels?.();
