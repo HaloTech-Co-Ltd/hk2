@@ -47,6 +47,7 @@
  *   /model set-default <provider>/<model-id>       Set global default model (persisted)
  *   /model set <provider>/<model-id> [--name=...] [--id=NEW_ID] [--api=...] [--base-url=...] [--api-key=...]
  *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
+ *                  [--model-options=JSON]
  *                                                  Modify a model's persisted settings
  *   /model add <provider> <model-id> [--flags]     Add a new model (creates provider if needed)
  *   /model del <provider>/<model-id>               Delete a model
@@ -58,6 +59,7 @@ import {
   normalizePhaseName, supportedPhaseNames,
   setPhaseModelRef, clearPhaseModelRef,
   normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
+  normalizeModelOptions,
 } from '../../lib/config/home.js';
 
 export async function cmdModel(args, ctx) {
@@ -77,9 +79,11 @@ export async function cmdModel(args, ctx) {
       ctx.print(`Examples:`);
       ctx.print(`  /model list`);
       ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000 --model-type=gpt-5.6-sol`);
+      ctx.print(`  /model add qwen-local qwen-max --model-options='{"enable_thinking":true}'     (model-specific feature options)`);
       ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
       ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
       ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192 --model-type=gpt-5.6-sol`);
+      ctx.print(`  /model set openai-local/gpt-4o --model-options='{"thinking":{"type":"enabled"}}'  (model-specific feature options)`);
       ctx.print(`  /model set openai-local/gpt-4o --id=gpt-4o-new             (rename the model id / ref key)`);
       ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o   (per-project, rewrite phase)`);
       ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o     (per-project, plan-review phase)`);
@@ -110,6 +114,7 @@ async function listModels(ctx) {
       const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
       ctx.print(`${marker}${label}`);
       ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
+      printModelOptions(ctx, m.modelOptions);
     }
   }
 }
@@ -184,12 +189,14 @@ async function setDefaultModel(rest, ctx) {
  *   --max-tokens=N
  *   --temperature=N
  *   --model-type=TYPE
+ *   --model-options=JSON   (model-specific feature options, e.g. --model-options='{"enable_thinking":true}')
  */
 async function setModel(rest, ctx) {
   const ref = rest[0];
   if (!ref) {
     ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--id=NEW_ID] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]`);
+    ctx.print(`                        [--model-options=JSON]  e.g. --model-options='{"enable_thinking":true}'`);
     return;
   }
   const split = splitModelRef(ref);
@@ -204,6 +211,16 @@ async function setModel(rest, ctx) {
     if (!modelType) {
       ctx.print(`Unknown model type: ${flags['model-type']}`);
       ctx.print(`Supported model types: ${supportedModelTypes().join(', ')}`);
+      return;
+    }
+  }
+
+  // Validate --model-options (must be a JSON object) before mutating anything.
+  let modelOptions;
+  if (flags['model-options'] !== undefined) {
+    modelOptions = normalizeModelOptions(flags['model-options']);
+    if (!modelOptions) {
+      ctx.print(`Invalid --model-options: expected a JSON object, e.g. --model-options='{"enable_thinking":true}'`);
       return;
     }
   }
@@ -272,6 +289,10 @@ async function setModel(rest, ctx) {
     entry.reasoning = parseBoolFlag(flags.reasoning);
   }
   if (modelType) entry.modelType = modelType;
+  // Model-specific options: replace wholesale when the flag is present. An
+  // explicit '{}' clears them (stored as an empty object = no options);
+  // omitting the flag keeps the current value.
+  if (flags['model-options'] !== undefined) entry.modelOptions = modelOptions;
 
   await saveModels(data);
 
@@ -300,6 +321,7 @@ async function setModel(rest, ctx) {
 
   ctx.print(`Updated: ${newRef}`);
   ctx.print(`  id=${entry.id} name=${entry.name ?? '?'} contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
+  printModelOptions(ctx, entry.modelOptions);
   if (pinnedName) {
     ctx.print(`  (wire model code preserved: name=${entry.name}; use --name to change what is sent to the API)`);
   }
@@ -316,6 +338,7 @@ async function addModel(rest, ctx) {
   if (rest.length < 2) {
     ctx.print(`Usage: /model add <provider> <model-id> [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME] [--model-type=TYPE]`);
+    ctx.print(`                        [--model-options=JSON]  e.g. --model-options='{"enable_thinking":true}'`);
     return;
   }
   const providerName = rest[0];
@@ -332,6 +355,17 @@ async function addModel(rest, ctx) {
       return;
     }
     flags['model-type'] = mt;
+  }
+
+  // Validate --model-options (must be a JSON object) before mutating anything.
+  // An explicit '{}' means "no options" (the default state).
+  if (flags['model-options'] !== undefined) {
+    const mo = normalizeModelOptions(flags['model-options']);
+    if (!mo) {
+      ctx.print(`Invalid --model-options: expected a JSON object, e.g. --model-options='{"enable_thinking":true}'`);
+      return;
+    }
+    flags['model-options'] = mo;
   }
 
   const data = await loadModels();
@@ -366,6 +400,10 @@ async function addModel(rest, ctx) {
   else if (entry.reasoning === undefined) entry.reasoning = false;
   if (flags['model-type']) entry.modelType = flags['model-type'];
   else if (entry.modelType === undefined) entry.modelType = DEFAULT_MODEL_TYPE;
+  // Model-specific feature options: free-form JSON object, default empty
+  // (no options). The field is left absent when the flag is omitted on a new
+  // entry; resolveModelRef falls back to an empty object for such records.
+  if (flags['model-options']) entry.modelOptions = flags['model-options'];
 
   await saveModels(data);
 
@@ -417,9 +455,23 @@ async function showModel(ctx) {
   ctx.print(`  baseUrl: ${cfg.baseUrl || '(default)'}`);
   ctx.print(`  model: ${cfg.model}`);
   ctx.print(`  modelType: ${cfg.modelType || 'generic'}`);
+  printModelOptions(ctx, cfg.modelOptions);
   ctx.print(`  contextWindow: ${cfg.maxChars}`);
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
   ctx.print(`  temperature: ${cfg.temperature}`);
+}
+
+/**
+ * Render a model's feature options (--model-options) for /model list and show.
+ * Values are strings/numbers/booleans; nested objects are JSON-stringified.
+ */
+function printModelOptions(ctx, modelOptions) {
+  if (!modelOptions || typeof modelOptions !== 'object' || Object.keys(modelOptions).length === 0) return;
+  const parts = Object.entries(modelOptions).map(([k, v]) => {
+    const vs = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v);
+    return `${k}=${vs}`;
+  });
+  ctx.print(`    modelOptions: ${parts.join(' ')}`);
 }
 
 /**
