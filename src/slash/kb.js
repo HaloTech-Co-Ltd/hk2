@@ -588,6 +588,22 @@ async function knowledgeInitKb(rest, ctx) {
   const projectMap = buildProjectMap(scopedRt);
   ctx.print(`  project map: ${projectMap.fileCount} files across ${projectMap.dirCount} directories, ${projectMap.text.length} chars`);
 
+  // Scale the planning request with the number of files. The old fixed
+  // "5-30 batches x 1-30 files" caps out at 900 files, which is impossible
+  // for large projects (postgres has ~3500 indexed files). A reasoning model
+  // like GLM-4.7, given contradictory constraints, deviates from the
+  // pipe-delimited format and Phase 1 then fails to parse its plan.
+  const fileCount = projectMap.fileCount || 0;
+  const maxFilesPerBatch = 30;
+  const batchGuidance = fileCount > maxFilesPerBatch * 30
+    ? `Aim for ${Math.ceil(fileCount / maxFilesPerBatch)} batches so every file is covered (the map has ${fileCount} files).`
+    : 'Aim for 5-30 batches.';
+  // The planning output must enumerate every file exactly once. The Anthropic
+  // adapter budgets output text at ~15% of maxChars (capped at 64k tokens), so
+  // for large maps this must grow well beyond the old 65536 or the plan gets
+  // truncated before every file is assigned.
+  const planningMaxChars = Math.max(65536, Math.min(500000, fileCount * 120));
+
   // Truncate existing entries to keep the planning prompt manageable
   const holySummary = existingHoly.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n');
   const edenSummary = existingEden.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n');
@@ -603,8 +619,8 @@ transaction-mgmt | transaction lifecycle and snapshots | access/transam/xact.c, 
 wiredtiger-stemmers | full-text search stemmer modules | snowball/stem_ISO_8859_1_english.c, snowball/api.c
 
 Rules:
-- Aim for 5-30 batches. Cover ALL files listed in the map.
-- Each batch: 1-30 files.
+- ${batchGuidance} Cover ALL files listed in the map.
+- Each batch: 1-${maxFilesPerBatch} files.
 - Group by topic (e.g. "transaction-mgmt" can span access/transam/ + storage/ipc/ + utils/time/).
 - Include every file in exactly one batch.
 - Do NOT duplicate topics already covered by existing Holy or Eden entries (listed below).
@@ -630,7 +646,7 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
         { role: 'system', content: planSysPrompt },
         { role: 'user', content: planUserPrompt },
       ],
-      { temperature: 0.1, maxChars: 65536, enableReasoning: true, timeoutMs: 300000 },
+      { temperature: 0.1, maxChars: planningMaxChars, enableReasoning: true, timeoutMs: 300000 },
     )) {
       if (evt.type === 'delta') planRaw += evt.text;
       else if (evt.type === 'reasoning') planReasoning += evt.text;
@@ -640,10 +656,16 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
     return;
   }
 
-  // Parse the plan from either content (planRaw) or reasoning (planReasoning).
-  // The pipe-delimited format may appear in either field depending on the model.
-  const planSource = planRaw.trim() || planReasoning.trim();
-  let plan = parsePlanText(planSource);
+  // Parse the plan from the model's content first. If that yields nothing,
+  // fall back to the reasoning channel: some reasoning models (GLM-4.7) put a
+  // short acknowledgment in content and the actual pipe-delimited plan in
+  // reasoning_content. Choosing content blindly via `||` would drop that plan.
+  let plan = parsePlanText(planRaw);
+  let planFromReasoning = false;
+  if (!plan && planReasoning.trim()) {
+    plan = parsePlanText(planReasoning);
+    planFromReasoning = !!plan;
+  }
 
   // Validate the parsed plan against the real file index. If too few of the
   // planned paths resolve to actual files, the model hallucinated paths or
@@ -669,10 +691,10 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
       ctx.print('[Phase 1] Discarding LLM plan — using directory-based grouping as fallback.');
       plan = null;
     } else {
-      ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planRaw.trim() ? 'from content' : 'from reasoning'}, ${resolved}/${plannedTotal} paths resolve).`);
+      ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planFromReasoning ? 'from reasoning' : 'from content'}, ${resolved}/${plannedTotal} paths resolve).`);
     }
   } else if (plan && plan.length > 0) {
-    ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planRaw.trim() ? 'from content' : 'from reasoning'}).`);
+    ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planFromReasoning ? 'from reasoning' : 'from content'}).`);
   }
 
   if (!plan || plan.length === 0) {
@@ -1472,6 +1494,13 @@ function parsePlanText(text) {
     } catch {}
   }
 
+  // Normalize reasoning-model artifacts before line parsing:
+  //   - full-width pipe '｜' used by some Chinese reasoning models
+  //   - fenced code blocks (```text ... ```) that wrap the plan
+  const normalized = text.replace(/｜/g, '|');
+  const fenced = extractFencedBlocks(normalized);
+  const source = fenced.length > 0 ? fenced : normalized;
+
   // Parse pipe-delimited format only: `topic | description | file1.c, file2.c`
   //
   // We deliberately do NOT accept a space/tab-delimited fallback. When the
@@ -1482,13 +1511,16 @@ function parsePlanText(text) {
   // If the model doesn't follow the pipe-delimited spec, we return null
   // and the caller falls back to directory-based grouping.
   const batches = [];
-  const lines = text.split('\n');
+  const lines = source.split('\n');
   // A pipe-delimited plan line needs at least TWO pipes (topic | desc | files).
   // A single pipe is more likely prose ("either x | y" or a markdown table row
   // header) than a real plan line — require three fields.
   for (const line of lines) {
-    const trimmed = line.trim();
+    let trimmed = line.trim();
     if (!trimmed) continue;
+    // Strip a markdown table's leading/trailing pipes so `| a | b | c |` and
+    // `a | b | c` parse identically.
+    trimmed = trimmed.replace(/^\|/, '').replace(/\|$/, '');
     if (!trimmed.includes('|')) continue;
     const parts = trimmed.split('|').map(s => s.trim());
     if (parts.length < 3) continue;
@@ -1503,7 +1535,7 @@ function parsePlanText(text) {
     const description = parts[1] || '';
     const filesStr = parts.slice(2).join('|');
     const files = filesStr
-      .split(/[,\s]+/)
+      .split(/[;,\s]+/)
       .map(s => s.replace(/^\.?\/+/, '').trim())
       .filter(f => f && /\.[a-z0-9]+$/i.test(f));
     if (files.length === 0) continue;
@@ -1512,6 +1544,21 @@ function parsePlanText(text) {
   }
 
   return batches.length > 0 ? batches : null;
+}
+
+/**
+ * Extract the contents of triple-backtick fenced code blocks. Reasoning models
+ * often wrap their structured answer in ```text ... ```; parsing only the fence
+ * contents avoids picking up surrounding prose.
+ */
+function extractFencedBlocks(text) {
+  const blocks = [];
+  const re = /```[a-zA-Z]*\n?([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1] && m[1].trim()) blocks.push(m[1].trim());
+  }
+  return blocks.join('\n');
 }
 
 function buildProjectMap(rt) {
@@ -2284,4 +2331,5 @@ export const __learnTest = {
   chunkDocText,
   groupByBudget,
   labelMatches,
+  parsePlanText,
 };
