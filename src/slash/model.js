@@ -46,7 +46,7 @@
  *   /model use <provider>/<model-id>               Choose model for current session only
  *   /model set-default <provider>/<model-id>       Set global default model (persisted)
  *   /model set <provider>/<model-id> [--name=...] [--api=...] [--base-url=...] [--api-key=...]
- *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N]
+ *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
  *                                                  Modify a model's persisted settings
  *   /model add <provider> <model-id> [--flags]     Add a new model (creates provider if needed)
  *   /model del <provider>/<model-id>               Delete a model
@@ -56,6 +56,7 @@ import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
   normalizePhaseName, supportedPhaseNames,
   setPhaseModelRef, clearPhaseModelRef,
+  normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
 } from '../../lib/config/home.js';
 
 export async function cmdModel(args, ctx) {
@@ -74,10 +75,10 @@ export async function cmdModel(args, ctx) {
       ctx.print(`/model subcommands: list | use | set-default | set | set-phase | add | del | show`);
       ctx.print(`Examples:`);
       ctx.print(`  /model list`);
-      ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000`);
+      ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000 --model-type=gpt-5.6-sol`);
       ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
       ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
-      ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192`);
+      ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192 --model-type=gpt-5.6-sol`);
       ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o   (per-project, rewrite phase)`);
       ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o     (per-project, plan-review phase)`);
       ctx.print(`  /model set-phase --phase=code-review openai-local/gpt-4o     (per-project, code-review phase)`);
@@ -106,7 +107,7 @@ async function listModels(ctx) {
       // ref key (id) and the wire code (name) side by side.
       const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
       ctx.print(`${marker}${label}`);
-      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2}`);
+      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
     }
   }
 }
@@ -179,17 +180,30 @@ async function setDefaultModel(rest, ctx) {
  *   --context-window=N
  *   --max-tokens=N
  *   --temperature=N
+ *   --model-type=TYPE
  */
 async function setModel(rest, ctx) {
   const ref = rest[0];
   if (!ref) {
     ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
-    ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N]`);
+    ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]`);
     return;
   }
   const split = splitModelRef(ref);
   if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
   const flags = parseFlags(rest.slice(1));
+
+  // Validate --model-type before mutating anything so an invalid value never
+  // leaks into the registry.
+  let modelType;
+  if (flags['model-type'] !== undefined) {
+    modelType = normalizeModelType(flags['model-type']);
+    if (!modelType) {
+      ctx.print(`Unknown model type: ${flags['model-type']}`);
+      ctx.print(`Supported model types: ${supportedModelTypes().join(', ')}`);
+      return;
+    }
+  }
 
   const data = await loadModels();
   const prov = data.providers[split.provider];
@@ -219,10 +233,11 @@ async function setModel(rest, ctx) {
   if (flags.reasoning !== undefined) {
     entry.reasoning = parseBoolFlag(flags.reasoning);
   }
+  if (modelType) entry.modelType = modelType;
 
   await saveModels(data);
   ctx.print(`Updated: ${ref}`);
-  ctx.print(`  contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2}`);
+  ctx.print(`  contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
   // If the session is currently using this model, hot-swap it so the change
   // takes effect immediately without a full reload.
   if (typeof ctx.setModel === 'function' && ctx.modelCfg?.ref === ref) {
@@ -235,12 +250,24 @@ async function setModel(rest, ctx) {
 async function addModel(rest, ctx) {
   if (rest.length < 2) {
     ctx.print(`Usage: /model add <provider> <model-id> [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
-    ctx.print(`                        [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME]`);
+    ctx.print(`                        [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME] [--model-type=TYPE]`);
     return;
   }
   const providerName = rest[0];
   const modelId = rest[1];
   const flags = parseFlags(rest.slice(2));
+
+  // Validate --model-type before mutating anything so an invalid value never
+  // leaks into the registry.
+  if (flags['model-type'] !== undefined) {
+    const mt = normalizeModelType(flags['model-type']);
+    if (!mt) {
+      ctx.print(`Unknown model type: ${flags['model-type']}`);
+      ctx.print(`Supported model types: ${supportedModelTypes().join(', ')}`);
+      return;
+    }
+    flags['model-type'] = mt;
+  }
 
   const data = await loadModels();
   let prov = data.providers[providerName];
@@ -272,6 +299,8 @@ async function addModel(rest, ctx) {
   else if (entry.temperature === undefined) entry.temperature = 0.2;
   if (flags.reasoning !== undefined) entry.reasoning = parseBoolFlag(flags.reasoning);
   else if (entry.reasoning === undefined) entry.reasoning = false;
+  if (flags['model-type']) entry.modelType = flags['model-type'];
+  else if (entry.modelType === undefined) entry.modelType = DEFAULT_MODEL_TYPE;
 
   await saveModels(data);
 
@@ -322,6 +351,7 @@ async function showModel(ctx) {
   ctx.print(`  api: ${cfg.style}`);
   ctx.print(`  baseUrl: ${cfg.baseUrl || '(default)'}`);
   ctx.print(`  model: ${cfg.model}`);
+  ctx.print(`  modelType: ${cfg.modelType || 'generic'}`);
   ctx.print(`  contextWindow: ${cfg.maxChars}`);
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
   ctx.print(`  temperature: ${cfg.temperature}`);
