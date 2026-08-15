@@ -58,7 +58,7 @@ import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { runLoop } from '../../lib/agent/loop.js';
-import { buildKbStats, fallbackKind } from '../../lib/agent/kb_stats.js';
+import { buildKbStats, fallbackKind, classifyRead } from '../../lib/agent/kb_stats.js';
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
 import { reviewPlan } from '../../lib/agent/plan_review.js';
@@ -115,10 +115,12 @@ export function createSession(pinnedProjectId = null) {
     bashSearchCommands: [],
     // Per-loop KB-hit-rate / token-savings tracking. Reset at the start of
     // each turn's first LLM call (onTurnStart _turnIdx===1). Each entry is
-    // `{ call, result }` so the stats helper can stat the referenced files
-    // and estimate how much disk the KB saved the agent from pulling.
+    // `{ call, result, seq }` — seq restores true execution order so the
+    // stats helper can classify a read against exactly the KB results that
+    // preceded it (targeted vs cold).
     loopKbCalls: [],
     loopFallbackCalls: [],
+    loopCallSeq: 0,
     tokens: { callIn: 0, callOut: 0, loopIn: 0, loopOut: 0, loopPeakIn: 0, loopPeakOut: 0, cumIn: 0, cumOut: 0, cacheRead: 0, cacheCreation: 0 },
     statusBar: null,
     phase: 'idle',
@@ -1541,6 +1543,21 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     graphText = '';
     graph = null;
   }
+  // Remember the per-turn prefetch injection for the end-of-loop KB stats:
+  // the knowledge-graph context rendered into the system prompt IS a KB use
+  // (often the biggest one — the agent never had to search for these files).
+  // filePaths feeds read classification (targeted vs cold) and the savings
+  // estimate; renderedChars is the payload actually sent to the LLM.
+  if (graph && graphText) {
+    const seen = new Set();
+    const fp = [];
+    for (const s of graph.symbols || []) if (s.filePath && !seen.has(s.filePath)) { seen.add(s.filePath); fp.push(s.filePath); }
+    for (const n of graph.neighbors || []) if (n.filePath && !seen.has(n.filePath)) { seen.add(n.filePath); fp.push(n.filePath); }
+    for (const k of graph.knowledge || []) for (const kf of k.keyFiles || []) if (!seen.has(kf)) { seen.add(kf); fp.push(kf); }
+    session.loopKbPrefetch = { filePaths: fp, renderedChars: graphText.length };
+  } else {
+    session.loopKbPrefetch = null;
+  }
 
   // --- Pass 1.5: request-clarity assessment WITH retrieved context ---------
   // Runs after the first rewrite+retrieve so the LLM can ground its clarity
@@ -1644,6 +1661,15 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       });
       graphSummary = graph.summary;
       graphText = renderRequestGraph(graph, { maxChars: Math.floor((session.modelCfg.maxChars || 65536) / 2) });
+      // Refresh the prefetch descriptor: pass-2 replaced the pass-1 graph.
+      if (graph && graphText) {
+        const seen = new Set();
+        const fp = [];
+        for (const s of graph.symbols || []) if (s.filePath && !seen.has(s.filePath)) { seen.add(s.filePath); fp.push(s.filePath); }
+        for (const n of graph.neighbors || []) if (n.filePath && !seen.has(n.filePath)) { seen.add(n.filePath); fp.push(n.filePath); }
+        for (const k of graph.knowledge || []) for (const kf of k.keyFiles || []) if (!seen.has(kf)) { seen.add(kf); fp.push(kf); }
+        session.loopKbPrefetch = { filePaths: fp, renderedChars: graphText.length };
+      }
       await session.transcript?.logMeta('graph', { summary: graph.summary, afterClarification: true });
     } catch (err) {
       progress.done();
@@ -1894,6 +1920,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       if (_turnIdx === 1) {
         session.loopKbCalls = [];
         session.loopFallbackCalls = [];
+        session.loopCallSeq = 0;
       } else {
         // Re-arm the spinner for this LLM call. The previous call's first body
         // delta ran tick() (stopped=true, phase=null), so without re-arming
@@ -2061,15 +2088,17 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         } catch { /* ignore */ }
       }
       // Per-loop KB-hit-rate tracking: record every call as either a KB call
-      // or a no-KB fallback (bash-search / source-file read). Cached cache
-      // hits still count - the agent still *chose* the KB. The result is the
-      // unwrapped tool payload (result.result when ok) so the stats helper
-      // can stat the referenced files and estimate token savings.
+      // or a no-KB fallback (bash-search / discovery tools / cold source-file
+      // reads), preserving execution order via seq. Cached cache hits still
+      // count - the agent still *chose* the KB. The result is the unwrapped
+      // tool payload (result.result when ok) so the stats helper can classify
+      // reads and estimate token savings.
       const payload = result && result.ok ? result.result : null;
+      const seq = session.loopCallSeq++;
       if (typeof call.name === 'string' && call.name.startsWith('kb_')) {
-        session.loopKbCalls.push({ call, result: payload });
-      } else if (fallbackKind(call)) {
-        session.loopFallbackCalls.push({ call, result: payload });
+        session.loopKbCalls.push({ call, result: payload, seq });
+      } else if (fallbackKind(call, null) || classifyRead(safeParseArgs(call.arguments)?.path, null, payload)) {
+        session.loopFallbackCalls.push({ call, result: payload, seq });
       }
     },
   };
@@ -2118,22 +2147,37 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       // tokens), so they're labelled with `~`. Appended on the same stderr
       // line as usage, dot-separated, to match the existing status style.
       let kbPart = '';
+      let kbStats = null;
       try {
-        const stats = await buildKbStats(session.loopKbCalls, session.loopFallbackCalls, {
+        kbStats = await buildKbStats(session.loopKbCalls, session.loopFallbackCalls, {
           root: session.project?.sourcePath || '',
           estTokens: estimateTokensFromChars,
+          prefetch: session.loopKbPrefetch,
         });
-        if (stats.kbCalls > 0 || stats.fallbackCalls > 0) {
-          const pct = Math.round(stats.hitRate * 100);
-          kbPart = ` ${style.dim(style.ICON.dot)} ${style.accent('kb ' + pct + '%')} ${style.dim(style.ICON.dot)} ${style.muted('~' + fmtTok(stats.estimatedTokensSaved) + ' saved')}`;
+        if (kbStats.kbCalls > 0 || kbStats.fallbackCalls > 0) {
+          const pct = Math.round(kbStats.hitRate * 100);
+          const errs = kbStats.kbErrors > 0 ? ` ${style.dim('!' + kbStats.kbErrors + ' err')}` : '';
+          kbPart = ` ${style.dim(style.ICON.dot)} ${style.accent('kb ' + pct + '%')}${errs} ${style.dim(style.ICON.dot)} ${style.muted('~' + fmtTok(kbStats.estimatedTokensSaved) + ' saved')}`;
         }
-        await session.transcript?.logMeta('kb-stats', {
-          kbCalls: stats.kbCalls,
-          fallbackCalls: stats.fallbackCalls,
-          hitRate: stats.hitRate,
-          estimatedTokensSaved: stats.estimatedTokensSaved,
-        });
       } catch { /* stats are best-effort; never block the turn on them */ }
+      // Persist the kb-stats meta OUTSIDE the render try/catch — the raw data
+      // is what later analysis (hit-rate trends, saved-token distribution)
+      // needs even (especially) when rendering breaks.
+      if (kbStats) {
+        try {
+          await session.transcript?.logMeta('kb-stats', {
+            kbCalls: kbStats.kbCalls,
+            fallbackCalls: kbStats.fallbackCalls,
+            hitRate: kbStats.hitRate,
+            estimatedTokensSaved: kbStats.estimatedTokensSaved,
+            prefetchSaved: kbStats.prefetchSaved,
+            kbErrors: kbStats.kbErrors,
+            coldReads: kbStats.coldReads,
+            targetedReads: kbStats.targetedReads,
+            kbAssistedReads: kbStats.kbAssistedReads,
+          });
+        } catch { /* transcript logging is best-effort */ }
+      }
       process.stderr.write(`${style.success(style.ICON.ok + ' usage')} ${style.dim(style.ICON.dot)} ${usage}${kbPart}\n`);
       await session.transcript?.logMeta('usage', {
         loop: { in: session.tokens.loopIn, out: session.tokens.loopOut },
