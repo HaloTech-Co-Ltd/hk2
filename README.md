@@ -1,3 +1,5 @@
+<img width="679" height="231" alt="Screenshot 2026-08-15 at 17 52 46" src="https://github.com/user-attachments/assets/b43064fc-80d1-4000-b97b-efd0e6b32bb0" />
+
 # hk2
 
 A knowledge-base (KB) driven coding agent. Combines an interactive REPL with tool use and a per-project KB as the central source of truth.
