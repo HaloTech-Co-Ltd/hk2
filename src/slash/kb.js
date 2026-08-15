@@ -298,18 +298,20 @@ async function knowledgeKb(rest, ctx) {
     case 'list': case 'ls': return knowledgeListKb(subArgs, ctx);
     case 'show': case 'get': return knowledgeShowKb(subArgs, ctx);
     case 'add': case 'create': case 'set': return knowledgeAddKb(subArgs, ctx);
-    case 'init': case 'bootstrap': case 'scan': return knowledgeInitKb(subArgs, ctx);
+    case 'learn': case 'study': case 'init': case 'bootstrap': case 'scan':
+      // 'init'/'bootstrap'/'scan' are legacy aliases of the merged learn
+      // command; they map to whole-project CODE mode (no --file/--base-dir).
+      return knowledgeLearnKb(subArgs, ctx);
     case 'housekeep': case 'housekeeping': case 'cleanup': case 'clean': return knowledgeCleanupKb(subArgs, ctx);
     case 'empty': case 'clear': case 'wipe': return knowledgeEmptyKb(subArgs, ctx);
     case 'export': return knowledgeExportKb(subArgs, ctx);
     case 'import': return knowledgeImportKb(subArgs, ctx);
     case 'del': case 'rm': return knowledgeDelKb(subArgs, ctx);
-    case 'learn': case 'study': return knowledgeLearnKb(subArgs, ctx);
     case undefined:
-      ctx.print(`/kb knowledge subcommands: list | show | add | init | housekeep | empty | export | import | del | learn`);
+      ctx.print(`/kb knowledge subcommands: list | show | add | learn | housekeep | empty | export | import | del`);
       return;
     default:
-      ctx.print(`Unknown /kb knowledge subcommand: ${sub}. Use list | show | add | init | housekeep | empty | export | import | del | learn.`);
+      ctx.print(`Unknown /kb knowledge subcommand: ${sub}. Use list | show | add | learn | housekeep | empty | export | import | del.`);
   }
 }
 
@@ -471,31 +473,65 @@ async function knowledgeShowKb(rest, ctx) {
   ctx.print(`(entry not found: ${id})`);
 }
 
+
+
 /**
- * /kb knowledge init — deep-study the entire project and bootstrap Eden entries.
+ * /kb knowledge learn — the unified deep-study command (merges the former
+ * `/kb knowledge init` and `/kb knowledge learn`).
  *
- * Two-phase approach:
- *   Phase 1 (Planning): send the LLM a compact project map (directory tree with
- *     file paths, symbol counts, and top symbol names) + existing Holy/Eden
- *     summaries. Ask the LLM to propose a study plan: a list of topic batches,
- *     each covering related files across directories.
- *   Phase 2 (Execution): for each planned topic batch, read the listed files,
- *     send to LLM for focused Eden extraction, cross-check against Holy, save.
+ * Two modes, selected automatically:
+ *
+ *   DOC mode   (--file / --base-dir pointing at documents):
+ *     deep-study Markdown / PDF / Word / PowerPoint / text documents and write
+ *     extracted knowledge entries to a user-chosen space (eden or holy).
+ *     Files may live outside the project source tree.
+ *
+ *   CODE mode  (no --file/--base-dir, or --base-dir pointing at an indexed
+ *     subdirectory of the project):
+ *     deep-study the project's indexed source files. Phase 0 generates three
+ *     project-wide survey entries (api-docs / code-walkthrough / usage-
+ *     examples, skipped under --base-dir), Phase 1 asks the LLM to plan topic
+ *     batches, Phase 2 executes each batch to extract Eden entries.
+ *
+ * Both modes share the same two-phase pipeline:
+ *   Phase 1 (Planning): send the LLM a compact manifest of the study universe
+ *     (doc labels + char counts, or the project file map with symbol hints)
+ *     and ask it to group files into focused topic batches using a strict
+ *     pipe-delimited format.
+ *   Phase 2 (Execution): for each batch, load the file contents, feed them to
+ *     the LLM for focused extraction, cross-check against existing entries,
+ *     and write accepted entries to the target space.
  *
  * Usage:
- *   /kb knowledge init [--per-batch-chars=N] [--dry-run] [--base-dir=PATH]
+ *   /kb knowledge learn [--space=eden|holy] [--file=<path>] [--base-dir=<dir>]
+ *                       [--per-batch-chars=N] [--dry-run] [--no-survey]
+ *                       [instructions...]
  *
- * --per-batch-chars: LLM context budget per execution batch (default 100000).
- * --dry-run: show proposed entries but do NOT write.
- * --base-dir=PATH: restrict the deep-study to files under this subdirectory
- *   (relative to the project source root, the same coordinate system used by
- *   indexed file paths, e.g. "src/slash" or "lib/index"). The three Phase 0
- *   project-wide survey entries are SKIPPED in this mode (they are whole-
- *   project by design); only Phase 1 planning + Phase 2 execution run, scoped
- *   to the chosen directory. Useful when you want to deep-study one module
- *   without disturbing the rest of the KB.
+ *   --space           eden | holy (default eden). In CODE mode the target is
+ *                     always Eden (stable Holy knowledge is curated by hand).
+ *                     Holy writes require interactive confirmation.
+ *   --file=<path>     DOC mode: learn a single file.
+ *   --base-dir=<dir>  DOC mode when the path is a real directory that is NOT
+ *                     an indexed subdirectory: learn every supported file
+ *                     under it. CODE mode when it IS an indexed subdirectory:
+ *                     restrict the study to files under it. Without --file/
+ *                     --base-dir: whole-project CODE mode.
+ *   --per-batch-chars LLM context budget per execution batch (default 100000).
+ *   --dry-run         show proposed entries but do NOT write.
+ *   --no-survey       CODE mode: skip the Phase 0 project-wide survey entries.
+ *   trailing tokens   free-form instructions passed to every LLM prompt.
+ *
+ * Plan parsing hardening (no more "Could not parse LLM study plan."):
+ *   - The plan is parsed from `content` first, then `reasoning` (some
+ *     reasoning models put the plan in reasoning_content behind a short ack).
+ *   - parsePlanText normalizes full-width pipes, unwraps fenced blocks,
+ *     strips markdown table borders, accepts semicolon separators.
+ *   - A parsed plan is only accepted when >= 50% of its paths resolve to real
+ *     files; otherwise it falls back to deterministic grouping (directory
+ *     grouping in CODE mode, per-file batches in DOC mode) — the command
+ *     ALWAYS proceeds, never aborts on a bad plan.
  */
-async function knowledgeInitKb(rest, ctx) {
+async function knowledgeLearnKb(rest, ctx) {
   const p = await getProjectOrFail(ctx);
   if (!p) return;
   if (!ctx.llm) {
@@ -503,269 +539,134 @@ async function knowledgeInitKb(rest, ctx) {
     return;
   }
   const flags = parseFlags(rest);
-  const perBatchChars = parseInt(flags['per-batch-chars'], 10) || parseInt(flags['per-module-chars'], 10) || 100000;
+  const space = flags.space === 'holy' ? 'holy' : flags.space === 'eden' ? 'eden' : '';
+  const perBatchChars = parseInt(flags['per-batch-chars'], 10) || 100000;
   const dryRun = !!flags['dry-run'];
+  const skipSurvey = !!flags['no-survey'];
+  // Planning timeout: slow providers (e.g. reasoning models on large maps)
+  // can exceed a fixed 300s; make it configurable and default longer for the
+  // first attempt. Extract retries get a smaller budget so a hung call
+  // doesn't stall a long batch run.
+  const planTimeoutMs = parseInt(flags['plan-timeout-ms'], 10) || parseInt(process.env.HK2_PLAN_TIMEOUT_MS, 10) || 300000;
+  const retryTimeoutMs = Math.min(planTimeoutMs, 180000);
   const userPrompt = flags.positionalText || '';
-  const baseDirRaw = typeof flags['base-dir'] === 'string' ? flags['base-dir'] : '';
 
-  // Normalize --base-dir into the indexed-file coordinate system (paths are
-  // stored relative to sourcePath + sourceRoot, forward-slash separated).
-  const baseDir = baseDirRaw
-    ? baseDirRaw.replace(/^\.?\/+/, '').replace(/\/+$/, '').split(path.sep).join('/')
-    : '';
-
-  ctx.print(`[kb knowledge init] Deep-studying project: ${p.name}`);
-  ctx.print(`  source: ${p.sourcePath}`);
-  if (p.sourceRoot) ctx.print(`  sourceRoot: ${p.sourceRoot}`);
-  if (baseDir) ctx.print(`  base-dir: ${baseDir} (subdirectory scope)`);
-  if (userPrompt) ctx.print(`  user instructions: ${userPrompt}`);
-
-  // When --base-dir is set, build a scoped runtime view so Phase 1 / Phase 2
-  // only see files under the chosen directory. Without --base-dir this is a
-  // no-op alias of ctx.rt (identical behavior to before).
-  const scopedRt = baseDir ? buildScopedRt(ctx.rt, baseDir) : ctx.rt;
-  if (baseDir) {
-    const scopedFiles = scopedRt?.files?.byId ? Object.keys(scopedRt.files.byId).length : 0;
-    ctx.print(`  scoped files under ${baseDir}/: ${scopedFiles}`);
-    if (scopedFiles === 0) {
-      ctx.print(`  (no indexed files under "${baseDir}" - aborting. Top-level dirs:`);
-      const tops = new Set();
-      if (ctx.rt?.files?.byId) {
-        for (const f of Object.values(ctx.rt.files.byId)) {
-          if (f.path) tops.add(f.path.split('/')[0] || '(root)');
-        }
-      }
-      ctx.print(`   ${[...tops].sort().join(', ')})`);
-      return;
-    }
-  }
-
-  // Load existing entries for conflict checking
-  const existingHoly = await listKnowledge(p.id, 'holy').catch(() => []);
-  let existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
-  ctx.print(`  existing Holy: ${existingHoly.length}, Eden: ${existingEden.length}`);
-
-  // ============ Phase 0: Project-wide survey entries ============
-  // Generates three fixed-id Eden entries (api-docs, code-walkthrough,
-  // usage-examples) that survey the WHOLE project. These complement the
-  // per-topic batches that Phase 2 produces.
-  //
-  // SKIPPED under --base-dir: survey entries are project-wide by design and
-  // must not be overwritten with a single subdirectory's contents.
-  if (!dryRun && !baseDir) {
-    ctx.setPhase?.('project survey');
-    ctx.print('');
-    ctx.print('[Phase 0: Project-wide survey] Generating api-docs / code-walkthrough / usage-examples...');
-    try {
-      const { generateSurveyEntries } = await import('../../lib/index/summarize.js');
-      const { listSymbolShards, readSymbolsShard, getMeta } = await import('../../lib/store/kb_store.js');
-      const meta = await getMeta(p.id);
-      const allSymbols = [];
-      const shards = await listSymbolShards(p.id);
-      for (const s of shards) {
-        const data = await readSymbolsShard(p.id, s.shardNum);
-        for (const sym of data.symbols || []) allSymbols.push(sym);
-      }
-      await generateSurveyEntries(p.id, {
-        llm: ctx.llm,
-        streamLLM: ctx.streamLLM,
-        allSymbols,
-        meta,
-        onProgress: (which) => ctx.print(`  [survey] generating ${which}...`),
-      });
-      // Refresh eden list so Phase 1 sees the new entries
-      existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
-    } catch (err) {
-      ctx.print(`[Phase 0] survey generation failed: ${err.message}`);
-    }
-  }
-
-  // ============ Phase 1: LLM plans the study ============
-  ctx.setPhase?.('planning study');
-  ctx.print('');
-  ctx.print('[Phase 1: Planning] Building project map for the model...');
-
-  const projectMap = buildProjectMap(scopedRt);
-  ctx.print(`  project map: ${projectMap.fileCount} files across ${projectMap.dirCount} directories, ${projectMap.text.length} chars`);
-
-  // Scale the planning request with the number of files. The old fixed
-  // "5-30 batches x 1-30 files" caps out at 900 files, which is impossible
-  // for large projects (postgres has ~3500 indexed files). A reasoning model
-  // like GLM-4.7, given contradictory constraints, deviates from the
-  // pipe-delimited format and Phase 1 then fails to parse its plan.
-  const fileCount = projectMap.fileCount || 0;
-  const maxFilesPerBatch = 30;
-  const batchGuidance = fileCount > maxFilesPerBatch * 30
-    ? `Aim for ${Math.ceil(fileCount / maxFilesPerBatch)} batches so every file is covered (the map has ${fileCount} files).`
-    : 'Aim for 5-30 batches.';
-  // The planning output must enumerate every file exactly once. The Anthropic
-  // adapter budgets output text at ~15% of maxChars (capped at 64k tokens), so
-  // for large maps this must grow well beyond the old 65536 or the plan gets
-  // truncated before every file is assigned.
-  const planningMaxChars = Math.max(65536, Math.min(500000, fileCount * 120));
-
-  // Truncate existing entries to keep the planning prompt manageable
-  const holySummary = existingHoly.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n');
-  const edenSummary = existingEden.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n');
-
-  const planSysPrompt = `You are planning a deep study of a software project. Group related files into focused topic batches — group by LOGICAL topic, not just by directory. Each batch covers a coherent area.
-
-Output format — one batch per line, using pipe delimiters (NOT JSON):
-topic-id | short description | file1.c, file2.c, file3.c
-
-Example output (3 batches):
-buffer-pool | shared buffer cache and page replacement | storage/buffer/bufmgr.c, storage/buffer/freelist.c, storage/buffer/buf_init.c
-transaction-mgmt | transaction lifecycle and snapshots | access/transam/xact.c, utils/time/snapmgr.c, storage/ipc/procarray.c
-wiredtiger-stemmers | full-text search stemmer modules | snowball/stem_ISO_8859_1_english.c, snowball/api.c
-
-Rules:
-- ${batchGuidance} Cover ALL files listed in the map.
-- Each batch: 1-${maxFilesPerBatch} files.
-- Group by topic (e.g. "transaction-mgmt" can span access/transam/ + storage/ipc/ + utils/time/).
-- Include every file in exactly one batch.
-- Do NOT duplicate topics already covered by existing Holy or Eden entries (listed below).
-- Output ONLY the pipe-delimited lines. No prose, no JSON, no markdown.`;
-
-  const planUserPrompt = `Project: ${p.name}
-
-=== COMPLETE FILE MAP ===
-${projectMap.text}
-
-Existing Holy entries (DO NOT duplicate):
-${holySummary || '(none)'}
-
-Existing Eden entries (DO NOT duplicate):
-${edenSummary || '(none)'}
-${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
-
-  let planRaw = '';
-  let planReasoning = '';
-  try {
-    for await (const evt of ctx.streamLLM(
-      [
-        { role: 'system', content: planSysPrompt },
-        { role: 'user', content: planUserPrompt },
-      ],
-      { temperature: 0.1, maxChars: planningMaxChars, enableReasoning: true, timeoutMs: 300000 },
-    )) {
-      if (evt.type === 'delta') planRaw += evt.text;
-      else if (evt.type === 'reasoning') planReasoning += evt.text;
-    }
-  } catch (err) {
-    ctx.print(`[Phase 1] LLM planning call failed: ${err.message}`);
+  // ---- Mode resolution ----
+  // Either --file or --base-dir may be given, not both. `--file` is always DOC
+  // mode. `--base-dir` is DOC mode when it resolves to a real directory that
+  // is not an indexed subdirectory of the project; it is CODE mode (scoped)
+  // when it matches the indexed-file coordinate system (same rule the old
+  // /kb knowledge init used). No flags: whole-project CODE mode.
+  const fileArg = typeof flags.file === 'string' ? flags.file : '';
+  const dirArgRaw = typeof flags['base-dir'] === 'string' ? flags['base-dir'] : '';
+  if (fileArg && dirArgRaw) {
+    ctx.print(`Pass only one of --file or --base-dir, not both.`);
     return;
   }
 
-  // Parse the plan from the model's content first. If that yields nothing,
-  // fall back to the reasoning channel: some reasoning models (GLM-4.7) put a
-  // short acknowledgment in content and the actual pipe-delimited plan in
-  // reasoning_content. Choosing content blindly via `||` would drop that plan.
-  let plan = parsePlanText(planRaw);
-  let planFromReasoning = false;
-  if (!plan && planReasoning.trim()) {
-    plan = parsePlanText(planReasoning);
-    planFromReasoning = !!plan;
-  }
+  // Normalize a --base-dir into the indexed-file coordinate system (paths
+  // relative to sourcePath + sourceRoot, forward-slash separated).
+  const normalizeBaseDir = (raw) => raw
+    ? raw.replace(/^\.?\/+/, '').replace(/\/+$/, '').split(path.sep).join('/')
+    : '';
 
-  // Validate the parsed plan against the real file index. If too few of the
-  // planned paths resolve to actual files, the model hallucinated paths or
-  // the parser picked up prose (topics like "files", "hmm", etc.). In that
-  // case, discard the plan and fall back to directory grouping.
-  if (plan && plan.length > 0 && scopedRt?.files?.byId) {
-    const realPaths = new Set(Object.values(scopedRt.files.byId).map(f => f.path).filter(Boolean));
-    let plannedTotal = 0;
-    let resolved = 0;
-    for (const b of plan) {
-      for (const p of b.files || []) {
-        plannedTotal++;
-        const clean = p.replace(/^\.\//, '');
-        if (realPaths.has(clean)) { resolved++; continue; }
-        for (const rp of realPaths) {
-          if (rp === clean || rp.endsWith('/' + clean) || clean.endsWith('/' + rp)) { resolved++; break; }
-        }
+  // Which indexed paths sit under a normalized base-dir?
+  const indexedPaths = ctx.rt?.files?.byId
+    ? Object.values(ctx.rt.files.byId).map(f => f.path).filter(Boolean)
+    : [];
+  const resolveCodeScope = (norm) => {
+    if (!norm) return { scoped: false, count: indexedPaths.length };
+    const prefix = norm.endsWith('/') ? norm : norm + '/';
+    const count = indexedPaths.filter(fp => fp === norm || fp.startsWith(prefix)).length;
+    return { scoped: true, count };
+  };
+
+  let mode = null;           // 'doc' | 'code'
+  let baseDir = '';          // indexed-coordinate base-dir for scoped code mode
+  let docDir = '';           // absolute directory for doc mode walking
+
+  if (fileArg) {
+    mode = 'doc';
+  } else if (dirArgRaw) {
+    // Prefer CODE mode when the path is an indexed subdirectory (keeps the
+    // old `knowledge init --base-dir` semantics). Otherwise, if it's a real
+    // directory on disk, treat it as DOC mode (old `learn --base-dir`).
+    const norm = normalizeBaseDir(dirArgRaw);
+    const scope = resolveCodeScope(norm);
+    if (scope.count > 0) {
+      mode = 'code';
+      baseDir = norm;
+    } else {
+      const abs = path.isAbsolute(dirArgRaw) ? dirArgRaw : path.resolve(dirArgRaw);
+      let st = null;
+      try { st = await fs.stat(abs); } catch {}
+      if (st && st.isDirectory()) {
+        mode = 'doc';
+        docDir = abs;
+      } else {
+        ctx.print(`--base-dir not found: ${abs} (and no indexed files under "${norm}")`);
+        return;
       }
     }
-    const hitRate = plannedTotal > 0 ? resolved / plannedTotal : 0;
-    if (hitRate < 0.5) {
-      ctx.print(`[Phase 1] Parsed ${plan.length} batches, but only ${resolved}/${plannedTotal} planned paths resolve to real files (${Math.round(hitRate * 100)}%).`);
-      ctx.print('[Phase 1] Discarding LLM plan — using directory-based grouping as fallback.');
-      plan = null;
-    } else {
-      ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planFromReasoning ? 'from reasoning' : 'from content'}, ${resolved}/${plannedTotal} paths resolve).`);
-    }
-  } else if (plan && plan.length > 0) {
-    ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planFromReasoning ? 'from reasoning' : 'from content'}).`);
+  } else {
+    mode = 'code';
   }
 
-  if (!plan || plan.length === 0) {
-    if (!plan) {
-      ctx.print('[Phase 1] Could not parse LLM study plan.');
-    }
-    ctx.print('[Phase 1] Using directory-based grouping as fallback.');
-    const modules = groupFilesByModule(scopedRt);
-    plan = modules.map(mod => ({
-      topic: mod.name,
-      description: `${mod.name}/ module (${mod.files.length} files, ${mod.symbolCount} symbols)`,
-      files: mod.files.map(f => f.path),
-    }));
+  ctx.print(`[kb knowledge learn] mode=${mode === 'doc' ? 'documents' : 'code'}  space=${space || 'eden'}  project=${p.name}`);
+  ctx.print(`  source: ${p.sourcePath}`);
+  if (p.sourceRoot) ctx.print(`  sourceRoot: ${p.sourceRoot}`);
+  if (baseDir) ctx.print(`  base-dir: ${baseDir} (code scope, ${resolveCodeScope(baseDir).count} indexed files)`);
+  if (docDir) ctx.print(`  base-dir: ${docDir} (documents)`);
+  if (userPrompt) ctx.print(`  user instructions: ${userPrompt}`);
+  if (dryRun) ctx.print(`  dry-run: proposals will NOT be written`);
+
+  // In CODE mode the extraction target is always Eden: the old init wrote
+  // bootstrap entries there, and Holy should stay hand-curated. --space=holy
+  // is honored only in DOC mode (learning authoritative documents).
+  const targetSpace = mode === 'code' ? 'eden' : (space || 'eden');
+  if (mode === 'code' && space === 'holy') {
+    ctx.print(`  note: --space=holy is ignored in code mode (extraction writes Eden entries).`);
   }
 
-  ctx.print('');
-  ctx.print(`[Phase 1] Study plan: ${plan.length} batches`);
-  for (let i = 0; i < plan.length; i++) {
-    const b = plan[i];
-    ctx.print(`  [${i + 1}/${plan.length}] ${b.topic}: ${b.description || ''} (${(b.files || []).length} files)`);
-  }
-  ctx.print('');
-
-  // ============ Phase 2: Execute each planned batch ============
-  ctx.print(`[Phase 2: Execution] Per-batch budget: ${perBatchChars} chars`);
-  ctx.print('');
-
+  // ================= common state =================
   const { writeKnowledge, readKnowledge } = await import('../../lib/store/kb_store.js');
   const { getRuntime } = await import('../../lib/retrieval/kb_runtime.js');
   const rt = await getRuntime(p.id).catch(() => null);
   const projectId = p.id;
 
-  // Build a lookup of file paths for reading
-  const fileIndex = new Map();
-  if (scopedRt?.files?.byId) {
-    for (const f of Object.values(scopedRt.files.byId)) {
-      if (f.path) fileIndex.set(f.path, f);
-    }
-  }
+  const existingHoly = await listKnowledge(p.id, 'holy').catch(() => []);
+  let existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
+  ctx.print(`  existing Holy: ${existingHoly.length}, Eden: ${existingEden.length}`);
 
   let totalSaved = 0;
   let totalAccepted = 0;
   let totalDiscarded = 0;
   let totalProposed = 0;
+  let studiedBatches = 0;
 
-  for (let batchIdx = 0; batchIdx < plan.length; batchIdx++) {
-    const batch = plan[batchIdx];
-    ctx.setPhase?.(`studying [${batchIdx + 1}/${plan.length}] ${batch.topic}`);
-    ctx.print(`--- [${batchIdx + 1}/${plan.length}] ${batch.topic}: ${batch.description || ''} ---`);
+  // Shared Phase 2 study routine: feed one group of sources to the model,
+  // cross-check the proposed entries, and write accepted ones.
+  // `sources` items: { path, text } (docs) or { path, content, symbolCount } (code).
+  async function studySources(sources, topic, description, sourceKind) {
+    if (sources.length === 0) return;
+    const bodyOf = (s) => (s.text != null ? s.text : (s.content != null ? s.content : ''));
+    const sourcesChars = sources.reduce((s, f) => s + bodyOf(f).length, 0);
+    ctx.print(`  deep-read: ${sources.length} ${sourceKind === 'code' ? 'file' : 'file'}(s), ${sourcesChars} chars`);
 
-    // Read the files listed in this batch's plan
-    const sources = await readPlannedFiles(p, batch.files || [], fileIndex, perBatchChars);
-    if (sources.length === 0) {
-      ctx.print('  (no readable files — skipping)');
-      continue;
-    }
-    const sourcesChars = sources.reduce((s, f) => s + f.content.length, 0);
-    ctx.print(`  deep-read: ${sources.length} files, ${sourcesChars} chars`);
-
-    // Build LLM context
     const holyNow = existingHoly.map(e => `- ${e.id}: ${e.title}`).join('\n');
     const edenNow = existingEden.map(e => `- ${e.id}: ${e.title}`).join('\n');
 
-    let contextParts = [];
+    const contextParts = [];
     for (const s of sources) {
-      contextParts.push(`## ${s.path} (${s.symbolCount} syms)\n\`\`\`\n${s.content}\n\`\`\``);
+      const label = s.symbolCount != null ? `## ${s.path} (${s.symbolCount} syms)` : `## ${s.path}`;
+      contextParts.push(`${label}\n\`\`\`\n${bodyOf(s)}\n\`\`\``);
     }
     const batchContext = contextParts.join('\n\n').slice(0, perBatchChars);
 
-    const extractSysPrompt = buildExtractSysPrompt(holyNow, edenNow, userPrompt);
-    const extractUserPrompt = `Project: ${p.name} — Topic: ${batch.topic}\n${batch.description || ''}\n\nBelow are source files related to this topic. Extract Eden knowledge entries.\n\n${batchContext}`;
+    const extractSysPrompt = buildLearnExtractSysPrompt(targetSpace, holyNow, edenNow, userPrompt, sourceKind);
+    const extractUserPrompt = sourceKind === 'code'
+      ? `Project: ${p.name} — Topic: ${topic}\n${description || ''}\n\nBelow are source files related to this topic. Extract knowledge entries.\n\n${batchContext}`
+      : `Source documents for topic "${topic}": ${description}\n\nBelow are the document contents. Extract knowledge entries.\n\n${batchContext}`;
 
     let raw = '';
     let rawReasoning = '';
@@ -782,15 +683,14 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
       }
     } catch (err) {
       ctx.print(`  LLM call failed: ${err.message} — skipping.`);
-      continue;
+      return;
     }
-    // Fallback: GLM-5.2 may put JSON in reasoning_content
+    // Reasoning models may put the JSON array in reasoning_content.
     if (!raw.trim() && rawReasoning.trim()) {
       const m = rawReasoning.match(/\[[\s\S]*\]/);
       if (m) raw = m[0];
     }
 
-    // Parse + cross-check + save
     let proposed = null;
     try { proposed = JSON.parse(raw); }
     catch {
@@ -799,378 +699,6 @@ ${userPrompt ? `\nAdditional user instructions:\n${userPrompt}` : ''}`;
     }
     if (!Array.isArray(proposed)) {
       ctx.print('  (could not parse as JSON array — skipping)');
-      continue;
-    }
-    totalProposed += proposed.length;
-    if (proposed.length === 0) {
-      ctx.print('  (no Eden entries)');
-      continue;
-    }
-
-    const { accepted, discarded: disc } = crossCheckEntries(proposed, existingHoly, existingEden);
-    ctx.print(`  proposed: ${proposed.length}, accepted: ${accepted.length}, discarded: ${disc.length}`);
-    for (const e of accepted) {
-      ctx.print(`    [ACCEPT] ${e.id}: ${e.title || ''} (${(e.intro || '').length}c)`);
-    }
-
-    totalAccepted += accepted.length;
-    totalDiscarded += disc.length;
-
-    if (!dryRun && accepted.length > 0) {
-      for (const entry of accepted) {
-        const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
-        const record = {
-          id, space: 'eden',
-          title: entry.title, intro: entry.intro,
-          keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
-          keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
-          keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
-          autoLearned: true, bootstrap: true,
-        };
-        await writeKnowledge(projectId, 'eden', record);
-        const final = await readKnowledge(projectId, 'eden', id);
-        if (final && rt) rt.reloadKnowledge?.(final, 'eden');
-        existingEden.push(record);
-        totalSaved++;
-      }
-    }
-  }
-
-  // Final summary
-  ctx.setPhase?.('idle');
-  ctx.print('');
-  ctx.print('=== /kb knowledge init complete ===');
-  ctx.print(`  batches studied: ${plan.length}`);
-  ctx.print(`  total proposed: ${totalProposed}`);
-  ctx.print(`  total accepted: ${totalAccepted}`);
-  ctx.print(`  total discarded: ${totalDiscarded}`);
-  if (dryRun) {
-    ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved.`);
-  } else if (totalSaved > 0) {
-    ctx.print(`  ${totalSaved} Eden entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
-  } else {
-    ctx.print('  (no entries saved)');
-  }
-}
-
-// File formats learnable via /kb knowledge learn (in addition to code-indexed
-// ones). Kept in sync with doc_parser.DOC_EXTS but limited to the human-readable
-// document types the user asked for: Markdown, PDF, Word, PowerPoint.
-const LEARN_DOC_EXTS = new Set(['md', 'markdown', 'pdf', 'doc', 'docx', 'ppt', 'pptx']);
-
-/**
- * /kb knowledge learn - deep-study a file (or every file in a directory) and
- * write extracted knowledge entries to a user-chosen space.
- *
- * Two-phase approach (mirrors /kb knowledge init):
- *   Phase 1 (Planning): send the LLM a compact manifest of the target files
- *     (paths + per-file char budget) and ask it to group them into focused
- *     topic batches.
- *   Phase 2 (Execution): for each batch, parse + read the listed files, feed
- *     them to the LLM for focused extraction, cross-check against existing
- *     entries, and write accepted entries to --space.
- *
- * Supported formats (via lib/parser/doc_parser.js):
- *   Markdown (.md/.markdown), PDF (.pdf), Word (.doc/.docx), PowerPoint (.ppt/.pptx).
- *   Other text-ish files the indexer already knows (.txt/.rst/.adoc/.json/.yaml/.html)
- *   are also accepted and read as UTF-8.
- *
- * Usage:
- *   /kb knowledge learn --space=eden|holy [--file=<path>] [--base-dir=<dir>]
- *                       [--per-batch-chars=N] [--dry-run] [instructions...]
- *
- *   --space           eden | holy (required). Holy writes require interactive
- *                     confirmation (see confirmHolyWrite below).
- *   --file=<path>     learn a single file.
- *   --base-dir=<dir>  learn every supported file under this directory
- *                     (recursive). All files are processed.
- *   --per-batch-chars LLM context budget per execution batch (default 100000).
- *   --dry-run         show proposed entries but do NOT write.
- *   trailing tokens   free-form instructions passed to the extraction prompt.
- *
- * Either --file or --base-dir must be given (not both).
- */
-async function knowledgeLearnKb(rest, ctx) {
-  const p = await getProjectOrFail(ctx);
-  if (!p) return;
-  if (!ctx.llm) {
-    ctx.print(`No LLM configured. Run /model add + /model set-default first.`);
-    return;
-  }
-  const flags = parseFlags(rest);
-  const space = flags.space === 'holy' ? 'holy' : flags.space === 'eden' ? 'eden' : '';
-  if (!space) {
-    ctx.print(`--space is required and must be eden or holy.`);
-    ctx.print(`Usage: /kb knowledge learn --space=eden|holy [--file=<path>] [--base-dir=<dir>] [--dry-run]`);
-    return;
-  }
-  const fileArg = typeof flags.file === 'string' ? flags.file : '';
-  const dirArg = typeof flags['base-dir'] === 'string' ? flags['base-dir'] : '';
-  if (!fileArg && !dirArg) {
-    ctx.print(`Either --file=<path> or --base-dir=<dir> is required.`);
-    ctx.print(`Usage: /kb knowledge learn --space=eden|holy [--file=<path>] [--base-dir=<dir>] [--dry-run]`);
-    return;
-  }
-  if (fileArg && dirArg) {
-    ctx.print(`Pass only one of --file or --base-dir, not both.`);
-    return;
-  }
-  const perBatchChars = parseInt(flags['per-batch-chars'], 10) || 100000;
-  const dryRun = !!flags['dry-run'];
-  const userPrompt = flags.positionalText || '';
-
-  // ---- Resolve target files ----
-  // Files may be inside or outside the project source tree. We resolve against
-  // the CWD and fall back to the project source path so both project docs and
-  // arbitrary external files (e.g. /tmp/spec.pdf) work.
-  let targetFiles = [];
-  const unsupported = [];
-  const resolveRoot = (base) => {
-    if (path.isAbsolute(base)) return base;
-    if (p.sourcePath) {
-      const inProject = path.join(p.sourcePath, base);
-      const inCwd = path.resolve(base);
-      // Prefer whichever exists; default to CWD-resolved for external files.
-      return inCwd;
-    }
-    return path.resolve(base);
-  };
-
-  if (fileArg) {
-    const abs = path.isAbsolute(fileArg) ? fileArg : path.resolve(fileArg);
-    const ext = path.extname(abs).slice(1).toLowerCase();
-    if (!isLearnableExt(ext)) {
-      ctx.print(`Unsupported file type: .${ext || '(none)'}`);
-      ctx.print(`Supported: ${[...LEARN_DOC_EXTS].join(', ')}, plus txt/rst/adoc/json/yaml/html/sgml.`);
-      return;
-    }
-    try { const st = await fs.stat(abs); if (!st.isFile()) throw new Error('not a file'); }
-    catch (err) { ctx.print(`--file not found or not a file: ${abs} (${err.message})`); return; }
-    targetFiles.push(abs);
-  } else {
-    const dir = resolveRoot(dirArg);
-    let st;
-    try { st = await fs.stat(dir); }
-    catch { ctx.print(`--base-dir not found: ${dir}`); return; }
-    if (!st.isDirectory()) { ctx.print(`--base-dir is not a directory: ${dir}`); return; }
-    ctx.print(`[kb knowledge learn] Walking ${dir} ...`);
-    targetFiles = await walkLearnFiles(dir, unsupported);
-  }
-
-  if (targetFiles.length === 0) {
-    ctx.print(`No learnable files found${dirArg ? ` under ${dirArg}` : ''}.`);
-    ctx.print(`Supported: ${[...LEARN_DOC_EXTS].join(', ')}, plus txt/rst/adoc/json/yaml/html/sgml.`);
-    if (unsupported.length) {
-      ctx.print(`Skipped ${unsupported.length} unsupported file(s): ${unsupported.slice(0, 8).map(f => path.basename(f)).join(', ')}${unsupported.length > 8 ? ' ...' : ''}`);
-    }
-    return;
-  }
-
-  ctx.print(`[kb knowledge learn] Deep-studying ${targetFiles.length} file${targetFiles.length === 1 ? '' : 's'} -> ${space} space`);
-  if (dirArg) ctx.print(`  base-dir: ${dirArg}`);
-  if (userPrompt) ctx.print(`  user instructions: ${userPrompt}`);
-  if (unsupported.length) {
-    ctx.print(`  (skipped ${unsupported.length} unsupported file${unsupported.length === 1 ? '' : 's'})`);
-  }
-
-  // ---- Parse every target file up-front so we can report failures and ----
-  // ---- guarantee every supported file is processed.                       ----
-  const { parseDocument } = await import('../../lib/parser/doc_parser.js');
-  const parsedFiles = [];   // { path, label, text }
-  const failed = [];
-  for (const abs of targetFiles) {
-    const label = dirArg ? path.relative(resolveRoot(dirArg), abs) : path.basename(abs);
-    ctx.setPhase?.(`parsing ${label}`);
-    let parsed = null;
-    try { parsed = await parseDocument(abs); }
-    catch (err) { failed.push({ label, msg: err.message }); }
-    if (!parsed || !((parsed.text || '').trim())) {
-      if (parsed) failed.push({ label, msg: 'no extractable text' });
-      continue;
-    }
-    // Large files (books, long PDFs/PPTs) are split into sequential parts so
-    // EVERY section is studied. Previously the text was truncated to
-    // perBatchChars here, silently discarding everything after the first
-    // chunk (e.g. chapters 4-12 of a 12-chapter book). Each part is its own
-    // manifest entry and gets its own study batch in Phase 2.
-    const chunks = chunkDocText(parsed.text, perBatchChars);
-    for (let ci = 0; ci < chunks.length; ci++) {
-      const chunkLabel = chunks.length > 1 ? `${label}.part${ci + 1}` : label;
-      parsedFiles.push({
-        path: chunkLabel,
-        label: chunkLabel,
-        text: chunks[ci].text,
-        title: chunks.length > 1
-          ? `${parsed.title || label} (part ${ci + 1}/${chunks.length})`
-          : (parsed.title || label),
-      });
-    }
-  }
-  ctx.setPhase?.('idle');
-
-  if (parsedFiles.length === 0) {
-    ctx.print(`Could not extract text from any file.`);
-    for (const f of failed) ctx.print(`  - ${f.label}: ${f.msg}`);
-    return;
-  }
-  const totalChars = parsedFiles.reduce((s, f) => s + f.text.length, 0);
-  const parsedLine = parsedFiles.length > targetFiles.length
-    ? `  parsed: ${targetFiles.length} file(s) split into ${parsedFiles.length} study parts, ${totalChars} chars`
-    : `  parsed: ${parsedFiles.length}/${targetFiles.length} files, ${totalChars} chars`;
-  ctx.print(parsedLine);
-  if (failed.length) {
-    ctx.print(`  failed: ${failed.length}`);
-    for (const f of failed.slice(0, 10)) ctx.print(`    - ${f.label}: ${f.msg}`);
-  }
-
-  // ---- Load existing entries for conflict checking ----
-  const existingHoly = await listKnowledge(p.id, 'holy').catch(() => []);
-  let existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
-  ctx.print(`  existing Holy: ${existingHoly.length}, Eden: ${existingEden.length}`);
-
-  // ---- Phase 1: LLM plans study batches from the file manifest ----
-  ctx.setPhase?.('planning study');
-  ctx.print('');
-  ctx.print('[Phase 1: Planning] Building file manifest for the model...');
-  const manifest = parsedFiles.map((f, i) =>
-    `[${i + 1}] ${f.path} (${f.text.length} chars${f.title && f.title !== f.path ? `, title: ${f.title}` : ''})`).join('\n');
-
-  const planSysPrompt = `You are planning a deep study of a set of documents (PDF / Word / PowerPoint / Markdown) so reusable knowledge entries can be extracted into the project KB.
-
-Group related files into focused topic batches - group by LOGICAL topic, not just by file. Each batch should be coherent and small enough to study together.
-
-Output format - one batch per line, using pipe delimiters (NOT JSON):
-topic-id | short description | file1, file2, file3
-
-Rules:
-- Use the EXACT file labels from the manifest (the [N] label text).
-- Cover EVERY file across the batches - no file may be dropped.
-- A large document is split into numbered parts (e.g. "book.pdf.part1", "book.pdf.part2") - each part is a separate manifest entry and must be covered like any other file.
-- Keep each batch's TOTAL source size under the per-batch budget of ${perBatchChars} chars (the manifest shows every entry's char count). Split the parts of one book into separate batches when grouping them would exceed the budget.
-- If there is only one file, output a single batch for it.
-- Keep batches to <= 6 files when possible.
-
-File manifest:
-${manifest}`;
-
-  let planRaw = '';
-  let planReasoning = '';
-  try {
-    for await (const evt of ctx.streamLLM(
-      [
-        { role: 'system', content: planSysPrompt },
-        { role: 'user', content: `Plan the study of these ${parsedFiles.length} document(s).${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },
-      ],
-      { temperature: 0.1, maxChars: 8192, enableReasoning: true, timeoutMs: 120000 },
-    )) {
-      if (evt.type === 'delta') planRaw += evt.text;
-      else if (evt.type === 'reasoning') planReasoning += evt.text;
-    }
-  } catch (err) {
-    ctx.print(`[Phase 1] planning LLM call failed: ${err.message}`);
-    ctx.print(`[Phase 1] falling back to one batch per file.`);
-  }
-  if (!planRaw.trim() && planReasoning.trim()) {
-    const m = planReasoning.match(/topic-id[\s\S]*$/i);
-    if (m) planRaw = m[0];
-  }
-
-  let plan = parsePlanText(planRaw);
-  // Validate: every parsed file must appear in some batch. Files not assigned
-  // by the LLM are given their own batch so nothing is dropped (the user asked
-  // to ensure all files are learned).
-  plan = reconcilePlan(plan, parsedFiles);
-
-  ctx.print('');
-  ctx.print(`[Phase 1] Study plan: ${plan.length} batch${plan.length === 1 ? '' : 'es'}`);
-  for (let i = 0; i < plan.length; i++) {
-    const b = plan[i];
-    ctx.print(`  [${i + 1}/${plan.length}] ${b.topic}: ${b.description || ''} (${(b.files || []).length} files)`);
-  }
-  ctx.print('');
-
-  // ---- Phase 2: Execute each batch ----
-  ctx.print(`[Phase 2: Execution] Per-batch budget: ${perBatchChars} chars`);
-  ctx.print('');
-
-  const { writeKnowledge, readKnowledge } = await import('../../lib/store/kb_store.js');
-  const { getRuntime } = await import('../../lib/retrieval/kb_runtime.js');
-  const rt = await getRuntime(p.id).catch(() => null);
-  const projectId = p.id;
-
-  // Map label -> parsed text for fast lookup
-  const textByLabel = new Map(parsedFiles.map(f => [f.path, f]));
-
-  // For holy writes we ask for interactive confirmation once per run (not per
-  // entry) to avoid spamming; the user already chose --space=holy explicitly.
-  if (space === 'holy' && !dryRun) {
-    ctx.print(`[holy] You are about to write learned entries to HOLY space.`);
-    ctx.print(`  Holy Space is the source of truth for stable design knowledge.`);
-    const holyConfirmed = await ctx.confirm(`Write learned entries to holy? (y/N) `);
-    if (!holyConfirmed) {
-      ctx.print(`Cancelled. Re-run with --space=eden, or confirm to proceed.`);
-      return;
-    }
-  }
-
-  let totalSaved = 0;
-  let totalAccepted = 0;
-  let totalDiscarded = 0;
-  let totalProposed = 0;
-  const processedLabels = new Set();
-
-  // Shared Phase 2 study routine: feed one group of sources to the model,
-  // cross-check the proposed entries, and write accepted ones. Mutates the
-  // outer counters + existing-entry lists so later batches avoid duplicates.
-  async function studySources(sources, topic, description) {
-    if (sources.length === 0) return;
-    const sourcesChars = sources.reduce((s, f) => s + f.text.length, 0);
-    ctx.print(`  deep-read: ${sources.length} file(s), ${sourcesChars} chars`);
-
-    const holyNow = existingHoly.map(e => `- ${e.id}: ${e.title}`).join('\n');
-    const edenNow = existingEden.map(e => `- ${e.id}: ${e.title}`).join('\n');
-
-    const contextParts = [];
-    for (const s of sources) {
-      contextParts.push(`## ${s.path}\n\`\`\`\n${s.text}\n\`\`\``);
-    }
-    // Budget is enforced by groupByBudget before we get here, so this slice is
-    // only a last-resort guard against a single oversized source.
-    const batchContext = contextParts.join('\n\n').slice(0, perBatchChars);
-
-    const extractSysPrompt = buildLearnExtractSysPrompt(space, holyNow, edenNow, userPrompt);
-    const extractUserPrompt = `Source documents for topic "${topic}": ${description}\n\nBelow are the document contents. Extract ${space} knowledge entries.\n\n${batchContext}`;
-
-    let raw = '';
-    let rawReasoning = '';
-    try {
-      for await (const evt of ctx.streamLLM(
-        [
-          { role: 'system', content: extractSysPrompt },
-          { role: 'user', content: extractUserPrompt },
-        ],
-        { temperature: 0.1, maxChars: 65536, enableReasoning: true, timeoutMs: 300000 },
-      )) {
-        if (evt.type === 'delta') raw += evt.text;
-        else if (evt.type === 'reasoning') rawReasoning += evt.text;
-      }
-    } catch (err) {
-      ctx.print(`  LLM call failed: ${err.message} - skipping.`);
-      return;
-    }
-    if (!raw.trim() && rawReasoning.trim()) {
-      const m = rawReasoning.match(/\[[\s\S]*\]/);
-      if (m) raw = m[0];
-    }
-
-    let proposed = null;
-    try { proposed = JSON.parse(raw); }
-    catch {
-      const m = raw.match(/\[[\s\S]*\]/);
-      if (m) { try { proposed = JSON.parse(m[0]); } catch {} }
-    }
-    if (!Array.isArray(proposed)) {
-      ctx.print('  (could not parse as JSON array - skipping)');
       return;
     }
     totalProposed += proposed.length;
@@ -1191,20 +719,471 @@ ${manifest}`;
       for (const entry of accepted) {
         const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
         const record = {
-          id, space,
+          id, space: targetSpace,
           title: entry.title, intro: entry.intro,
           keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
           keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
           keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
           autoLearned: true, learned: true,
+          source: sourceKind === 'code' ? 'kb-knowledge-learn-code' : 'kb-knowledge-learn-doc',
         };
-        await writeKnowledge(projectId, space, record);
-        const final = await readKnowledge(projectId, space, id);
-        if (final && rt) rt.reloadKnowledge?.(final, space);
-        if (space === 'holy') existingHoly.push(record);
+        await writeKnowledge(projectId, targetSpace, record);
+        const final = await readKnowledge(projectId, targetSpace, id);
+        if (final && rt) rt.reloadKnowledge?.(final, targetSpace);
+        if (targetSpace === 'holy') existingHoly.push(record);
         else existingEden.push(record);
         totalSaved++;
       }
+    }
+  }
+
+  // ================= DOC mode =================
+  if (mode === 'doc') {
+    const unsupported = [];
+    let targetFiles = [];
+    if (fileArg) {
+      const abs = path.isAbsolute(fileArg) ? fileArg : path.resolve(fileArg);
+      const ext = path.extname(abs).slice(1).toLowerCase();
+      if (!isLearnableExt(ext)) {
+        ctx.print(`Unsupported file type: .${ext || '(none)'}`);
+        ctx.print(`Supported: ${[...LEARN_DOC_EXTS].join(', ')}, plus txt/rst/adoc/json/yaml/html/sgml.`);
+        return;
+      }
+      try { const st = await fs.stat(abs); if (!st.isFile()) throw new Error('not a file'); }
+      catch (err) { ctx.print(`--file not found or not a file: ${abs} (${err.message})`); return; }
+      targetFiles.push(abs);
+    } else {
+      ctx.print(`[doc] Walking ${docDir} ...`);
+      targetFiles = await walkLearnFiles(docDir, unsupported);
+    }
+
+    if (targetFiles.length === 0) {
+      ctx.print(`No learnable files found${docDir ? ` under ${docDir}` : ''}.`);
+      ctx.print(`Supported: ${[...LEARN_DOC_EXTS].join(', ')}, plus txt/rst/adoc/json/yaml/html/sgml.`);
+      if (unsupported.length) {
+        ctx.print(`Skipped ${unsupported.length} unsupported file(s): ${unsupported.slice(0, 8).map(f => path.basename(f)).join(', ')}${unsupported.length > 8 ? ' ...' : ''}`);
+      }
+      return;
+    }
+
+    ctx.print(`[doc] Deep-studying ${targetFiles.length} file${targetFiles.length === 1 ? '' : 's'} -> ${targetSpace} space`);
+    if (unsupported.length) {
+      ctx.print(`  (skipped ${unsupported.length} unsupported file${unsupported.length === 1 ? '' : 's'})`);
+    }
+
+    // Parse every target file up-front so failures are reported and every
+    // supported file is processed.
+    const { parseDocument } = await import('../../lib/parser/doc_parser.js');
+    const parsedFiles = [];   // { path, label, text, title }
+    const failed = [];
+    for (const abs of targetFiles) {
+      const label = docDir ? path.relative(docDir, abs) : path.basename(abs);
+      ctx.setPhase?.(`parsing ${label}`);
+      let parsed = null;
+      try { parsed = await parseDocument(abs); }
+      catch (err) { failed.push({ label, msg: err.message }); }
+      if (!parsed || !((parsed.text || '').trim())) {
+        if (parsed) failed.push({ label, msg: 'no extractable text' });
+        continue;
+      }
+      // Large files are split into sequential parts so EVERY section is
+      // studied; each part is its own manifest entry and Phase 2 batch.
+      const chunks = chunkDocText(parsed.text, perBatchChars);
+      for (let ci = 0; ci < chunks.length; ci++) {
+        const chunkLabel = chunks.length > 1 ? `${label}.part${ci + 1}` : label;
+        parsedFiles.push({
+          path: chunkLabel,
+          label: chunkLabel,
+          text: chunks[ci].text,
+          title: chunks.length > 1
+            ? `${parsed.title || label} (part ${ci + 1}/${chunks.length})`
+            : (parsed.title || label),
+        });
+      }
+    }
+    ctx.setPhase?.('idle');
+
+    if (parsedFiles.length === 0) {
+      ctx.print(`Could not extract text from any file.`);
+      for (const f of failed) ctx.print(`  - ${f.label}: ${f.msg}`);
+      return;
+    }
+    const totalChars = parsedFiles.reduce((s, f) => s + f.text.length, 0);
+    ctx.print(parsedFiles.length > targetFiles.length
+      ? `  parsed: ${targetFiles.length} file(s) split into ${parsedFiles.length} study parts, ${totalChars} chars`
+      : `  parsed: ${parsedFiles.length}/${targetFiles.length} files, ${totalChars} chars`);
+    if (failed.length) {
+      ctx.print(`  failed: ${failed.length}`);
+      for (const f of failed.slice(0, 10)) ctx.print(`    - ${f.label}: ${f.msg}`);
+    }
+
+    // For holy writes we ask for interactive confirmation once per run.
+    if (targetSpace === 'holy' && !dryRun) {
+      ctx.print(`[holy] You are about to write learned entries to HOLY space.`);
+      ctx.print(`  Holy Space is the source of truth for stable design knowledge.`);
+      const holyConfirmed = await ctx.confirm(`Write learned entries to holy? (y/N) `);
+      if (!holyConfirmed) {
+        ctx.print(`Cancelled. Re-run with --space=eden, or confirm to proceed.`);
+        return;
+      }
+    }
+
+    // ---- Phase 1: LLM plans study batches from the file manifest ----
+    ctx.setPhase?.('planning study');
+    ctx.print('');
+    ctx.print('[Phase 1: Planning] Building file manifest for the model...');
+    const manifest = parsedFiles.map((f, i) =>
+      `[${i + 1}] ${f.path} (${f.text.length} chars${f.title && f.title !== f.path ? `, title: ${f.title}` : ''})`).join('\n');
+
+    const fileCount = parsedFiles.length;
+    const planSysPrompt = `You are planning a deep study of a set of documents (PDF / Word / PowerPoint / Markdown) so reusable knowledge entries can be extracted into the project KB.
+
+Group related files into focused topic batches - group by LOGICAL topic, not just by file. Each batch should be coherent and small enough to study together.
+
+Output format - one batch per line, using pipe delimiters (NOT JSON, NO markdown):
+topic-id | short description | file1, file2, file3
+
+Rules:
+- Use the EXACT file labels from the manifest (the [N] label text).
+- Cover EVERY file across the batches - no file may be dropped.
+- A large document is split into numbered parts (e.g. "book.pdf.part1") - each part is a separate manifest entry and must be covered like any other file.
+- Keep each batch's TOTAL source size under the per-batch budget of ${perBatchChars} chars.
+- If there is only one file, output a single batch for it.
+- Keep batches to <= 6 files when possible.
+- Output ONLY the pipe-delimited lines. No prose, no JSON, no markdown fences.
+
+File manifest:
+${manifest}`;
+
+    let planRaw = '';
+    let planReasoning = '';
+    try {
+      for await (const evt of ctx.streamLLM(
+        [
+          { role: 'system', content: planSysPrompt },
+          { role: 'user', content: `Plan the study of these ${fileCount} document(s).${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },
+        ],
+        { temperature: 0.1, maxChars: planningBudgetFor(fileCount), enableReasoning: true, timeoutMs: 300000 },
+      )) {
+        if (evt.type === 'delta') planRaw += evt.text;
+        else if (evt.type === 'reasoning') planReasoning += evt.text;
+      }
+    } catch (err) {
+      ctx.print(`[Phase 1] planning LLM call failed: ${err.message}`);
+    }
+    // Parse from content first; fall back to the reasoning channel when the
+    // plan isn't there (reasoning models put it in reasoning_content).
+    let plan = parsePlanText(planRaw);
+    let planFromReasoning = false;
+    if (!plan && planReasoning.trim()) {
+      plan = parsePlanText(planReasoning);
+      planFromReasoning = !!plan;
+    }
+    if (plan) {
+      ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batch${plan.length === 1 ? '' : 'es'} (${planFromReasoning ? 'from reasoning' : 'from content'}).`);
+    } else {
+      ctx.print(`[Phase 1] LLM plan not parseable - falling back to per-file batches.`);
+    }
+    // Safety net: every parsed file must appear in some batch. Files the LLM
+    // omitted get their own batch; batches referencing unknown files are dropped.
+    plan = reconcilePlan(plan, parsedFiles);
+
+    ctx.print('');
+    ctx.print(`[Phase 1] Study plan: ${plan.length} batch${plan.length === 1 ? '' : 'es'}`);
+    for (let i = 0; i < plan.length; i++) {
+      const b = plan[i];
+      ctx.print(`  [${i + 1}/${plan.length}] ${b.topic}: ${b.description || ''} (${(b.files || []).length} files)`);
+    }
+    ctx.print('');
+
+    // ---- Phase 2: Execute each batch ----
+    ctx.print(`[Phase 2: Execution] Per-batch budget: ${perBatchChars} chars`);
+    ctx.print('');
+
+    const textByLabel = new Map(parsedFiles.map(f => [f.path, f]));
+    const processedLabels = new Set();
+
+    for (let batchIdx = 0; batchIdx < plan.length; batchIdx++) {
+      const batch = plan[batchIdx];
+      ctx.setPhase?.(`studying [${batchIdx + 1}/${plan.length}] ${batch.topic}`);
+      ctx.print(`--- [${batchIdx + 1}/${plan.length}] ${batch.topic}: ${batch.description || ''} ---`);
+
+      const sources = [];
+      for (const rel of batch.files || []) {
+        const f = textByLabel.get(rel) || findByLabel(textByLabel, rel);
+        if (!f) continue;
+        sources.push(f);
+        processedLabels.add(f.path);
+      }
+      if (sources.length === 0) {
+        ctx.print('  (no readable files in batch — skipping)');
+        continue;
+      }
+      // Budget enforcement: oversized batches are studied in sub-groups.
+      const groups = groupByBudget(sources, perBatchChars);
+      for (let gi = 0; gi < groups.length; gi++) {
+        if (groups.length > 1) {
+          ctx.print(`  sub-batch ${gi + 1}/${groups.length}: ${groups[gi].map(s => s.path).join(', ')}`);
+        }
+        await studySources(groups[gi], batch.topic, batch.description || '', 'doc');
+        studiedBatches++;
+      }
+    }
+
+    // Safety net: study any file the planner dropped.
+    const dropped = parsedFiles.filter(f => !processedLabels.has(f.path));
+    if (dropped.length > 0) {
+      ctx.print('');
+      ctx.print(`[safety] ${dropped.length} file(s) were not covered by any batch - studying individually.`);
+      for (const f of dropped) {
+        ctx.setPhase?.(`studying [fallback] ${f.path}`);
+        ctx.print(`--- [fallback] ${f.path} ---`);
+        await studySources([f], f.path.replace(/\.[^.]+$/, ''), `single-file fallback for ${f.path}`, 'doc');
+        studiedBatches++;
+      }
+    }
+
+    ctx.setPhase?.('idle');
+    ctx.print('');
+    ctx.print('=== /kb knowledge learn complete ===');
+    ctx.print(`  mode: documents`);
+    ctx.print(`  target files: ${targetFiles.length}`);
+    ctx.print(`  parsed files: ${parsedFiles.length}`);
+    ctx.print(`  batches studied: ${studiedBatches}`);
+    ctx.print(`  total proposed: ${totalProposed}`);
+    ctx.print(`  total accepted: ${totalAccepted}`);
+    ctx.print(`  total discarded: ${totalDiscarded}`);
+    if (dryRun) {
+      ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved to ${targetSpace}.`);
+    } else if (totalSaved > 0) {
+      ctx.print(`  ${totalSaved} ${targetSpace} entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
+    } else {
+      ctx.print('  (no entries saved)');
+    }
+    return;
+  }
+
+  // ================= CODE mode =================
+  // Scoped runtime view when --base-dir matches an indexed subdirectory.
+  const scopedRt = baseDir ? buildScopedRt(ctx.rt, baseDir) : ctx.rt;
+  if (baseDir) {
+    const scopedFiles = scopedRt?.files?.byId ? Object.keys(scopedRt.files.byId).length : 0;
+    ctx.print(`  scoped files under ${baseDir}/: ${scopedFiles}`);
+    if (scopedFiles === 0) {
+      ctx.print(`  (no indexed files under "${baseDir}" - aborting. Top-level dirs:`);
+      const tops = new Set();
+      if (ctx.rt?.files?.byId) {
+        for (const f of Object.values(ctx.rt.files.byId)) {
+          if (f.path) tops.add(f.path.split('/')[0] || '(root)');
+        }
+      }
+      ctx.print(`   ${[...tops].sort().join(', ')})`);
+      return;
+    }
+  }
+  if (!scopedRt?.files?.byId || Object.keys(scopedRt.files.byId).length === 0) {
+    ctx.print(`No indexed files. Run /kb init first.`);
+    return;
+  }
+
+  // ---- Phase 0: project-wide survey entries (skipped under --base-dir / --no-survey / --dry-run) ----
+  if (!dryRun && !baseDir && !skipSurvey) {
+    ctx.setPhase?.('project survey');
+    ctx.print('');
+    ctx.print('[Phase 0: Project-wide survey] Generating api-docs / code-walkthrough / usage-examples...');
+    try {
+      const { generateSurveyEntries } = await import('../../lib/index/summarize.js');
+      const { listSymbolShards, readSymbolsShard, getMeta } = await import('../../lib/store/kb_store.js');
+      const meta = await getMeta(p.id);
+      const allSymbols = [];
+      const shards = await listSymbolShards(p.id);
+      for (const s of shards) {
+        const data = await readSymbolsShard(p.id, s.shardNum);
+        for (const sym of data.symbols || []) allSymbols.push(sym);
+      }
+      await generateSurveyEntries(p.id, {
+        llm: ctx.llm,
+        streamLLM: ctx.streamLLM,
+        allSymbols,
+        meta,
+        onProgress: (which) => ctx.print(`  [survey] generating ${which}...`),
+      });
+      existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
+    } catch (err) {
+      ctx.print(`[Phase 0] survey generation failed: ${err.message}`);
+    }
+  }
+
+  // ---- Phase 1: LLM plans the study ----
+  // Hierarchical strategy for large projects: asking the LLM to enumerate
+  // every file in its output (e.g. postgres: 2620 files, 423k-char map) makes
+  // reasoning models burn their entire budget in the reasoning channel and
+  // emit ZERO plan lines — the direct cause of "Could not parse LLM study
+  // plan.". Above the file threshold the LLM plans over DIRECTORIES (a ~20x
+  // smaller map) and file assignment is expanded deterministically.
+  ctx.setPhase?.('planning study');
+  ctx.print('');
+  ctx.print('[Phase 1: Planning] Building project map for the model...');
+
+  const FILE_LEVEL_LIMIT = 300;
+  const dirMap = buildDirMap(scopedRt);
+  const hierarchical = dirMap.fileCount > FILE_LEVEL_LIMIT;
+  let fileCount;
+  let mapText;
+  if (hierarchical) {
+    fileCount = dirMap.fileCount;
+    mapText = dirMap.text;
+    ctx.print(`  project map: ${fileCount} files across ${dirMap.dirCount} directories — too large for file-level planning, using DIRECTORY-level map (${mapText.length} chars)`);
+  } else {
+    const projectMap = buildProjectMap(scopedRt);
+    fileCount = projectMap.fileCount || 0;
+    mapText = projectMap.text;
+    ctx.print(`  project map: ${fileCount} files across ${projectMap.dirCount} directories, ${mapText.length} chars`);
+  }
+
+  const unitWord = hierarchical ? 'directories' : 'files';
+  const unitHint = hierarchical
+    ? `The map below lists DIRECTORIES (with file/symbol counts). Group DIRECTORIES into topics; a topic may list one or more directories (copy the directory paths EXACTLY, with or without the trailing slash).`
+    : `Group related files into focused topic batches — group by LOGICAL topic, not just by directory. Each batch covers a coherent area.`;
+  const planSysPrompt = `You are planning a deep study of a software project. ${unitHint}
+
+Output format — one batch per line, using pipe delimiters (NOT JSON, NO markdown):
+topic-id | short description | ${hierarchical ? 'dir1/, dir2/' : 'file1.c, file2.c, file3.c'}
+
+Example output (3 batches):
+buffer-pool | shared buffer cache and page replacement | ${hierarchical ? 'src/storage/buffer/' : 'storage/buffer/bufmgr.c, storage/buffer/freelist.c, storage/buffer/buf_init.c'}
+transaction-mgmt | transaction lifecycle and snapshots | ${hierarchical ? 'src/access/transam/, src/utils/time/, src/storage/ipc/' : 'access/transam/xact.c, utils/time/snapmgr.c, storage/ipc/procarray.c'}
+wiredtiger-stemmers | full-text search stemmer modules | ${hierarchical ? 'src/snowball/' : 'snowball/stem_ISO_8859_1_english.c, snowball/api.c'}
+
+Rules:
+- ${hierarchical ? `Aim for 5-${Math.min(60, Math.ceil(dirMap.dirCount / 5))} topic batches covering ALL directories in the map.` : `${batchGuidanceFor(fileCount)} Cover ALL files listed in the map.`}
+- ${hierarchical ? 'Every directory in the map must appear in exactly one batch.' : 'Each batch: 1-30 files. Include every file in exactly one batch.'}
+- Group by topic (e.g. "transaction-mgmt" can span access/transam/ + storage/ipc/ + utils/time/).
+- Do NOT duplicate topics already covered by existing Holy or Eden entries (listed below).
+- Output ONLY the pipe-delimited lines. No prose, no JSON, no markdown fences.
+
+=== COMPLETE ${hierarchical ? 'DIRECTORY' : 'FILE'} MAP ===
+${mapText}
+
+Existing Holy entries (DO NOT duplicate):
+${existingHoly.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n') || '(none)'}
+
+Existing Eden entries (DO NOT duplicate):
+${existingEden.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n') || '(none)'}`;
+
+  // planCall(): one planning attempt. enableReasoning stays ON for the first
+  // attempt (reasoning models plan better with it) and is disabled for the
+  // retry so the model MUST put its answer in content.
+  const planCall = async (enableReasoning) => {
+    let raw = '';
+    let reasoning = '';
+    for await (const evt of ctx.streamLLM(
+      [
+        { role: 'system', content: planSysPrompt },
+        { role: 'user', content: `Project: ${p.name}\n\nPlan the deep study of these ${fileCount} ${unitWord}.${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },
+      ],
+      { temperature: 0.1, maxChars: planningBudgetFor(hierarchical ? dirMap.dirCount : fileCount), enableReasoning, timeoutMs: enableReasoning ? planTimeoutMs : retryTimeoutMs },
+    )) {
+      if (evt.type === 'delta') raw += evt.text;
+      else if (evt.type === 'reasoning') reasoning += evt.text;
+    }
+    return { raw, reasoning };
+  };
+
+  let planRaw = '';
+  let planReasoning = '';
+  try {
+    ({ raw: planRaw, reasoning: planReasoning } = await planCall(true));
+  } catch (err) {
+    ctx.print(`[Phase 1] LLM planning call failed: ${err.message}`);
+  }
+
+  let plan = parsePlanText(planRaw);
+  let planFromReasoning = false;
+  if (!plan && planReasoning.trim()) {
+    plan = parsePlanText(planReasoning);
+    planFromReasoning = !!plan;
+  }
+  // Retry once with reasoning DISABLED: when the first attempt produced no
+  // parseable plan (e.g. the whole budget spent thinking), a non-reasoning
+  // call forces the answer into the content channel with a fresh budget.
+  if (!plan) {
+    ctx.print('[Phase 1] No parseable plan from content or reasoning - retrying with reasoning disabled...');
+    try {
+      const retry = await planCall(false);
+      plan = parsePlanText(retry.raw);
+      if (!plan && retry.reasoning.trim()) plan = parsePlanText(retry.reasoning);
+    } catch (err) {
+      ctx.print(`[Phase 1] retry planning call failed: ${err.message}`);
+    }
+  }
+
+  // Validate the parsed plan against the real file index: if < 50% of the
+  // planned paths resolve to real files/directories the model hallucinated
+  // paths or the parser picked up prose — discard and fall back.
+  if (plan && plan.length > 0) {
+    if (hierarchical) {
+      // Directory-level plan: expand to concrete files now.
+      const expanded = expandDirPlan(plan, dirMap);
+      if (expanded.length === 0) {
+        ctx.print('[Phase 1] Directory plan resolved to no files - discarding.');
+        plan = null;
+      } else {
+        plan = expanded;
+        ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} file batches (expanded from a directory-level plan).`);
+      }
+    } else if (scopedRt?.files?.byId) {
+      const realPaths = new Set(Object.values(scopedRt.files.byId).map(f => f.path).filter(Boolean));
+      let plannedTotal = 0;
+      let resolved = 0;
+      for (const b of plan) {
+        for (const fp of b.files || []) {
+          plannedTotal++;
+          const clean = fp.replace(/^\.\//, '');
+          if (realPaths.has(clean)) { resolved++; continue; }
+          for (const rp of realPaths) {
+            if (rp === clean || rp.endsWith('/' + clean) || clean.endsWith('/' + rp)) { resolved++; break; }
+          }
+        }
+      }
+      const hitRate = plannedTotal > 0 ? resolved / plannedTotal : 0;
+      if (hitRate < 0.5) {
+        ctx.print(`[Phase 1] Parsed ${plan.length} batches, but only ${resolved}/${plannedTotal} planned paths resolve to real files (${Math.round(hitRate * 100)}%).`);
+        ctx.print('[Phase 1] Discarding LLM plan — using directory-based grouping as fallback.');
+        plan = null;
+      } else {
+        ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planFromReasoning ? 'from reasoning' : 'from content'}, ${resolved}/${plannedTotal} paths resolve).`);
+      }
+    } else if (plan.length > 0) {
+      ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batches (${planFromReasoning ? 'from reasoning' : 'from content'}).`);
+    }
+  }
+
+  // Fallback: deterministic directory-tree grouping. Every indexed file in
+  // scope is covered by exactly one batch, so the study ALWAYS proceeds.
+  if (!plan || plan.length === 0) {
+    if (!plan) {
+      ctx.print('[Phase 1] LLM produced no usable plan - proceeding with deterministic directory grouping (full coverage guaranteed).');
+    }
+    plan = dirTreePlan(scopedRt);
+  }
+
+  ctx.print('');
+  ctx.print(`[Phase 1] Study plan: ${plan.length} batches`);
+  for (let i = 0; i < plan.length; i++) {
+    const b = plan[i];
+    ctx.print(`  [${i + 1}/${plan.length}] ${b.topic}: ${b.description || ''} (${(b.files || []).length} files)`);
+  }
+  ctx.print('');
+
+  // ---- Phase 2: Execute each planned batch ----
+  ctx.print(`[Phase 2: Execution] Per-batch budget: ${perBatchChars} chars`);
+  ctx.print('');
+
+  const fileIndex = new Map();
+  if (scopedRt?.files?.byId) {
+    for (const f of Object.values(scopedRt.files.byId)) {
+      if (f.path) fileIndex.set(f.path, f);
     }
   }
 
@@ -1213,77 +1192,94 @@ ${manifest}`;
     ctx.setPhase?.(`studying [${batchIdx + 1}/${plan.length}] ${batch.topic}`);
     ctx.print(`--- [${batchIdx + 1}/${plan.length}] ${batch.topic}: ${batch.description || ''} ---`);
 
-    // Gather parsed text for this batch's files
-    const sources = [];
-    for (const rel of batch.files || []) {
-      const f = textByLabel.get(rel) || findByLabel(textByLabel, rel);
-      if (!f) continue;
-      sources.push(f);
-      processedLabels.add(f.path);
-    }
+    const sources = await readPlannedFiles(p, batch.files || [], fileIndex, perBatchChars);
     if (sources.length === 0) {
-      ctx.print('  (no readable files in batch - skipping)');
+      ctx.print('  (no readable files — skipping)');
       continue;
     }
-    // Budget enforcement: an oversized batch (e.g. several book parts grouped
-    // together) is studied in sub-groups so the model context never silently
-    // truncates content (the original bug).
+    // Budget enforcement: oversized batches are studied in sub-groups.
     const groups = groupByBudget(sources, perBatchChars);
     for (let gi = 0; gi < groups.length; gi++) {
       if (groups.length > 1) {
         ctx.print(`  sub-batch ${gi + 1}/${groups.length}: ${groups[gi].map(s => s.path).join(', ')}`);
       }
-      await studySources(groups[gi], batch.topic, batch.description || '');
+      await studySources(groups[gi], batch.topic, batch.description || '', 'code');
+      studiedBatches++;
     }
   }
 
-  // Safety net: if the planner dropped a file (no batch referenced it), study
-  // it now so the user's "ensure all files learned" requirement is honored.
-  const dropped = parsedFiles.filter(f => !processedLabels.has(f.path));
-  if (dropped.length > 0) {
-    ctx.print('');
-    ctx.print(`[safety] ${dropped.length} file(s) were not covered by any batch - studying individually.`);
-    for (const f of dropped) processedLabels.add(f.path);
-    // Re-run Phase 2 with a single-file fallback plan.
-    const fallbackPlan = dropped.map((f, i) => ({ topic: `fallback-${i + 1}`, description: f.path, files: [f.path] }));
-    for (let batchIdx = 0; batchIdx < fallbackPlan.length; batchIdx++) {
-      const batch = fallbackPlan[batchIdx];
-      ctx.setPhase?.(`studying [fallback ${batchIdx + 1}/${fallbackPlan.length}] ${batch.topic}`);
-      ctx.print(`--- [fallback ${batchIdx + 1}/${fallbackPlan.length}] ${batch.topic}: ${batch.description || ''} ---`);
-      const sources = [findByLabel(textByLabel, batch.files[0])].filter(Boolean);
-      if (sources.length === 0) continue;
-      await studySources(sources, batch.topic, batch.description || '');
-    }
-  }
-
-  // ---- Final summary ----
   ctx.setPhase?.('idle');
   ctx.print('');
   ctx.print('=== /kb knowledge learn complete ===');
-  ctx.print(`  target files: ${targetFiles.length}`);
-  ctx.print(`  parsed files: ${parsedFiles.length}`);
-  ctx.print(`  batches studied: ${plan.length + (dropped.length ? dropped.length : 0)}`);
+  ctx.print(`  mode: code${baseDir ? ` (scoped to ${baseDir}/)` : ''}`);
+  ctx.print(`  batches studied: ${studiedBatches}`);
   ctx.print(`  total proposed: ${totalProposed}`);
   ctx.print(`  total accepted: ${totalAccepted}`);
   ctx.print(`  total discarded: ${totalDiscarded}`);
   if (dryRun) {
-    ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved to ${space}.`);
+    ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved to eden.`);
   } else if (totalSaved > 0) {
-    ctx.print(`  ${totalSaved} ${space} entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
+    ctx.print(`  ${totalSaved} eden entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
   } else {
     ctx.print('  (no entries saved)');
   }
+}
+
+// File formats learnable via /kb knowledge learn (in addition to code-indexed
+// ones). Kept in sync with doc_parser.DOC_EXTS but limited to the human-readable
+// document types the user asked for: Markdown, PDF, Word, PowerPoint.
+const LEARN_DOC_EXTS = new Set(['md', 'markdown', 'pdf', 'doc', 'docx', 'ppt', 'pptx']);
+
+/**
+ * Scale the plan-output budget with the number of files being planned. The
+ * plan must enumerate every file, so the output budget must grow with the
+ * map size (old fixed 8192/65536 budgets truncated large plans and caused
+ * "Could not parse LLM study plan." failures on big projects).
+ */
+function planningBudgetFor(fileCount) {
+  const n = Math.max(1, fileCount || 1);
+  return Math.max(65536, Math.min(500000, n * 120));
+}
+
+/**
+ * Scale-aware batch-count guidance for the code-mode planning prompt. Hard-
+ * coding "5-30 batches" caps coverage at 900 files — impossible for projects
+ * like postgres (~3500 files) and makes reasoning models deviate from the
+ * output format.
+ */
+function batchGuidanceFor(fileCount) {
+  const maxFilesPerBatch = 30;
+  if (fileCount > maxFilesPerBatch * 30) {
+    return `Aim for ${Math.ceil(fileCount / maxFilesPerBatch)} batches so every file is covered (the map has ${fileCount} files).`;
+  }
+  return 'Aim for 5-30 batches.';
 }
 
 /**
  * System prompt for the per-batch extraction phase of /kb knowledge learn.
  * Parameterized by target space so the model writes the right kind of entry.
  */
-function buildLearnExtractSysPrompt(space, holySummary, edenSummary, userPrompt) {
+function buildLearnExtractSysPrompt(space, holySummary, edenSummary, userPrompt, sourceKind = 'doc') {
   const spaceGuidance = space === 'holy'
-    ? `The target space is HOLY - stable design knowledge that rarely changes: architecture, core algorithms, fundamental patterns, design principles. Only write genuinely stable, reusable design knowledge. If a document only contains ephemeral details (config values, version lists, one-off notes), return [].`
+    ? `The target space is HOLY - stable design knowledge that rarely changes: architecture, core algorithms, fundamental patterns, design principles. Only write genuinely stable, reusable design knowledge. If a source only contains ephemeral details (config values, version lists, one-off notes), return [].`
     : `The target space is EDEN - frequently-updated knowledge: API/command catalogs, function lists, module summaries, observed patterns, how-to checklists. Things that may evolve are welcome.`;
-  return `You are analyzing documents (PDF / Word / PowerPoint / Markdown) to extract reusable knowledge entries for the project's KB ${space.toUpperCase()} Space.
+  const sourceLine = sourceKind === 'code'
+    ? `You are analyzing SOURCE CODE files from a software project to extract reusable knowledge entries for the project's KB ${space.toUpperCase()} Space.`
+    : `You are analyzing documents (PDF / Word / PowerPoint / Markdown) to extract reusable knowledge entries for the project's KB ${space.toUpperCase()} Space.`;
+  const groundingRule = sourceKind === 'code'
+    ? `- Use REAL identifiers and file paths from the provided source code. Never invent symbol names or paths.`
+    : `- Ground every entry in the ACTUAL document contents provided. Quote real terms and commands.`;
+  const aim = sourceKind === 'code' ? '1-5' : '1-6';
+  const introHint = sourceKind === 'code'
+    ? `"intro": "2-5 paragraph prose explaining this knowledge; include key names, functions, and patterns; state WHERE the knowledge lives (file paths / function names) so a future reader can navigate to it",`
+    : `"intro": "2-5 paragraph prose explaining this knowledge; include key names, commands, and patterns mentioned in the sources",`;
+  const keyFilesHint = sourceKind === 'code'
+    ? `"keyFiles": ["project-relative source file paths"],`
+    : `"keyFiles": ["document-relative paths or source file references"],`;
+  const keySymbolsHint = sourceKind === 'code'
+    ? `"keySymbols": ["function/type/macro names"],`
+    : `"keySymbols": ["named entities / functions / commands / terms"],`;
+  return `${sourceLine}
 
 ${spaceGuidance}
 
@@ -1296,26 +1292,27 @@ Output STRICT JSON array:
   {
     "id": "kebab-case-id",
     "title": "human-readable title",
-    "intro": "2-5 paragraph prose explaining this knowledge; include key names, commands, and patterns mentioned in the documents",
-    "keyFiles": ["document-relative paths or source file references"],
-    "keySymbols": ["named entities / functions / commands / terms"],
+${introHint}
+${keyFilesHint}
+${keySymbolsHint}
     "keywords": ["english search terms"]
   }
 ]
 
 Rules:
-- Ground every entry in the ACTUAL document contents provided. Quote real terms and commands.
+${groundingRule}
+- Each entry must be a DISTINCT, self-contained topic a future reader can act on. Do not produce overlapping entries.
 - Do NOT duplicate existing Holy or Eden entries.
-- Aim for 1-6 entries per batch. Quality over quantity.
+- Aim for ${aim} entries per batch. Quality over quantity.
 - If no extractable ${space} knowledge, return [].
 
 Existing Holy entries (DO NOT duplicate):
 ${holySummary || '(none)'}
 
 Existing Eden entries (DO NOT duplicate):
-${edenSummary || '(none)'}
-${userPrompt ? `\nAdditional user instructions (follow these when extracting knowledge):\n${userPrompt}` : ''}`;
+${edenSummary || '(none)'}${userPrompt ? `\nAdditional user instructions (follow these when extracting knowledge):\n${userPrompt}` : ''}`;
 }
+
 
 /**
  * Recursively walk a directory and return absolute paths of files whose
@@ -1495,9 +1492,13 @@ function parsePlanText(text) {
   }
 
   // Normalize reasoning-model artifacts before line parsing:
-  //   - full-width pipe '｜' used by some Chinese reasoning models
+  //   - full-width pipe '｜' / comma '，' / enumeration comma '、' used by some
+  //     Chinese reasoning models
   //   - fenced code blocks (```text ... ```) that wrap the plan
-  const normalized = text.replace(/｜/g, '|');
+  const normalized = text
+    .replace(/｜/g, '|')
+    .replace(/，/g, ',')
+    .replace(/、/g, ',');
   const fenced = extractFencedBlocks(normalized);
   const source = fenced.length > 0 ? fenced : normalized;
 
@@ -1655,43 +1656,6 @@ async function readPlannedFiles(project, plannedPaths, fileIndex, maxChars) {
   return collected;
 }
 
-/**
- * System prompt for the Eden extraction phase.
- */
-function buildExtractSysPrompt(holySummary, edenSummary, userPrompt) {
-  return `You are analyzing source code from a software project to extract reusable knowledge entries for the project's KB Eden Space.
-
-Eden Space holds frequently-updated knowledge: function lists, command catalogs, API surface summaries, observed coding patterns, module responsibilities — things that may evolve.
-
-For each piece of knowledge:
-- Stable design knowledge (architecture, algorithms)? → SKIP (that's Holy Space).
-- Catalog / list / summary that may change? → INCLUDE.
-
-Output STRICT JSON array:
-[
-  {
-    "id": "kebab-case-id",
-    "title": "human-readable title",
-    "intro": "2-4 paragraph prose explaining this knowledge",
-    "keyFiles": ["project-relative paths"],
-    "keySymbols": ["function/type/macro names"],
-    "keywords": ["english search terms"]
-  }
-]
-
-Rules:
-- Use REAL identifiers and file paths from the provided source code.
-- Do NOT duplicate existing Holy or Eden entries.
-- Aim for 1-5 entries. Quality over quantity.
-- If no extractable knowledge, return [].
-
-Existing Holy entries (DO NOT duplicate):
-${holySummary || '(none)'}
-
-Existing Eden entries (DO NOT duplicate):
-${edenSummary || '(none)'}
-${userPrompt ? `\nAdditional user instructions (follow these when extracting knowledge):\n${userPrompt}` : ''}`;
-}
 
 /**
  * Cross-check proposed entries against Holy and existing Eden.
@@ -1730,68 +1694,6 @@ function crossCheckEntries(proposed, holy, eden) {
   }
   return { accepted, discarded };
 }
-/**
- * Collect project documentation files (*.md, *.rst, *.txt) under sourcePath/docs,
- * sourcePath/doc, and sourcePath root (README etc.).
- */
-async function collectProjectDocs(project, maxChars) {
-  const docsRoots = [
-    path.join(project.sourcePath, 'docs'),
-    path.join(project.sourcePath, 'doc'),
-    path.join(project.sourcePath, project.sourceRoot || '', 'docs'),
-    path.join(project.sourcePath, project.sourceRoot || '', 'doc'),
-  ];
-  // Also check root README/CHANGELOG
-  const rootCandidates = ['README.md', 'README.rst', 'README', 'CHANGELOG.md', 'CHANGELOG'];
-  const collected = [];
-  let totalChars = 0;
-  for (const root of docsRoots) {
-    const files = await walkDocFiles(root, 30).catch(() => []);
-    for (const f of files) {
-      if (totalChars >= maxChars) break;
-      try {
-        let text = await fs.readFile(f, 'utf8');
-        if (text.length > 20000) text = text.slice(0, 20000) + '\n...(truncated)';
-        collected.push({ path: path.relative(project.sourcePath, f), text });
-        totalChars += text.length;
-      } catch {}
-    }
-  }
-  // Check root README
-  for (const name of rootCandidates) {
-    const rp = path.join(project.sourcePath, name);
-    if (totalChars >= maxChars) break;
-    try {
-      let text = await fs.readFile(rp, 'utf8');
-      if (text.length > 4000) text = text.slice(0, 4000) + '\n...(truncated)';
-      collected.push({ path: name, text });
-      totalChars += text.length;
-    } catch {}
-  }
-  return collected;
-}
-
-async function walkDocFiles(root, limit, depth = 0) {
-  if (depth > 3 || limit <= 0) return [];
-  const out = [];
-  let entries;
-  try { entries = await fs.readdir(root, { withFileTypes: true }); }
-  catch { return []; }
-  for (const ent of entries) {
-    if (limit <= 0) break;
-    if (ent.name.startsWith('.git') || ent.name === 'node_modules') continue;
-    const fp = path.join(root, ent.name);
-    if (ent.isDirectory()) {
-      const sub = await walkDocFiles(fp, limit, depth + 1);
-      out.push(...sub);
-      limit -= sub.length;
-    } else if (/\.(md|rst|txt|adoc)$/i.test(ent.name)) {
-      out.push(fp);
-      limit--;
-    }
-  }
-  return out;
-}
 
 // (Old single-pass helpers buildFileManifest / collectKeySources removed —
 // replaced by the iterative approach above.)
@@ -1812,6 +1714,95 @@ function groupFilesByModule(rt) {
     g.symbolCount += f.symbolCount || 0;
   }
   return Array.from(groups.values()).sort((a, b) => b.symbolCount - a.symbolCount);
+}
+
+/**
+ * Build a DIRECTORY-level map for hierarchical planning on large projects.
+ * Returns { text, dirCount, fileCount, dirs: [{ dir, fileCount, symbolCount, files }] }.
+ *
+ * On postgres (~2620 files / ~423k chars for the full file map) asking the LLM
+ * to enumerate every file makes reasoning models burn their whole budget in
+ * the reasoning channel (82KB of thought, ZERO content) before writing a
+ * single plan line — the direct cause of "Could not parse LLM study plan.".
+ * The directory map is ~10-30x smaller; the LLM groups DIRECTORIES into
+ * topics and every file assignment below that is deterministic.
+ */
+function buildDirMap(rt) {
+  if (!rt || !rt.files) return { text: '', dirCount: 0, fileCount: 0, dirs: [] };
+  const dirs = new Map(); // dir -> { fileCount, symbolCount, files: [] }
+  let fileCount = 0;
+  for (const f of Object.values(rt.files.byId || {})) {
+    if (!f.path) continue;
+    fileCount++;
+    const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '(root)';
+    if (!dirs.has(dir)) dirs.set(dir, { dir, fileCount: 0, symbolCount: 0, files: [] });
+    const d = dirs.get(dir);
+    d.fileCount++;
+    d.symbolCount += f.symbolCount || 0;
+    d.files.push(f.path);
+  }
+  const list = Array.from(dirs.values()).sort((a, b) => a.dir.localeCompare(b.dir));
+  const lines = list.map(d => `${d.dir}/ (${d.fileCount} files, ${d.symbolCount} syms)`);
+  return { text: lines.join('\n'), dirCount: list.length, fileCount, dirs: list };
+}
+
+/**
+ * Expand a directory-level LLM plan into a file-level plan.
+ * Each batch lists directories (with a trailing '/' or matching a known dir);
+ * this replaces them with the concrete files under each directory, splitting
+ * mega-batches so Phase 2 stays within the per-batch char budget.
+ */
+function expandDirPlan(dirPlan, dirMap, maxFilesPerBatch = 30) {
+  const byDir = new Map(dirMap.dirs.map(d => [d.dir, d]));
+  const out = [];
+  for (const batch of dirPlan) {
+    const files = [];
+    let desc = batch.description || '';
+    for (const token of batch.files || []) {
+      const clean = String(token).replace(/\/+$/, '').replace(/^\.?\/+/, '');
+      const d = byDir.get(clean);
+      if (d) {
+        files.push(...d.files);
+        continue;
+      }
+      // The LLM may echo a file path directly — keep it if it exists.
+      if (dirMap.dirs.some(dd => dd.files.includes(clean))) files.push(clean);
+    }
+    if (files.length === 0) continue;
+    // Split mega-batches: every file is covered, batches stay digestible.
+    const unique = [...new Set(files)];
+    for (let i = 0; i < unique.length; i += maxFilesPerBatch) {
+      const slice = unique.slice(i, i + maxFilesPerBatch);
+      const suffix = unique.length > maxFilesPerBatch ? ` [${Math.floor(i / maxFilesPerBatch) + 1}/${Math.ceil(unique.length / maxFilesPerBatch)}]` : '';
+      out.push({ topic: batch.topic + (suffix ? '-' + suffix.match(/\d+\/\d+/)[0].split('/')[0] : ''), description: desc + suffix, files: slice });
+    }
+    desc = desc; // keep linters quiet about reassignment style
+  }
+  return out;
+}
+
+/**
+ * Deterministic fallback plan from the directory tree: every file under a
+ * directory goes to that directory's batch, and large directories are split
+ * into <= maxFilesPerBatch chunks. This replaces the old top-level-only
+ * grouping that turned postgres into two 2400-file mega-batches.
+ */
+function dirTreePlan(rt, maxFilesPerBatch = 30) {
+  const dirMap = buildDirMap(rt);
+  const out = [];
+  for (const d of dirMap.dirs) {
+    const topicBase = d.dir.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'root';
+    for (let i = 0; i < d.files.length; i += maxFilesPerBatch) {
+      const slice = d.files.slice(i, i + maxFilesPerBatch);
+      const part = d.files.length > maxFilesPerBatch ? `-p${Math.floor(i / maxFilesPerBatch) + 1}` : '';
+      out.push({
+        topic: topicBase + part,
+        description: `${d.dir}/ (${d.fileCount} files, ${d.symbolCount} syms)${part ? ` part ${Math.floor(i / maxFilesPerBatch) + 1}` : ''}`,
+        files: slice,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -2332,4 +2323,9 @@ export const __learnTest = {
   groupByBudget,
   labelMatches,
   parsePlanText,
+  planningBudgetFor,
+  batchGuidanceFor,
+  buildDirMap,
+  expandDirPlan,
+  dirTreePlan,
 };

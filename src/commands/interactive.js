@@ -367,7 +367,7 @@ export function buildCtx(session) {
     /**
      * Stream from the LLM with status-bar tracking. Wraps ctx.llm.stream()
      * so that usage events update session.tokens and the status bar refreshes.
-     * Use this in slash commands that make LLM calls (e.g. /kb knowledge init).
+     * Use this in slash commands that make LLM calls (e.g. /kb knowledge learn).
      *
      * A slash-command stream is treated as its own loop: callIn/callOut and
      * loopIn/loopOut both reset at start. loopIn/loopOut are delta-updated on

@@ -343,28 +343,32 @@ test('knowledgeLearnKb dry-run parses a markdown file and proposes an entry', as
   }
 });
 
-test('knowledgeLearnKb errors when --space is missing', async () => {
+test('knowledgeLearnKb defaults --space to eden (no longer an error)', async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-nospace-'));
   try {
     await fs.writeFile(path.join(tmpDir, 'a.md'), '# hi');
     await ensureProject(tmpDir);
     const ctx = makeMockCtx({ planOutput: '', extractOutput: '[]' });
-    await cmdKb(['knowledge', 'learn', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    await cmdKb(['knowledge', 'learn', '--file=' + path.join(tmpDir, 'a.md'), '--dry-run'], ctx);
     const out = ctx.prints.join('\n');
-    assert.match(out, /--space is required/);
+    // --space is optional now: doc mode targets eden by default.
+    assert.match(out, /mode=documents\s+space=eden/);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
 
-test('knowledgeLearnKb requires either --file or --base-dir', async () => {
+test('knowledgeLearnKb without --file/--base-dir runs whole-project code mode', async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-noarg-'));
   try {
     await ensureProject(tmpDir);
     const ctx = makeMockCtx({ planOutput: '', extractOutput: '[]' });
     await cmdKb(['knowledge', 'learn', '--space=eden'], ctx);
     const out = ctx.prints.join('\n');
-    assert.match(out, /or --base-dir=<dir> is required/);
+    // Bare `learn` is the merged whole-project CODE mode (old `knowledge init`).
+    assert.match(out, /mode=code/);
+    // The test project has no indexed files, so it stops with a clear hint.
+    assert.match(out, /No indexed files\. Run \/kb init first\./);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

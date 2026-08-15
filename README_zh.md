@@ -103,7 +103,13 @@ hk2
 /kb init
 
 # 3. 深度研读整个项目 -> 自动生成 Eden 知识条目
-/kb knowledge init
+/kb knowledge learn
+
+#    或深度研读文档（PDF / Word / PPT / Markdown）到指定空间：
+/kb knowledge learn --space=eden --file=docs/spec.pdf
+
+#    或将代码研读限定到某个子目录：
+/kb knowledge learn --base-dir=src/storage
 
 # 4. 提问（代理会自动检索知识库上下文并调用工具）
 登录是如何校验密码的？
@@ -156,7 +162,7 @@ hk2
 
 ### 自动生成的 Eden 条目
 
-`/kb init` 与 `/kb knowledge init` 会生成互补的、由 LLM 撰写的 Eden 条目集合。两者均无需手写——每次运行都会覆盖之前的版本。
+`/kb init` 与 `/kb knowledge learn` 会生成互补的、由 LLM 撰写的 Eden 条目集合。两者均无需手写——每次运行都会覆盖之前的版本。
 
 **`/kb init`** 写入 3 个高层结构条目（可用 `--skip-summary` 跳过）：
 
@@ -166,14 +172,20 @@ hk2
 | `architecture-diagram` | 模块 / 层级关系的 Mermaid 流程图，附带简短图例。 |
 | `architecture-decisions` | 基于检测到的技术推断出的 4–8 条 ADR 风格条目，每条附带具体的修改建议。 |
 
-**`/kb knowledge init`** 在 Phase 0 写入 3 个项目级概览条目，随后在 Phase 2 写入 N 个主题相关条目：
+**`/kb knowledge learn`** 是合并后的统一深度研读命令（原 `/kb knowledge init` 现在是它的别名）。它有两种模式。**CODE 模式**（不带 `--file`；`--base-dir` 匹配已索引子目录，或裸调用）在 Phase 0 写入 3 个项目级概览条目，随后在 Phase 2 写入 N 个主题相关条目。**DOC 模式**（`--file=<path>` 或未索引的 `--base-dir`）深度研读 Markdown / PDF / Word / PowerPoint 文档并写入所选空间：
 
 | 条目 id | 阶段 | 内容 |
 |---|---|---|
 | `api-docs` | 0 | 对全项目最重要的公开 / 导出符号的编号参考。 |
 | `code-walkthrough` | 0 | 4–8 个章节，逐步剖析最核心的抽象。 |
 | `usage-examples` | 0 | 3–5 个使用真实公开符号的编号快速上手示例。 |
-| `<topic-id>`（动态） | 2 | 每个 LLM 规划的主题一个条目（5–30 个），每个聚焦一个连贯的子系统（如 `buffer-pool`、`transaction-mgmt`、`wal-replay`）。 |
+| `<topic-id>`（动态） | 2 | 每个 LLM 规划的主题一个条目，每个聚焦一个连贯的子系统（如 `buffer-pool`、`transaction-mgmt`、`wal-replay`）。 |
+
+DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；大文件会被切分为顺序分片以保证内容不丢失，且每个文档都保证被某个批次覆盖（规划遗漏的文件会获得单文件兜底批次）。
+
+**规模化行为（postgres 等大项目，约 3500 文件）：**索引文件超过 300 个时，规划器从文件级切换为**目录级规划**——LLM 只分组目录（map 缩小约 30 倍），每个目录令牌再被确定性展开为具体文件并切分为 ≤30 文件的批次。若 LLM 计划仍不可用（推理模型可能把整个预算耗在思考上），命令会先禁用推理重试一次，最终回退到确定性目录分组——研读永远以全覆盖继续，绝不中断。
+
+**规划超时：**慢速供应商可能超过默认 300 秒规划预算；可用 `--plan-timeout-ms=N`（或环境变量 `HK2_PLAN_TIMEOUT_MS`）覆盖。
 
 可通过 `kb_knowledge("<id>")` 或 `kb_search_knowledge("overview")` 检索其中任意条目。
 
@@ -184,7 +196,7 @@ hk2
 | `/kb knowledge list [--space=holy\|eden]` | 列出知识条目 |
 | `/kb knowledge show <id>` | 显示条目全文（同时检索两个空间） |
 | `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | 手动添加条目 |
-| `/kb knowledge init [--per-batch-chars=N] [--dry-run] [--base-dir=PATH]` | 两阶段深度研读：LLM 根据全项目图谱规划研读批次，随后执行每个批次以自动生成 Eden 条目。会与 Holy 交叉校验；冲突时以 Holy 为准。`--base-dir=PATH` 限定仅研读该子目录下的文件，并跳过三个全项目级概览条目。 |
+| `/kb knowledge learn [--space=eden\|holy] [--file=路径] [--base-dir=目录] [--per-batch-chars=N] [--dry-run] [--no-survey] [--plan-timeout-ms=N]` | 统一的深度研读命令。CODE 模式（裸调用，或 `--base-dir` 匹配已索引子目录）：两阶段研读已索引源码；Phase 0 写入三个项目级概览条目；Phase 1 规划主题批次（对 postgres 等大项目按规模自适应），Phase 2 逐批执行。LLM 计划不可用时回退到确定性目录分组——绝不中断。DOC 模式（`--file` 或未索引的 `--base-dir`）：深度研读 Markdown / PDF / Word / PowerPoint / 文本文档并写入 `--space`。旧别名 `init`/`bootstrap`/`scan` 路由到此处（全项目 CODE 模式）。 |
 | `/kb knowledge export <eden\|holy\|all> <path>` | 将条目导出为 JSON 文件（版本 2 格式，每个条目带 `space` 标签） |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 从 JSON 导入条目。`adaptive` 会按条目原始空间路由。导入到 Holy 始终提示 y/N。 |
 | `/kb knowledge housekeep <eden\|holy\|all>` | 移除缺失字段、重复 id 或标题/关键词近似的条目。Holy 始终提示确认。 |
@@ -220,7 +232,7 @@ hk2
 | `/kb knowledge list` | 列出 Holy + Eden 条目 |
 | `/kb knowledge show <id>` | 显示条目全文 |
 | `/kb knowledge add [...]` | 手动添加条目 |
-| `/kb knowledge init [--dry-run] [--base-dir=PATH]` | 深度研读项目（或通过 `--base-dir` 限定单个子目录）-> 自动生成 Eden |
+| `/kb knowledge learn [--dry-run] [--base-dir=PATH] [--file=PATH]` | 深度研读项目代码（或单个子目录 / 文档）-> 自动生成知识条目 |
 | `/kb knowledge export <scope> <path>` | 将条目导出为 JSON |
 | `/kb knowledge import <path> [adaptive]` | 导入条目（adaptive 按原始空间路由） |
 | `/kb knowledge housekeep <scope>` | 移除重复与无效条目 |
@@ -513,7 +525,7 @@ hk2/
 │       ├── index.js           # 斜杠命令分发器（引号感知分词器）
 │       ├── model.js           # /model
 │       ├── project.js         # /project
-│       ├── kb.js              # /kb（含 knowledge init/export/import/transform）
+│       ├── kb.js              # /kb（含 knowledge learn/export/import/transform）
 │       └── session.js         # /session
 ├── lib/
 │   ├── config/

@@ -106,7 +106,13 @@ Inside the REPL:
 /kb init
 
 # 3. Deep-study the whole project → auto-generate Eden knowledge entries
-/kb knowledge init
+/kb knowledge learn
+
+#    or deep-study documents (PDF / Word / PPT / Markdown) into a space:
+/kb knowledge learn --space=eden --file=docs/spec.pdf
+
+#    or scope the code study to one subdirectory:
+/kb knowledge learn --base-dir=src/storage
 
 # 4. Ask a question (the agent retrieves KB context + uses tools automatically)
 How does login verify the password?
@@ -159,7 +165,7 @@ The graph is queried via:
 
 ### Auto-generated Eden entries
 
-`/kb init` and `/kb knowledge init` produce complementary sets of LLM-authored Eden entries. None require manual writing — both commands overwrite prior versions on each run.
+`/kb init` and `/kb knowledge learn` produce complementary sets of LLM-authored Eden entries. None require manual writing — both commands overwrite prior versions on each run.
 
 **`/kb init`** writes 3 high-level structural entries (skipped with `--skip-summary`):
 
@@ -169,14 +175,20 @@ The graph is queried via:
 | `architecture-diagram` | A Mermaid flowchart of module / layer relationships with a short legend. |
 | `architecture-decisions` | 4–8 ADR-style entries inferred from detected technologies, each with concrete modification suggestions. |
 
-**`/kb knowledge init`** writes 3 project-wide survey entries as Phase 0, then N topic-specific entries as Phase 2:
+**`/kb knowledge learn`** is the unified deep-study command (it absorbed the former `/kb knowledge init`, which now aliases to it). It has two modes. **CODE mode** (no `--file`; `--base-dir` matching an indexed subdirectory, or bare) writes 3 project-wide survey entries as Phase 0, then N topic-specific entries as Phase 2. **DOC mode** (`--file=<path>` or a non-indexed `--base-dir`) deep-studies Markdown / PDF / Word / PowerPoint documents into the chosen space:
 
 | Entry id | Phase | Contents |
 |---|---|---|
 | `api-docs` | 0 | Numbered reference for the most important public / exported symbols across the whole project. |
 | `code-walkthrough` | 0 | 4–8 sections walking through the most central core abstractions. |
 | `usage-examples` | 0 | 3–5 numbered quickstart examples using real public symbols. |
-| `<topic-id>` (dynamic) | 2 | One entry per LLM-planned topic (5–30 entries), each focused on a coherent subsystem (e.g. `buffer-pool`, `transaction-mgmt`, `wal-replay`). |
+| `<topic-id>` (dynamic) | 2 | One entry per LLM-planned topic, each focused on a coherent subsystem (e.g. `buffer-pool`, `transaction-mgmt`, `wal-replay`). |
+
+DOC mode (`--file` / non-indexed `--base-dir`) extracts entries from documents; large files are split into sequential parts so nothing is silently truncated, and every document is guaranteed to be covered by a batch (the planner's omissions get single-file fallback batches).
+
+**Scale behavior (large projects like postgres, ~3500 files):** above 300 indexed files the planner switches from file-level to **directory-level planning** — the LLM groups directories (a ~30x smaller map), and each directory token is deterministically expanded into its concrete files, split into ≤30-file batches. If the LLM plan is still unusable (reasoning models can spend their whole budget thinking), the command retries once with reasoning disabled and finally falls back to deterministic directory grouping — the study always proceeds with full file coverage.
+
+**Plan timeouts:** slow providers can exceed the default 300s planning budget; override with `--plan-timeout-ms=N` (or `HK2_PLAN_TIMEOUT_MS`).
 
 Retrieve any of them via `kb_knowledge("<id>")` or `kb_search_knowledge("overview")`.
 
@@ -187,7 +199,7 @@ Retrieve any of them via `kb_knowledge("<id>")` or `kb_search_knowledge("overvie
 | `/kb knowledge list [--space=holy\|eden]` | List knowledge entries |
 | `/kb knowledge show <id>` | Show full entry (searches both spaces) |
 | `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | Manually add an entry |
-| `/kb knowledge init [--per-batch-chars=N] [--dry-run] [--base-dir=PATH]` | Two-phase deep-study: LLM plans study batches from the full project map, then executes each batch to auto-generate Eden entries. Cross-checks against Holy; conflicts follow Holy. `--base-dir=PATH` restricts the study to files under one subdirectory and skips the three project-wide survey entries. |
+| `/kb knowledge learn [--space=eden\|holy] [--file=PATH] [--base-dir=DIR] [--per-batch-chars=N] [--dry-run] [--no-survey] [--plan-timeout-ms=N]` | Unified deep-study command. CODE mode (bare, or `--base-dir` matching an indexed subdirectory): two-phase deep-study of indexed source files; Phase 0 writes the three project-wide survey entries; Phase 1 plans topic batches (scale-aware for large projects like postgres), Phase 2 executes each batch. Falls back to deterministic directory grouping when the LLM plan is unusable — never aborts. DOC mode (`--file` or a non-indexed `--base-dir`): deep-study Markdown / PDF / Word / PowerPoint / text documents into `--space`. Legacy `init`/`bootstrap`/`scan` aliases route here (whole-project CODE mode). |
 | `/kb knowledge export <eden\|holy\|all> <path>` | Export entries to a JSON file (version 2 format with per-entry `space` tags) |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | Import entries from JSON. `adaptive` routes each entry to its original space. Holy imports always prompt y/N. |
 | `/kb knowledge housekeep <eden\|holy\|all>` | Remove entries with missing fields, duplicate ids, or near-duplicate titles/keywords. Holy always prompts. |
@@ -223,7 +235,7 @@ Type `/help` for the full list. Common commands:
 | `/kb knowledge list` | List Holy + Eden entries |
 | `/kb knowledge show <id>` | Show full entry |
 | `/kb knowledge add [...]` | Manually add an entry |
-| `/kb knowledge init [--dry-run] [--base-dir=PATH]` | Deep-study project (or one subdirectory via `--base-dir`) → auto-generate Eden |
+| `/kb knowledge learn [--dry-run] [--base-dir=PATH] [--file=PATH]` | Deep-study project code (or one subdirectory / documents) → auto-generate knowledge |
 | `/kb knowledge export <scope> <path>` | Export entries to JSON |
 | `/kb knowledge import <path> [adaptive]` | Import entries (adaptive routes by original space) |
 | `/kb knowledge housekeep <scope>` | Remove duplicates and invalid entries |
@@ -541,7 +553,7 @@ hk2/
 │       ├── index.js           # Slash command dispatcher (quote-aware tokenizer)
 │       ├── model.js           # /model
 │       ├── project.js         # /project
-│       ├── kb.js              # /kb (incl. knowledge init/export/import/transform)
+│       ├── kb.js              # /kb (incl. knowledge learn/export/import/transform)
 │       └── session.js         # /session
 ├── lib/
 │   ├── config/
