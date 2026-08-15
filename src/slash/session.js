@@ -54,6 +54,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { SESSIONS_ROOT } from '../../lib/config/home.js';
+import { printCommandHelp } from './help.js';
 
 export async function cmdSession(args, ctx) {
   const sub = args[0];
@@ -64,8 +65,12 @@ export async function cmdSession(args, ctx) {
     case 'new': return sessionNew(ctx);
     case 'resume': return sessionResume(rest, ctx);
     case 'compact': await ctx.compactConversation?.(); return;
+    case 'help': case '?':
+      printCommandHelp(ctx, 'session');
+      return;
     default:
-      ctx.print(`/session subcommands: info | list | new | resume | compact`);
+      ctx.print(`Unknown /session subcommand: ${sub}`);
+      printCommandHelp(ctx, 'session');
   }
 }
 

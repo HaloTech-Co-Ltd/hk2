@@ -130,11 +130,11 @@ Usage:
   hk2 --help
       Print this help.
 
-Interactive REPL commands (full list via /help):
-  /model list | add | set | set-default | use | del | show
+Interactive REPL commands (full list via /help; per-command usage via /help <command>):
+  /model list | add | set | set-default | set-phase | types | use | del | show
   /project init | list | set | show | drop
   /kb init | update | status | search | symbol | neighbors | knowledge | transform | drop
-  /session info | list | new | resume
+  /session info | list | new | resume | compact
   /clear | /compact | /help | /quit
 
 Config locations:

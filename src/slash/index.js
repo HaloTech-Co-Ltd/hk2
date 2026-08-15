@@ -62,6 +62,7 @@ import { cmdModel } from './model.js';
 import { cmdProject } from './project.js';
 import { cmdKb } from './kb.js';
 import { cmdSession } from './session.js';
+import { printCommandHelp } from './help.js';
 
 export const SLASH_COMMANDS = [
   { name: '/model',   handler: cmdModel,   description: 'Manage models.json (list / use / set-default / set / add / del / show)' },
@@ -76,11 +77,18 @@ export const SLASH_COMMANDS = [
 ];
 
 async function cmdHelp(args, ctx) {
-  ctx.print(`hk2 commands:`);
+  // /help <command> → full usage + flags + examples for that one command.
+  if (args.length > 0) {
+    if (printCommandHelp(ctx, args[0])) return;
+    ctx.print(`Unknown command: /${args[0]} (type /help for the list)`);
+    return;
+  }
+  ctx.print(`hk2 commands (type /help <command> for detailed usage and parameters):`);
   for (const c of SLASH_COMMANDS) {
     ctx.print(`  ${c.name.padEnd(12)}  ${c.description}`);
   }
   ctx.print(``);
+  ctx.print(`Deeper help:   /help kb | /kb help knowledge   /model types   /model help set-phase`);
   ctx.print(`Anything else = a message to the agent (the agent answers using KB context + tools).`);
   ctx.print(`Multi-line input: just paste multi-line text - it is submitted as one message.`);
   ctx.print(`  (Or end a line with \\ to continue manually, then submit with an empty line.)`);
@@ -116,7 +124,7 @@ export async function dispatchSlash(line, ctx) {
   const name = tokens[0];
   const cmd = SLASH_COMMANDS.find(c => c.name === name);
   if (!cmd) {
-    ctx.print(`Unknown command: ${name} (type /help for the list)`);
+    ctx.print(`Unknown command: ${name} (type /help for the list, or /help <command> for details)`);
     return true;
   }
   try {

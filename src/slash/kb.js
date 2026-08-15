@@ -73,6 +73,11 @@ import { addKbForProject, getKbMeta } from '../../lib/index/registry.js';
 import {
   readStats, listKnowledge, readKnowledge, deleteKnowledge, moveKnowledge,
 } from '../../lib/store/kb_store.js';
+import { renderHelp, printCommandHelp, subcommandHelp } from './help.js';
+
+/** Topics under '/kb knowledge help <topic>' that map to a whole family's
+ *  help entry rather than one subcommand block (e.g. 'knowledge' itself). */
+const HELP_SUBCOMMAND_TOPICS = ['knowledge', 'kb'];
 import fs from 'node:fs/promises';
 
 export async function cmdKb(args, ctx) {
@@ -88,9 +93,18 @@ export async function cmdKb(args, ctx) {
     case 'knowledge': return knowledgeKb(rest, ctx);
     case 'transform': return transformKb(rest, ctx);
     case 'drop': return dropKb(ctx);
+    case 'help': case '?': case undefined:
+      // '/kb help knowledge' drills into the knowledge sub-family.
+      if (sub !== undefined && rest[0]) {
+        if (printCommandHelp(ctx, rest[0])) return;
+        ctx.print(`Unknown /kb help topic: ${rest[0]} (try: knowledge)`);
+        return;
+      }
+      printCommandHelp(ctx, 'kb');
+      return;
     default:
-      ctx.print(`/kb subcommands: init | update | status | search | symbol | neighbors | knowledge | transform | drop`);
-      ctx.print(`See /help or the README for the three-space model (Holy / Eden / Index).`);
+      ctx.print(`Unknown /kb subcommand: ${sub}`);
+      printCommandHelp(ctx, 'kb');
   }
 }
 
@@ -307,11 +321,28 @@ async function knowledgeKb(rest, ctx) {
     case 'export': return knowledgeExportKb(subArgs, ctx);
     case 'import': return knowledgeImportKb(subArgs, ctx);
     case 'del': case 'rm': return knowledgeDelKb(subArgs, ctx);
-    case undefined:
-      ctx.print(`/kb knowledge subcommands: list | show | add | learn | housekeep | empty | export | import | del`);
+    case 'help': case '?': case undefined:
+      // '/kb knowledge help learn' (and per-subcommand topics like 'add')
+      if (sub !== undefined && subArgs[0]) {
+        const topic = subArgs[0];
+        if (HELP_SUBCOMMAND_TOPICS.includes(topic)) {   // whole-family help
+          printCommandHelp(ctx, topic);
+          return;
+        }
+        const lines = subcommandHelp('knowledge', topic);
+        if (lines) {
+          for (const l of lines) ctx.print(l);
+          return;
+        }
+        ctx.print(`Unknown /kb knowledge topic: ${topic}`);
+        ctx.print(`Type /kb knowledge help for the full list.`);
+        return;
+      }
+      printCommandHelp(ctx, 'knowledge');
       return;
     default:
-      ctx.print(`Unknown /kb knowledge subcommand: ${sub}. Use list | show | add | learn | housekeep | empty | export | import | del.`);
+      ctx.print(`Unknown /kb knowledge subcommand: ${sub}`);
+      printCommandHelp(ctx, 'knowledge');
   }
 }
 

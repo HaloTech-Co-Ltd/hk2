@@ -58,6 +58,7 @@ import {
   getCurrentProject, setCurrentProject, updateProject, removeProject,
   phaseStorageKeyToCliName, supportedPhaseNames,
 } from '../../lib/config/home.js';
+import { printCommandHelp } from './help.js';
 
 export async function cmdProject(args, ctx) {
   const sub = args[0];
@@ -68,13 +69,12 @@ export async function cmdProject(args, ctx) {
     case 'set': return setProject(rest, ctx);
     case 'show': return showProject(ctx);
     case 'drop': case 'rm': return dropProject(rest, ctx);
+    case 'help': case '?': case undefined:
+      printCommandHelp(ctx, 'project');
+      return;
     default:
-      ctx.print(`/project subcommands: init | list | set | show | drop`);
-      ctx.print(`Examples:`);
-      ctx.print(`  /project init --name=myapp --source=/path/to/repo --source-root=src`);
-      ctx.print(`  /project list`);
-      ctx.print(`  /project set current <id|name>`);
-      ctx.print(`  /project show`);
+      ctx.print(`Unknown /project subcommand: ${sub}`);
+      printCommandHelp(ctx, 'project');
   }
 }
 

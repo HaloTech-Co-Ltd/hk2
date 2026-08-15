@@ -209,7 +209,7 @@ Retrieve any of them via `kb_knowledge("<id>")` or `kb_search_knowledge("overvie
 
 ## REPL command reference
 
-Type `/help` for the full list. Common commands:
+Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help knowledge`) for detailed usage and parameters of a single command. Every family also supports `<command> help` (e.g. `/model help set`, `/kb knowledge help learn`). Common commands:
 
 | Command | Description |
 |---|---|
@@ -220,6 +220,8 @@ Type `/help` for the full list. Common commands:
 | `/model use <prov>/<id>` | Choose model for current session only |
 | `/model del <prov>/<id>` | Delete |
 | `/model show` | Show current default details |
+| `/model types` | List all supported `--model-type` values |
+| `/model help [sub]` | Full `/model` usage; `/model help set` drills into one subcommand |
 | `/project init --name=... --source=... [--source-root=...]` | Register a new project |
 | `/project list` | List all projects |
 | `/project set current <id\|name>` | Switch current project |

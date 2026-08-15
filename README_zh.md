@@ -206,7 +206,7 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 
 ## REPL 命令参考
 
-输入 `/help` 查看完整列表。常用命令：
+输入 `/help` 查看完整列表；输入 `/help <命令>`（如 `/help kb`、`/help knowledge`）查看单个命令的详细用法与参数。每个命令族也支持 `<命令> help` 下钻（如 `/model help set`、`/kb knowledge help learn`）。常用命令：
 
 | 命令 | 说明 |
 |---|---|
@@ -217,6 +217,8 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 | `/model use <prov>/<id>` | 仅当前会话选用模型 |
 | `/model del <prov>/<id>` | 删除 |
 | `/model show` | 显示当前默认模型详情 |
+| `/model types` | 列出所有支持的 `--model-type` 取值 |
+| `/model help [子命令]` | 显示 `/model` 完整用法；`/model help set` 可下钻到单个子命令 |
 | `/project init --name=... --source=... [--source-root=...]` | 注册新项目 |
 | `/project list` | 列出所有项目 |
 | `/project set current <id\|name>` | 切换当前项目 |

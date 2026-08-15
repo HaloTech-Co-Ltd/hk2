@@ -62,6 +62,7 @@ import {
   normalizeModelOptions, modelTypeFeatures, modelTypeDefaultReasoning,
   validateModelOptionsForType,
 } from '../../lib/config/home.js';
+import { subcommandHelp, printCommandHelp } from './help.js';
 
 export async function cmdModel(args, ctx) {
   const sub = args[0];
@@ -75,22 +76,41 @@ export async function cmdModel(args, ctx) {
     case 'add': return addModel(rest, ctx);
     case 'del': case 'rm': return delModel(rest, ctx);
     case 'show': return showModel(ctx);
+    case 'types': return listModelTypes(ctx);
+    case 'help': case '?': case undefined:
+      // '/model help <x>' drills into one subcommand's usage block.
+      if (sub !== undefined && rest[0]) {
+        const topic = rest[0];
+        const lines = subcommandHelp('model', topic);
+        if (lines) {
+          for (const l of lines) ctx.print(l);
+          return;
+        }
+        ctx.print(`Unknown /model topic: ${topic}`);
+        ctx.print(`Type /model help for the full list.`);
+        return;
+      }
+      printCommandHelp(ctx, 'model');
+      return;
     default:
-      ctx.print(`/model subcommands: list | use | set-default | set | set-phase | add | del | show`);
-      ctx.print(`Examples:`);
-      ctx.print(`  /model list`);
-      ctx.print(`  /model add openai-local gpt-4o --api=openai --base-url=http://... --api-key=sk-... --context-window=128000 --model-type=gpt-5.6-sol`);
-      ctx.print(`  /model add bigmodel glm-5.3 --model-type=glm-5.3 --model-options='{"reasoning_effort":"max"}'   (glm-5.3 effort: max default | high | low)`);
-      ctx.print(`  /model use openai-local/gpt-4o                          (this session only)`);
-      ctx.print(`  /model set-default openai-local/gpt-4o                  (global default, persisted)`);
-      ctx.print(`  /model set openai-local/gpt-4o --temperature=0.5 --max-tokens=8192 --model-type=gpt-5.6-sol`);
-      ctx.print(`  /model set openai-local/gpt-4o --model-options='{"thinking":{"type":"enabled"}}'  (model-specific feature options)`);
-      ctx.print(`  /model set openai-local/gpt-4o --id=gpt-4o-new             (rename the model id / ref key)`);
-      ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o   (per-project, rewrite phase)`);
-      ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o     (per-project, plan-review phase)`);
-      ctx.print(`  /model set-phase --phase=code-review openai-local/gpt-4o     (per-project, code-review phase)`);
-      ctx.print(`  /model del openai-local/gpt-4o`);
+      ctx.print(`Unknown /model subcommand: ${sub}`);
+      printCommandHelp(ctx, 'model');
   }
+}
+
+/**
+ * /model types — list every supported --model-type value.
+ * Backed by supportedModelTypes() in lib/config/home.js so it can never drift
+ * from the actual validation set.
+ */
+function listModelTypes(ctx) {
+  const types = supportedModelTypes();
+  ctx.print(`Supported --model-type values (${types.length}):`);
+  ctx.print(`  ${types.join(', ')}`);
+  ctx.print(``);
+  ctx.print(`Default when omitted: ${DEFAULT_MODEL_TYPE}`);
+  ctx.print(`Used by: /model add <provider> <model-id> --model-type=<TYPE>`);
+  ctx.print(`        /model set <provider>/<model-id> --model-type=<TYPE>`);
 }
 
 async function listModels(ctx) {
