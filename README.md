@@ -476,6 +476,7 @@ gateways that reject `glm-4.7[1m]`.
 | `HK2_DEBUG` | Print error stacks | - |
 | `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |
 | `HK2_ASCII` | When 1, force ASCII fallbacks for box-drawing / spinner / icons instead of UTF-8 glyphs (useful on non-UTF-8 terminals). | - |
+| `HK2_HIDE_THINKING` | When unset or `1` (default), the `✎ thinking` reasoning window renders at most 5 content lines, then a dim notice reports how many lines were hidden. When `0`, the full reasoning stream is rendered (previous behavior). | `1` |
 | `ANTHROPIC_API_KEY` | Auto-creates an `anthropic` provider on first init | - |
 | `OPENAI_API_KEY` | Auto-creates an `openai` provider on first init | - |
 
