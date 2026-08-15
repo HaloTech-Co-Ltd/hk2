@@ -203,3 +203,34 @@ test('assessRequest forwards retrieved context as an extra user message', async 
   assert.ok(seenMessages[2].content.includes('Retrieved knowledge-base context'));
   assert.ok(seenMessages[2].content.includes('found symbol foo in bar.js'));
 });
+
+test('assessRequest forwards session context as an extra user message (before KB context)', async () => {
+  let seenMessages = null;
+  const llm = {
+    stream: async function* (messages) {
+      seenMessages = messages;
+      yield { type: 'delta', text: JSON.stringify({ clear: true }) };
+    },
+  };
+  await assessRequest(llm, 'fix it', {
+    sessionContext: 'In-flight task: refactor the plan-progress module',
+    context: 'Summary: matched buildResumeContext',
+  });
+  // 4 messages: system, user(query), user(session context), user(KB context).
+  assert.equal(seenMessages.length, 4);
+  assert.ok(seenMessages[2].content.includes('Current session context'));
+  assert.ok(seenMessages[2].content.includes('refactor the plan-progress module'));
+  assert.ok(seenMessages[3].content.includes('Retrieved knowledge-base context'));
+});
+
+test('assessRequest omits empty/whitespace session context', async () => {
+  let seenMessages = null;
+  const llm = {
+    stream: async function* (messages) {
+      seenMessages = messages;
+      yield { type: 'delta', text: JSON.stringify({ clear: true }) };
+    },
+  };
+  await assessRequest(llm, 'fix it', { sessionContext: '   \n  ' });
+  assert.equal(seenMessages.length, 2, 'no session-context message when digest is empty');
+});

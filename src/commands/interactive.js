@@ -956,6 +956,88 @@ ${session.lastTask.userRequest || '(unavailable)'}${planText}
 Do NOT restart from scratch or re-confirm the plan. Continue the in-flight work: complete the current step, then proceed to the next. If the plan is already fully done, summarize what was accomplished and stop.`;
 }
 
+/**
+ * One-line squeeze for session digests: collapse all whitespace (including
+ * newlines) and cap the length so a single long turn cannot blow up the
+ * assessment prompt.
+ */
+function digestLine(text, max = 240) {
+  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+/**
+ * Plain-text (ANSI-free) rendering of the active plan progress for LLM
+ * consumption. formatPlanProgressLines() is for the terminal; the assessor
+ * gets this instead.
+ */
+function plainPlanLines(session) {
+  const p = session.planProgress;
+  if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return [];
+  const lines = [];
+  if (p.summary) lines.push(`  Plan: ${digestLine(p.summary)}`);
+  for (let i = 0; i < p.steps.length; i++) {
+    const st = p.steps[i] || {};
+    const mark = st.status === 'done' ? '[done]' : st.status === 'in_progress' ? '[in progress]' : '[pending]';
+    lines.push(`  ${i + 1}. ${mark} ${digestLine(st.goal)}`);
+  }
+  return lines;
+}
+
+/**
+ * Build a compact digest of the current session's TASK context for the
+ * request-clarity assessor: the in-flight task request (when it differs from
+ * the current request), the active plan progress, and the most recent
+ * conversation turns. Returns '' when the session carries no task context
+ * (e.g. the very first turn), in which case the assessor runs without it.
+ *
+ * This lets follow-ups that are ambiguous in isolation ("continue", "fix it",
+ * "same for the parser") be judged CLEAR when the conversation already pins
+ * down what they refer to, instead of triggering a pointless clarification
+ * menu. Exported for unit testing.
+ */
+export function buildSessionDigest(session, currentRequest) {
+  if (!session) return '';
+  const lines = [];
+
+  // 1) In-flight task. On a fresh (non-continuation) turn runAgentTurn has
+  // just set lastTask.userRequest = currentRequest, which carries no extra
+  // information — skip it then. On a continuation it holds the ORIGINAL task
+  // request, which is exactly what the assessor needs.
+  const taskReq = session.lastTask && session.lastTask.userRequest;
+  const taskLine = digestLine(taskReq);
+  const curLine = digestLine(currentRequest);
+  if (taskLine && curLine && taskLine !== curLine) {
+    lines.push(`In-flight task (earlier request this session is working on): ${taskLine}`);
+  }
+
+  // 2) Active plan progress (if a confirmed plan is in flight).
+  const plan = plainPlanLines(session);
+  if (plan.length > 0) {
+    lines.push('Active plan progress:');
+    lines.push(...plan);
+  }
+
+  // 3) Recent conversation turns. At assessment time the current request has
+  // NOT been pushed yet, so this is strictly PRIOR conversation. Only string
+  // contents are usable (assistant tool-call turns may carry structured
+  // content); system messages (e.g. the resume injection) are excluded.
+  const turns = (session.messages || [])
+    .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .slice(-6)
+    .map(m => {
+      const who = m.role === 'user' ? 'User' : 'Assistant';
+      return `  ${who}: ${digestLine(m.content)}`;
+    });
+  if (turns.length > 0) {
+    lines.push('Recent conversation (oldest first, before this request):');
+    lines.push(...turns);
+  }
+
+  return lines.join('\n');
+}
+
 async function handleLine(line, session, ctx) {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -1585,15 +1667,21 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         ctxLines.push('Knowledge entries:');
         for (const k of graph.knowledge.slice(0, 4)) ctxLines.push(`  - ${k.title}`);
       }
+      // Session task context (in-flight task / plan progress / recent turns)
+      // so follow-ups that are terse in isolation but unambiguous given the
+      // conversation are not flagged unclear.
+      const sessionDigest = buildSessionDigest(session, userText);
       const assessment = await assessRequest(session.llm, userText, {
         timeoutMs: 15000,
         signal: abortCtrl.signal,
         context: ctxLines.join('\n'),
+        sessionContext: sessionDigest,
       });
       await session.transcript?.logMeta('assess', {
         clear: assessment.clear,
         unclear: assessment.unclear,
         interpretations: assessment.interpretations,
+        hadSessionContext: !!sessionDigest,
       });
       if (!assessment.clear) {
         progress.pause();

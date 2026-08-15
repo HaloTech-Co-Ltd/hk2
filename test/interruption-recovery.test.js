@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { isContinuationCue } from '../src/commands/interactive.js';
-import { buildResumeContext } from '../src/commands/interactive.js';
+import { buildResumeContext, buildSessionDigest } from '../src/commands/interactive.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../lib/agent/task_state.js';
 import { buildTools, executeToolCall } from '../lib/agent/tools.js';
 
@@ -196,6 +196,86 @@ test('buildResumeContext: when no plan was active, still recovers the request', 
   assert.ok(msg);
   assert.match(msg, /add a \/status slash command/);
   assert.match(msg, /No structured plan was active/i);
+});
+
+/* ----- buildSessionDigest: session task context for request assessment ----- */
+// The clarity assessor gets this digest so follow-ups that are ambiguous in
+// isolation ("continue", "fix it") are judged against what the session is
+// already working on.
+
+test('buildSessionDigest: returns empty string when the session has no task context', () => {
+  const session = { planProgress: null, lastTask: null, messages: [] };
+  assert.equal(buildSessionDigest(session, 'do a new thing'), '');
+});
+
+test('buildSessionDigest: includes the in-flight task when it differs from the current request', () => {
+  const session = {
+    lastTask: { userRequest: 'refactor the plan-progress module' },
+    planProgress: null,
+    messages: [],
+  };
+  const digest = buildSessionDigest(session, 'fix it');
+  assert.match(digest, /In-flight task/);
+  assert.match(digest, /refactor the plan-progress module/);
+});
+
+test('buildSessionDigest: omits the in-flight task when it equals the current request (fresh turn)', () => {
+  // On a fresh (non-continuation) turn, lastTask.userRequest === userText;
+  // repeating it would add noise, not signal.
+  const session = {
+    lastTask: { userRequest: 'start a brand new task' },
+    planProgress: null,
+    messages: [],
+  };
+  const digest = buildSessionDigest(session, 'start a brand new task');
+  assert.equal(digest.indexOf('In-flight task'), -1);
+});
+
+test('buildSessionDigest: renders plan progress as plain text with statuses', () => {
+  const session = {
+    lastTask: { userRequest: 'do the thing' },
+    planProgress: makePlanProgress(),
+    messages: [],
+  };
+  const digest = buildSessionDigest(session, 'fix it');
+  assert.match(digest, /Active plan progress:/);
+  assert.match(digest, /\[done\] step A/);
+  assert.match(digest, /\[in progress\] step B/);
+  assert.match(digest, /\[pending\] step C/);
+});
+
+test('buildSessionDigest: includes the last few user/assistant turns and skips system messages', () => {
+  const session = {
+    lastTask: { userRequest: 'fix the parser' },
+    planProgress: null,
+    messages: [
+      { role: 'system', content: '## Resuming an interrupted task\nblah' },
+      { role: 'user', content: 'fix the parser' },
+      { role: 'assistant', content: 'I fixed lib/parser.js, see commit abc123.' },
+      { role: 'user', content: 'same for the lexer' },
+      // structured (tool-call) assistant content must be skipped, not crash
+      { role: 'assistant', content: [{ type: 'text', text: 'structured' }] },
+      { role: 'assistant', content: 'done with the lexer too' },
+    ],
+  };
+  const digest = buildSessionDigest(session, 'continue');
+  assert.match(digest, /Recent conversation/);
+  assert.match(digest, /User: fix the parser/);
+  assert.match(digest, /Assistant: I fixed lib\/parser\.js/);
+  assert.match(digest, /User: same for the lexer/);
+  assert.doesNotMatch(digest, /Resuming an interrupted task/);
+});
+
+test('buildSessionDigest: caps turn length so a huge answer cannot blow up the digest', () => {
+  const long = 'x'.repeat(5000);
+  const session = {
+    lastTask: null,
+    planProgress: null,
+    messages: [{ role: 'user', content: long }],
+  };
+  const digest = buildSessionDigest(session, 'continue');
+  const line = digest.split('\n').find(l => l.includes('User:')) || '';
+  assert.ok(line.length <= 260, `turn line should be capped, got ${line.length}`);
 });
 
 /* ----- plan_step still advances a RESTORED planProgress ----- */
