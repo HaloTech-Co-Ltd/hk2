@@ -49,8 +49,11 @@
  *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
  *                  [--model-options=JSON]
  *                                                  Modify a model's persisted settings
+ *   /model set-phase --phase=<name> <provider>/<model-id> [--clear]
+ *                                                  Per-project model for one pipeline phase
  *   /model add <provider> <model-id> [--flags]     Add a new model (creates provider if needed)
  *   /model del <provider>/<model-id>               Delete a model
+ *   /model types                                   List all supported --model-type values
  *   /model show                                    Show current default
  */
 import {

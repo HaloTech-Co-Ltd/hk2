@@ -21,10 +21,12 @@
  *   - a short "Examples:" block
  *   - a trailing hint pointing to deeper help (e.g. `/kb help knowledge`)
  *
- * Help text that must stay in sync with runtime data (model types, phase
- * names) is generated dynamically via functions (see `renderHelp`).
+ * Help text that must stay in sync with runtime data (phase names) is
+ * generated dynamically via functions (see `renderHelp`). For discoverable
+ * enums with a dedicated listing command (model types), help points at
+ * `/model types` instead of inlining the list.
  */
-import { supportedModelTypes, supportedPhaseNames } from '../../lib/config/home.js';
+import { supportedPhaseNames } from '../../lib/config/home.js';
 
 /** @type {Record<string, string[]>} */
 export const HELP_TEXT = {
@@ -152,10 +154,10 @@ export const HELP_TEXT = {
     `        [--key-files=<a,b>] [--key-symbols=<a,b>] [--keywords=<a,b>]`,
     `                                           Manually persist an entry (default holy)`,
     `  learn [--space=eden|holy] [--file=<path>] [--base-dir=<dir>] [--per-batch-chars=N]`,
-    `        [--dry-run] [--no-survey] [instructions...]`,
+    `        [--dry-run] [--no-survey] [--plan-timeout-ms=N] [instructions...]`,
     `                                           LLM deep-study (DOC or CODE mode) — details below`,
-    `  housekeep <eden|holy|all> [--yes]        Dedup / remove broken entries (confirm required)`,
-    `  empty <eden|holy|all> [--yes]            Bulk delete entries in a space`,
+    `  housekeep <eden|holy|all>                Dedup / remove broken entries (always confirms y/N)`,
+    `  empty <eden|holy|all>                    Bulk delete entries in a space (always confirms y/N)`,
     `  export <eden|holy|all> <path>            Dump entries to JSON (with space tags)`,
     `  import <path> [eden|holy|adaptive] [--overwrite]   Import entries from JSON`,
     `  del <id>                                 Delete one entry (confirm required)`,
@@ -177,6 +179,8 @@ export const HELP_TEXT = {
     `  --per-batch-chars=N      LLM context budget per batch (default 100000).`,
     `  --dry-run                Show proposed entries without writing.`,
     `  --no-survey              CODE mode: skip Phase 0 survey entries.`,
+    `  --plan-timeout-ms=N      Phase 1 planning timeout in ms (default 300000;`,
+    `                           env equivalent HK2_PLAN_TIMEOUT_MS).`,
     `  trailing tokens          Free-form instructions passed to every LLM prompt.`,
     ``,
     `Examples:`,
@@ -184,6 +188,7 @@ export const HELP_TEXT = {
     `  /kb knowledge learn --dry-run                    (preview only)`,
     `  /kb knowledge learn --file=docs/architecture.md  (DOC mode, single file)`,
     `  /kb knowledge learn --base-dir=src/retrieval --no-survey`,
+    `  /kb knowledge learn --plan-timeout-ms=600000        (raise the planning timeout)`,
     `  /kb knowledge learn focus on error handling      (trailing instructions)`,
     `  /kb knowledge add --title="SPI Pattern" --intro="Use PGXS; ..."`,
     `  /kb knowledge add --space=eden --id=sql-cmds --title="SQL Commands" \\\\`,

@@ -237,9 +237,9 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/kb knowledge list` | List Holy + Eden entries |
 | `/kb knowledge show <id>` | Show full entry |
 | `/kb knowledge add [...]` | Manually add an entry |
-| `/kb knowledge learn [--dry-run] [--base-dir=PATH] [--file=PATH]` | Deep-study project code (or one subdirectory / documents) → auto-generate knowledge |
+| `/kb knowledge learn [--dry-run] [--base-dir=PATH] [--file=PATH] [--space=eden\|holy] [--per-batch-chars=N] [--no-survey] [--plan-timeout-ms=N]` | Deep-study project code (or one subdirectory / documents) → auto-generate knowledge. Full flag docs: `/help knowledge` |
 | `/kb knowledge export <scope> <path>` | Export entries to JSON |
-| `/kb knowledge import <path> [adaptive]` | Import entries (adaptive routes by original space) |
+| `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | Import entries (adaptive routes by original space) |
 | `/kb knowledge housekeep <scope>` | Remove duplicates and invalid entries |
 | `/kb knowledge empty <scope>` | Remove ALL entries from space(s) |
 | `/kb knowledge del <id>` | Delete entry |
@@ -486,6 +486,7 @@ gateways that reject `glm-4.7[1m]`.
 | `HK2_ENABLE_AUTOCOMPACT` | When 1, hk2 auto-compacts the prior conversation at the start of a turn once the measured context length reaches `HK2_AUTOCOMPACT_PCTUSED`% of the model's context window. Compaction keeps the last 4 user/assistant turns verbatim and LLM-summarizes earlier turns (including their tool results) into a single system message, falling back to naive truncation if the LLM fails. Runs only at the turn boundary, never mid-turn. | `0` |
 | `HK2_AUTOCOMPACT_PCTUSED` | Integer 1-100 context-usage threshold percentage. Auto-compaction only triggers when the measured context length ≥ `model context window × HK2_AUTOCOMPACT_PCTUSED / 100`. | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | Save `/kb init` checkpoint every N files | `100` |
+| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning call timeout in ms. Slow providers (reasoning models on large file maps) can exceed the default 300s. Per-run override: `--plan-timeout-ms=N`. | `300000` |
 | `HK2_INDEX_PARALLEL` | Parallelism of the KB index parse pool (`/kb init` / `/kb update`). `0` or unset = auto (host CPU count); a positive integer pins the width. | `0` |
 | `HK2_DEBUG` | Print error stacks | - |
 | `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |

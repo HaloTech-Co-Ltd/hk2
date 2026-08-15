@@ -148,6 +148,9 @@ Environment variables:
   HK2_KB_DIR            Override KB root (default ~/.hk2/kb)
   HK2_KB_NAME           KB name for legacy --mode commands
   HK2_PROJECT_SOURCE    Project source root for tool sandbox
+  HK2_PLAN_TIMEOUT_MS   /kb knowledge learn Phase 1 planning timeout (ms;
+                        default 300000; overridable per-run by --plan-timeout-ms)
+  HK2_KB_CHECKPOINT_INTERVAL  /kb init checkpoint cadence in files (default 100)
   HK2_DEBUG=1           Print error stacks
 `);
 }

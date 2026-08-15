@@ -536,7 +536,7 @@ async function knowledgeShowKb(rest, ctx) {
  * Usage:
  *   /kb knowledge learn [--space=eden|holy] [--file=<path>] [--base-dir=<dir>]
  *                       [--per-batch-chars=N] [--dry-run] [--no-survey]
- *                       [instructions...]
+ *                       [--plan-timeout-ms=N] [instructions...]
  *
  *   --space           eden | holy (default eden). In CODE mode the target is
  *                     always Eden (stable Holy knowledge is curated by hand).
@@ -550,6 +550,11 @@ async function knowledgeShowKb(rest, ctx) {
  *   --per-batch-chars LLM context budget per execution batch (default 100000).
  *   --dry-run         show proposed entries but do NOT write.
  *   --no-survey       CODE mode: skip the Phase 0 project-wide survey entries.
+ *   --plan-timeout-ms Phase 1 planning call timeout in ms (default 300000; env
+ *                     equivalent HK2_PLAN_TIMEOUT_MS). Slow providers (e.g.
+ *                     reasoning models on large file maps) can exceed a fixed
+ *                     300s budget. Extract retries use min(plan-timeout, 180s)
+ *                     so a hung call cannot stall a long batch run.
  *   trailing tokens   free-form instructions passed to every LLM prompt.
  *
  * Plan parsing hardening (no more "Could not parse LLM study plan."):
