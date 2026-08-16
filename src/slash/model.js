@@ -55,6 +55,8 @@
  *   /model del <provider>/<model-id>               Delete a model
  *   /model types                                   List all supported --model-type values
  *   /model show                                    Show current default
+ *   /model add-mcpserver <provider>/<model-id> --type=TYPE --name=NAME [--options=JSON]
+ *                                                  Attach an MCP server to an existing model
  */
 import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
@@ -64,6 +66,8 @@ import {
   normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
   normalizeModelOptions, modelTypeFeatures, modelTypeDefaultReasoning,
   validateModelOptionsForType,
+  normalizeMcpServerType, normalizeMcpServerOptions,
+  supportedMcpServerTypes, getModelMcpServers,
 } from '../../lib/config/home.js';
 import { subcommandHelp, printCommandHelp } from './help.js';
 
@@ -78,6 +82,7 @@ export async function cmdModel(args, ctx) {
     case 'set-phase': return setPhaseModel(rest, ctx);
     case 'add': return addModel(rest, ctx);
     case 'del': case 'rm': return delModel(rest, ctx);
+    case 'add-mcpserver': return addMcpServer(rest, ctx);
     case 'show': return showModel(ctx);
     case 'types': return listModelTypes(ctx);
     case 'help': case '?': case undefined:
@@ -139,6 +144,7 @@ async function listModels(ctx) {
       ctx.print(`${marker}${label}`);
       ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
       printModelOptions(ctx, m.modelOptions);
+      printMcpServers(ctx, m.mcpServers);
     }
   }
 }
@@ -501,6 +507,10 @@ async function showModel(ctx) {
   ctx.print(`  model: ${cfg.model}`);
   ctx.print(`  modelType: ${cfg.modelType || 'generic'}`);
   printModelOptions(ctx, cfg.modelOptions);
+  // Display the STORED form: keeps the $APIKEY placeholder visible instead
+  // of printing the provider's resolved (real) credential to the terminal.
+  const mcp = await getModelMcpServers(def, { resolve: false });
+  if (mcp) printMcpServers(ctx, mcp);
   ctx.print(`  contextWindow: ${cfg.maxChars}`);
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
   ctx.print(`  temperature: ${cfg.temperature}`);
@@ -517,6 +527,144 @@ function printModelOptions(ctx, modelOptions) {
     return `${k}=${vs}`;
   });
   ctx.print(`    modelOptions: ${parts.join(' ')}`);
+}
+
+/**
+ * Render the MCP servers attached to a model (written by
+ * /model add-mcpserver) for /model list and /model show. No output for
+ * models without servers.
+ */
+function printMcpServers(ctx, mcpServers) {
+  if (!Array.isArray(mcpServers) || mcpServers.length === 0) return;
+  for (const s of mcpServers) {
+    const opts = (s.options && typeof s.options === 'object') ? JSON.stringify(s.options) : '{}';
+    ctx.print(`    mcpServer: ${s.name || '?'} (type=${s.type || '?'})`);
+    ctx.print(`      options: ${opts}`);
+  }
+}
+
+/**
+ * /model add-mcpserver <provider>/<model-id> --type=TYPE --name=NAME [--options=JSON]
+ *
+ * Attach an MCP (Model Context Protocol) server configuration to an
+ * EXISTING model entry, stored under that model's `mcpServers` array:
+ *   [{ "type": "http", "name": "web-reader", "options": { url, headers } }]
+ *
+ * Scope guarantee: this command only ever APPENDS to the addressed model's
+ * mcpServers array (or replaces the entry when the same --name is re-added).
+ * It never creates providers/models and never modifies any other model
+ * field. The referenced model must already exist (/model add).
+ *
+ * --type selects the server service type (http | stdio; only http is
+ *   implemented today). --options is a JSON object whose shape depends on
+ *   the type; http accepts { "url": string (required), "headers": {..} (optional) }.
+ */
+async function addMcpServer(rest, ctx) {
+  // Resolve --options BEFORE generic flag parsing: the documented multi-line
+  // form  --options=\n'{ ... }'  tokenizes to an empty-value '--options='
+  // token followed by the quoted JSON as its own token (the tokenizer keeps
+  // the quoted span's interior whitespace/newlines in that one token). Pick
+  // up both that form and the inline --options=VALUE / '--options' VALUE forms.
+  let optionsRaw;
+  let optionsJsonIdx = -1;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t === '--options') {
+      const next = rest[i + 1];
+      if (next !== undefined && !next.startsWith('--')) { optionsRaw = next; optionsJsonIdx = i + 1; }
+      break;
+    }
+    if (t.startsWith('--options=')) {
+      const v = t.slice('--options='.length);
+      if (v !== '') optionsRaw = v;
+      else {
+        const next = rest[i + 1];
+        if (next !== undefined && !next.startsWith('--')) { optionsRaw = next; optionsJsonIdx = i + 1; }
+      }
+      break;
+    }
+  }
+
+  // Positional model ref: the first token that is not a flag, not a value
+  // captured for a space-separated flag (--name x), and not the --options
+  // JSON payload token.
+  const usedValues = new Set();
+  const refCandidates = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (i === optionsJsonIdx) continue;
+    if (t.startsWith('--')) {
+      const next = rest[i + 1];
+      if (!t.includes('=') && next !== undefined && !next.startsWith('--')) usedValues.add(next);
+      continue;
+    }
+    if (usedValues.has(t)) continue;
+    refCandidates.push(t);
+  }
+  const ref = refCandidates.find(t => t.includes('/')) || refCandidates[0];
+
+  const flags = parseFlags(rest);
+  const typeRaw = typeof flags.type === 'string' ? flags.type : '';
+  const nameRaw = typeof flags.name === 'string' ? flags.name.trim() : '';
+
+  const usage = () => {
+    ctx.print(`Usage: /model add-mcpserver <provider>/<model-id> --type=<${supportedMcpServerTypes().join('|')}> --name=<MCPSERVER_NAME>`);
+    ctx.print(`                       [--options=<JSON>]`);
+    ctx.print(``);
+    ctx.print(`Attach an MCP server to an existing model (the model must already exist).`);
+    ctx.print(`--type     MCP server service type (${supportedMcpServerTypes().join(', ')}; currently implemented: http)`);
+    ctx.print(`--name     MCP server name (unique per model; re-adding the same name replaces it)`);
+    ctx.print(`--options  JSON object, shape depends on --type. http supports:`);
+    ctx.print(`           '{"url":"mcp_server_url","headers":{"Authorization":"Bearer $APIKEY"}}'`);
+    ctx.print(`           $APIKEY (also ${'${APIKEY}'}) is substituted at use time with this model's`);
+    ctx.print(`           provider --api-key, so the key never needs to be retyped here.`);
+    ctx.print(``);
+    ctx.print(`Example:`);
+    ctx.print(`  /model add-mcpserver bigmodel2/glm-5.3[1m] --type=http --name=web-reader --options='`);
+    ctx.print(`    {`);
+    ctx.print(`      "url": "https://open.bigmodel.cn/api/mcp/web_reader/mcp",`);
+    ctx.print(`      "headers": { "Authorization": "Bearer $APIKEY" }`);
+    ctx.print(`    }'`);
+  };
+
+  const refSplit = ref ? splitModelRef(ref) : null;
+  if (!refSplit || !typeRaw || !nameRaw) { usage(); return; }
+
+  const type = normalizeMcpServerType(typeRaw);
+  if (!type) {
+    ctx.print(`Unknown MCP server type: ${typeRaw}`);
+    ctx.print(`Supported types: ${supportedMcpServerTypes().join(', ')}`);
+    return;
+  }
+  // normalizeMcpServerOptions reports stdio's "not implemented" here.
+  const opt = normalizeMcpServerOptions(type, optionsRaw === undefined ? '{}' : optionsRaw);
+  if (opt.error) {
+    ctx.print(`Invalid --options: ${opt.error}`);
+    return;
+  }
+
+  // Resolve the target model entry; never create providers or models here.
+  const data = await loadModels();
+  const prov = data.providers[refSplit.provider];
+  const entry = (prov && Array.isArray(prov.models)) ? prov.models.find(m => m.id === refSplit.model) : null;
+  if (!entry) {
+    ctx.print(`Model not found: ${ref} (use /model add <provider> <model-id> first)`);
+    return;
+  }
+
+  // Append (or replace same-named entry) on the model's mcpServers array.
+  if (!Array.isArray(entry.mcpServers)) entry.mcpServers = [];
+  const server = { type, name: nameRaw, options: opt.options };
+  const existing = entry.mcpServers.findIndex(s => s && s.name === nameRaw);
+  if (existing >= 0) entry.mcpServers[existing] = server;
+  else entry.mcpServers.push(server);
+
+  await saveModels(data);
+  ctx.print(`MCP server added: ${nameRaw} (type=${type}) -> ${ref}`);
+  if (JSON.stringify(server).includes('$APIKEY')) {
+    ctx.print(`  ($APIKEY will be substituted with this provider's api key at use time)`);
+  }
+  ctx.noteReloadModels?.();
 }
 
 /**

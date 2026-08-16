@@ -57,6 +57,7 @@ import { ensureHome, getCurrentProject, getProject, setCurrentProject, resolveDe
 import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
+import { getMcpTools, invalidateMcpTools, invalidateAllMcpTools } from '../../lib/agent/mcp.js';
 import { runLoop } from '../../lib/agent/loop.js';
 import { buildKbStats, fallbackKind, classifyRead } from '../../lib/agent/kb_stats.js';
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
@@ -349,6 +350,9 @@ export function buildCtx(session) {
      */
     setModel: (cfg) => {
       if (!cfg) return;
+      // Model switched: the MCP toolset of the previous model must not leak
+      // into turns that use the new one.
+      invalidateMcpTools(session.sessionModelRef);
       session.modelCfg = cfg;
       session.sessionModelRef = cfg.ref || null;
       session.llm = new LLMClient(cfg);
@@ -356,6 +360,7 @@ export function buildCtx(session) {
     },
     /** Clear any session-only model override so the next reload falls back to the persisted default. */
     clearSessionModel: () => {
+      invalidateMcpTools(session.sessionModelRef);
       session.sessionModelRef = null;
     },
     /** Set the status-bar phase string and refresh the bar. */
@@ -574,6 +579,9 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
     // If the session has a session-only model override (set via /model use),
     // keep it - a models.json reload must not clobber an explicit per-session
     // choice. Only re-resolve the default when there is no override.
+    // MCP tool caches are dropped either way: models.json may have changed
+    // mcpServers / api keys under us.
+    invalidateAllMcpTools();
     if (session.sessionModelRef) {
       const cfg = await resolveModelRef(session.sessionModelRef);
       if (cfg) {
@@ -874,7 +882,7 @@ function printBanner(session, ctx) {
 
 function makeCompleter() {
   const cmds = ['/model', '/project', '/kb', '/session', '/help', '/quit', '/exit', '/clear', '/compact',
-    '/model list', '/model add', '/model use', '/model set-default', '/model set', '/model set-phase', '/model types', '/model del', '/model show', '/model help',
+    '/model list', '/model add', '/model use', '/model set-default', '/model set', '/model set-phase', '/model add-mcpserver', '/model types', '/model del', '/model show', '/model help',
     '/project init', '/project list', '/project set', '/project show',
     '/kb init', '/kb update', '/kb status', '/kb search', '/kb symbol', '/kb neighbors', '/kb knowledge', '/kb help',
     '/kb knowledge list', '/kb knowledge show', '/kb knowledge add', '/kb knowledge learn', '/kb knowledge help',
@@ -1923,6 +1931,23 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       return confirmed;
     },
   });
+
+  // ── MCP tools (/model add-mcpserver) ──
+  // Attach tools from MCP servers configured on the ACTIVE model. Cached per
+  // model ref so a turn doesn't redo the JSON-RPC handshake. Best-effort:
+  // unreachable servers print a warning and are skipped; the session keeps
+  // its built-in tools either way.
+  try {
+    const mcp = await getMcpTools(session.modelCfg?.ref);
+    if (mcp.tools.length > 0) {
+      tools.push(...mcp.tools);
+      const names = mcp.tools.map((t) => t.name).join(', ');
+      ctx.print(style.dim(`  [mcp] attached ${mcp.tools.length} tool(s) from model MCP servers: ${names}`));
+    }
+    for (const w of mcp.warns) ctx.print(style.warning(`  [mcp] ${w}`));
+  } catch (err) {
+    ctx.print(style.warning(`  [mcp] attach failed: ${err.message} (continuing without MCP tools)`));
+  }
 
   if (session.messages.length === 0) {
     const sysPrompt = buildSystemPrompt({

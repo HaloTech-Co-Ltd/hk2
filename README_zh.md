@@ -278,6 +278,7 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 | `kb_knowledge` | 按 id 查找知识条目（Holy + Eden） |
 | `kb_search_knowledge` | 按自然语言查询搜索知识条目 |
 | `kb_save_knowledge` | 将新的知识条目保存到 Holy 或 Eden |
+| `mcp__<server>__<tool>` | 通过 `/model add-mcpserver` 附加到当前模型的 MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个 agent 回合在内置工具之后挂载；不可达的服务器跳过并警告 |
 
 ### 知识库优先策略
 

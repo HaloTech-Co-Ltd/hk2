@@ -283,6 +283,7 @@ The agent can call these tools mid-turn (OpenAI/Anthropic native tool-calling):
 | `kb_knowledge` | Look up a knowledge entry by id (Holy + Eden) |
 | `kb_search_knowledge` | Search knowledge entries by natural-language query |
 | `kb_save_knowledge` | Save a new knowledge entry to Holy or Eden |
+| `mcp__<server>__<tool>` | Tools from MCP servers attached to the active model via `/model add-mcpserver` (e.g. `mcp__web-reader__webReader`). Each agent turn attaches them after the built-ins; unreachable servers are skipped with a warning |
 
 ### Kb-first policy
 
