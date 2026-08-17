@@ -45,6 +45,9 @@
  *   /model list                                    List all providers / models
  *   /model use <provider>/<model-id>               Choose model for current session only
  *   /model set-default <provider>/<model-id>       Set global default model (persisted)
+ *   /model set-default current <provider>/<model-id>
+ *                                                  Set the current project's default model
+ *   /model set-default current --clear              Clear the project override (fall back to global)
  *   /model set <provider>/<model-id> [--name=...] [--id=NEW_ID] [--api=...] [--base-url=...] [--api-key=...]
  *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
  *                  [--model-options=JSON]
@@ -63,6 +66,7 @@ import {
   loadProjects, saveProjects,
   normalizePhaseName, supportedPhaseNames,
   setPhaseModelRef, clearPhaseModelRef,
+  getProjectDefaultModelRef, setProjectDefaultModelRef, clearProjectDefaultModelRef,
   normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
   normalizeModelOptions, modelTypeFeatures, modelTypeDefaultReasoning,
   validateModelOptionsForType,
@@ -124,24 +128,36 @@ function listModelTypes(ctx) {
 async function listModels(ctx) {
   const { providers, default: def } = await loadModels();
   const names = Object.keys(providers);
+  // Show the current project's default-model override next to the global
+  // default so /model list reflects what a bare session on this project
+  // would actually use (same precedence as resolveDefaultModel).
+  let projRef = null;
+  try {
+    const getter = ctx.getCurrentProject || (async () => (await import('../../lib/config/home.js')).getCurrentProject());
+    projRef = getProjectDefaultModelRef(await getter.call(ctx));
+  } catch { /* non-interactive callers without a project registry */ }
   if (names.length === 0) {
     ctx.print(`(empty. Use /model add <provider> <model-id> to add one)`);
     return;
   }
-  ctx.print(`Models (default: ${def || '(none)'})`);
+  ctx.print(`Models (default: ${def || '(none)'}${projRef ? `, project default: ${projRef}` : ''})`);
   for (const pname of names) {
     const p = providers[pname];
     ctx.print(``);
     ctx.print(`[${pname}]  api=${p.api || 'openai'}  baseUrl=${p.baseUrl || '(default)'}`);
     for (const m of (p.models || [])) {
       const ref = `${pname}/${m.id}`;
-      const marker = ref === def ? '* ' : '  ';
+      const isDef = ref === def;
+      const isProjDef = projRef === ref;
+      // '*' marks the global default; '+' marks the current project's default
+      // override (both when they coincide).
+      const marker = `${isDef ? '*' : ' '}${isProjDef ? '+' : ' '}`;
       // `name` is now the WIRE model code (sent to the API), so only append it
       // to the listing when it DIFFERS from `id` - otherwise the row would read
       // `gpt-4o gpt-4o`. When they differ, showing both lets the user see the
       // ref key (id) and the wire code (name) side by side.
       const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
-      ctx.print(`${marker}${label}`);
+      ctx.print(`${marker} ${label}`);
       ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
       printModelOptions(ctx, m.modelOptions);
       printMcpServers(ctx, m.mcpServers);
@@ -183,11 +199,24 @@ async function useModel(rest, ctx) {
 
 /**
  * /model set-default <provider>/<model-id>
- * Persist the global default model in models.json and signal the REPL to reload.
+ * /model set-default current <provider>/<model-id>
+ * /model set-default current --clear
+ *
+ * Persist the default model. Without `current` this writes the GLOBAL default
+ * in models.json (used by every project without its own override). With
+ * `current` it writes the CURRENT project's defaultModel override in
+ * projects.json — when set, that project resolves its default model from the
+ * override; when unset (or cleared), it falls back to the global default.
  */
 async function setDefaultModel(rest, ctx) {
+  if (rest[0] === 'current') return setDefaultModelForProject(rest.slice(1), ctx);
   const ref = rest[0];
-  if (!ref) { ctx.print(`Usage: /model set-default <provider>/<model-id>`); return; }
+  if (!ref) {
+    ctx.print(`Usage: /model set-default <provider>/<model-id>`);
+    ctx.print(`       /model set-default current <provider>/<model-id>`);
+    ctx.print(`       /model set-default current --clear`);
+    return;
+  }
   const split = splitModelRef(ref);
   if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
   const { providers } = await loadModels();
@@ -199,6 +228,77 @@ async function setDefaultModel(rest, ctx) {
   data.default = ref;
   await saveModels(data);
   ctx.print(`Default set: ${ref}`);
+  ctx.noteReloadModels?.();
+}
+
+/**
+ * `current` arm of /model set-default: set or clear the CURRENT project's
+ * default-model override in projects.json.
+ */
+async function setDefaultModelForProject(rest, ctx) {
+  const flags = parseFlags(rest);
+  const wantClear = flags.clear !== undefined;
+  // Re-derive the positional ref: parseFlags consumes --clear and its value,
+  // so keep every token that is neither a flag nor a captured flag value.
+  const usedValues = new Set([typeof flags.clear === 'string' ? flags.clear : '']);
+  const positional = rest.filter((t) => !t.startsWith('--') && !usedValues.has(t));
+  const ref = positional[0];
+
+  if (!ref && !wantClear) {
+    ctx.print(`Usage: /model set-default current <provider>/<model-id> [--clear]`);
+    ctx.print(`  Sets the current project's default model (overrides the global default).`);
+    ctx.print(`  --clear removes the override (the project falls back to the global default).`);
+    return;
+  }
+
+  // Resolve the project this session is operating on (same pattern as
+  // set-phase: honors the session pin, falls back to the global current).
+  const getter = ctx.getCurrentProject || (async () => (await import('../../lib/config/home.js')).getCurrentProject());
+  const cur = await getter.call(ctx);
+  if (!cur) {
+    ctx.print(`No current project. Run /project init or /project set current <id> first.`);
+    return;
+  }
+
+  if (wantClear) {
+    const hadOverride = !!getProjectDefaultModelRef(cur);
+    const updated = await clearProjectDefaultModelRef(cur.id);
+    if (!updated) {
+      ctx.print(`Failed to clear the project default model (project unknown).`);
+      return;
+    }
+    if (!hadOverride) {
+      ctx.print(`No project default model was set on ${cur.name} (already using the global default).`);
+    } else {
+      ctx.print(`Cleared project default model on ${cur.name}. Falling back to the global default.`);
+    }
+    ctx.noteReloadModels?.();
+    return;
+  }
+
+  const split = splitModelRef(ref);
+  if (!split) { ctx.print(`Invalid ref: ${ref} (expected provider/model-id)`); return; }
+  const { providers } = await loadModels();
+  const prov = providers[split.provider];
+  if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
+  const m = (prov.models || []).find(x => x.id === split.model);
+  if (!m) { ctx.print(`Model not found: ${ref}`); return; }
+
+  const updated = await setProjectDefaultModelRef(cur.id, ref);
+  if (!updated) {
+    ctx.print(`Failed to set the project default model (project unknown).`);
+    return;
+  }
+  ctx.print(`Project default model set: ${ref} (project: ${cur.name})`);
+  ctx.print(`  (overrides the global default for this project only)`);
+  // The project reload refreshes session.project (so /project show etc. see
+  // the new ref); the model reload re-resolves the effective default via
+  // resolveDefaultModel, which now prefers this override. NOTE: we
+  // deliberately do NOT ctx.setModel(cfg) here — that would record the ref as
+  // a session-only override (session.sessionModelRef) and make it win even
+  // after the user later switches projects or clears the override. The
+  // enqueue loop's reloadAll applies the new default immediately.
+  ctx.noteReloadProject?.();
   ctx.noteReloadModels?.();
 }
 
@@ -340,24 +440,31 @@ async function setModel(rest, ctx) {
 
   await saveModels(data);
 
-  // Keep per-project phase overrides pointing at the old id in sync after a
-  // rename, so a pinned phase does not silently fall back to the default.
+  // Keep per-project refs pointing at the old id in sync after a rename, so a
+  // pinned phase / project default does not silently fall back to the global
+  // default. Rewrites: phaseModels entries AND the top-level defaultModel.
   if (newRef !== ref) {
     const projData = await loadProjects();
-    let phaseChanged = false;
+    let projChanged = false;
     for (const p of Object.values(projData.projects || {})) {
-      if (!p || typeof p !== 'object' || !p.phaseModels) continue;
-      for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
-        if (phaseRef === ref) {
-          p.phaseModels[phase] = newRef;
-          phaseChanged = true;
+      if (!p || typeof p !== 'object') continue;
+      if (p.phaseModels && typeof p.phaseModels === 'object') {
+        for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
+          if (phaseRef === ref) {
+            p.phaseModels[phase] = newRef;
+            projChanged = true;
+          }
         }
       }
+      if (p.defaultModel === ref) {
+        p.defaultModel = newRef;
+        projChanged = true;
+      }
     }
-    if (phaseChanged) {
+    if (projChanged) {
       await saveProjects(projData);
       // The in-memory session.project still holds the old refs; signal a
-      // project reload so phase overrides resolve the new ref this session
+      // project reload so overrides resolve the new ref this session
       // (same mechanism /model set-phase uses after editing a phase ref).
       ctx.noteReloadProject?.();
     }
@@ -493,15 +600,68 @@ async function delModel(rest, ctx) {
     ctx.print(`(default reset to: ${data.default || '(none)'})`);
   }
   await saveModels(data);
+  // Drop per-project references to the deleted model (defaultModel and
+  // phaseModels) so a project doesn't carry a ref that can never resolve.
+  // resolveDefaultModel / resolvePhaseLlm already fall back silently when a
+  // ref is stale, but cleaning here keeps /project show honest.
+  const projData = await loadProjects();
+  let projChanged = false;
+  const cleanedProjects = [];
+  for (const p of Object.values(projData.projects || {})) {
+    if (!p || typeof p !== 'object') continue;
+    let touched = false;
+    if (p.defaultModel === ref) {
+      p.defaultModel = null;
+      touched = true;
+    }
+    if (p.phaseModels && typeof p.phaseModels === 'object') {
+      for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
+        if (phaseRef === ref) {
+          delete p.phaseModels[phase];
+          touched = true;
+        }
+      }
+    }
+    if (touched) {
+      projChanged = true;
+      cleanedProjects.push(p.name || p.id);
+    }
+  }
+  if (projChanged) {
+    await saveProjects(projData);
+    ctx.print(`(cleared stale references on project(s): ${cleanedProjects.join(', ')})`);
+    ctx.noteReloadProject?.();
+  }
   ctx.noteReloadModels?.();
 }
 
 async function showModel(ctx) {
   const { default: def } = await loadModels();
-  if (!def) { ctx.print(`No default model configured. Use /model add then /model set-default.`); return; }
-  ctx.print(`default = ${def}`);
-  const cfg = await resolveModelRef(def);
-  if (!cfg) { ctx.print(`(unable to resolve)`); return; }
+  // Effective default resolution mirrors resolveDefaultModel: the current
+  // project's override (when set AND resolvable) wins over the global default.
+  const getter = ctx.getCurrentProject || (async () => (await import('../../lib/config/home.js')).getCurrentProject());
+  const project = await getter.call(ctx);
+  const projRef = getProjectDefaultModelRef(project);
+  const projCfg = projRef ? await resolveModelRef(projRef) : null;
+  const effectiveRef = (projRef && projCfg) ? projRef : def;
+
+  if (!effectiveRef) {
+    ctx.print(`No default model configured. Use /model add then /model set-default.`);
+    return;
+  }
+  ctx.print(`default = ${effectiveRef}`);
+  if (project) {
+    if (projRef && projCfg) {
+      ctx.print(`  project: ${project.name} (project default, set via /model set-default current)`);
+    } else if (projRef) {
+      ctx.print(`  project: ${project.name} (project default ${projRef} is stale - unresolvable, falling back to the global default)`);
+    } else {
+      ctx.print(`  project: ${project.name} (no project default - using the global default)`);
+    }
+  }
+  ctx.print(`  global: ${def || '(none)'}`);
+  const cfg = (projRef && projCfg) ? projCfg : await resolveModelRef(def);
+  if (!cfg) { ctx.print(`  (unable to resolve)`); return; }
   ctx.print(`  api: ${cfg.style}`);
   ctx.print(`  baseUrl: ${cfg.baseUrl || '(default)'}`);
   ctx.print(`  model: ${cfg.model}`);
@@ -509,7 +669,7 @@ async function showModel(ctx) {
   printModelOptions(ctx, cfg.modelOptions);
   // Display the STORED form: keeps the $APIKEY placeholder visible instead
   // of printing the provider's resolved (real) credential to the terminal.
-  const mcp = await getModelMcpServers(def, { resolve: false });
+  const mcp = await getModelMcpServers(effectiveRef, { resolve: false });
   if (mcp) printMcpServers(ctx, mcp);
   ctx.print(`  contextWindow: ${cfg.maxChars}`);
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);

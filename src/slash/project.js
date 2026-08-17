@@ -54,9 +54,10 @@
  *   /project drop <id|name>             Remove project (KB preserved)
  */
 import {
-  registerProject, loadProjects,
+  registerProject, loadProjects, loadModels,
   getCurrentProject, setCurrentProject, updateProject, removeProject,
   phaseStorageKeyToCliName, supportedPhaseNames,
+  getProjectDefaultModelRef,
 } from '../../lib/config/home.js';
 import { printCommandHelp } from './help.js';
 
@@ -229,6 +230,16 @@ async function showProject(ctx) {
   }
   ctx.print(`  kbBuiltAt: ${cur.kbBuiltAt || '(not built, run /kb init)'}`);
   ctx.print(`  createdAt: ${cur.createdAt}`);
+  // Per-project default model (set via /model set-default current). When unset
+  // the project uses the global default from models.json - show that too so
+  // the effective model is always visible here.
+  const projDefault = getProjectDefaultModelRef(cur);
+  const { default: globalDefault } = await loadModels();
+  if (projDefault) {
+    ctx.print(`  defaultModel: ${projDefault}`);
+  } else {
+    ctx.print(`  defaultModel: (unset; uses the global default${globalDefault ? `: ${globalDefault}` : ' (none configured)'})`);
+  }
   const phaseModels = (cur.phaseModels && typeof cur.phaseModels === 'object' && !Array.isArray(cur.phaseModels)) ? cur.phaseModels : {};
   // ALWAYS list every supported phase (rewrite-query, plan-review, ...) so a
   // phase that hasn't been configured is still VISIBLE as an explicit

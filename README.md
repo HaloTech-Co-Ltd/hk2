@@ -219,6 +219,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | Add a model (`--model-options` sets model-specific feature options as a JSON object, e.g. `--model-options='{"enable_thinking":true}'`; default is no options; model types with declared features validate the options — e.g. `--model-type=glm-5.3` accepts `{"reasoning_effort":"max"}` with max the default/recommended, or high/low) |
 | `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings (`--id` renames the model id / ref; the wire model code sent to the API is unaffected; `--model-options` replaces the model-specific options object wholesale — pass `'{}'` to clear; validated against the model type's declared features, e.g. glm-5.3 `reasoning_effort` ∈ max/high/low) |
 | `/model set-default <prov>/<id>` | Set global default (persisted) |
+| `/model set-default current <prov>/<id>` | Set the current project's default model (overrides the global default; `--clear` removes the override) |
 | `/model use <prov>/<id>` | Choose model for current session only |
 | `/model del <prov>/<id>` | Delete |
 | `/model show` | Show current default details |

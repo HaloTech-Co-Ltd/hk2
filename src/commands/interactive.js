@@ -342,6 +342,8 @@ export function buildCtx(session) {
     get lastAnswer() { return session.lastAnswer; },
     get llm() { return session.llm; },
     get modelCfg() { return session.modelCfg; },
+    /** Session-only model override ref (set via /model use); null when the session follows the default. */
+    get sessionModelRef() { return session.sessionModelRef; },
     get rt() { return session.rt; },
     /**
      * Hot-swap the session's active model (session-only, not persisted).
@@ -447,6 +449,11 @@ export function buildCtx(session) {
         session.pinnedProjectId = target.id;
         session.reloadFlags.project = true;
         session.reloadFlags.kb = true;
+        // The effective default model is project-scoped (resolveDefaultModel
+        // prefers the project's defaultModel override), so a project switch
+        // must also re-resolve the model — unless a session-only override
+        // (/model use) is active, which always wins.
+        if (!session.sessionModelRef) session.reloadFlags.model = true;
       }
       return target;
     },
