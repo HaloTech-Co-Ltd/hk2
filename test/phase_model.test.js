@@ -331,3 +331,84 @@ test('/project show shows both phases as set when both are configured', async ()
     `plan-review row shows its ref: ${JSON.stringify(phaseLines)}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// 5. request-assess phase ('assessing request'): same mechanism as rewrite-query
+// ---------------------------------------------------------------------------
+
+test('normalizePhaseName maps request-assess to the requestAssess storage key', () => {
+  assert.equal(normalizePhaseName('request-assess'), 'requestAssess');
+  assert.equal(normalizePhaseName('Request-Assess'), 'requestAssess'); // case-insensitive
+  assert.ok(supportedPhaseNames().includes('request-assess'), 'advertised in supportedPhaseNames');
+});
+
+test('setPhaseModelRef persists and getPhaseModelRef reads back request-assess', async () => {
+  await seedModels();
+  const p = await makeProject('assesssetget');
+  assert.equal(getPhaseModelRef(p, 'request-assess'), null, 'no override before set');
+
+  const updated = await setPhaseModelRef(p.id, 'request-assess', 'provB/model-b');
+  assert.ok(updated, 'setPhaseModelRef returned the updated record');
+  assert.equal(updated.phaseModels?.requestAssess, 'provB/model-b', 'stored under the storage key');
+  assert.equal(getPhaseModelRef(updated, 'request-assess'), 'provB/model-b', 'read back via CLI name');
+
+  // Read back directly by id (registerProject only claims `current` when it is
+  // empty, so getCurrentProject() may point at an earlier project here).
+  const { getProject } = await import('../lib/config/home.js');
+  const reloaded = await getProject(p.id);
+  assert.equal(getPhaseModelRef(reloaded, 'request-assess'), 'provB/model-b', 'persisted across reload');
+
+  const cleared = await clearPhaseModelRef(p.id, 'request-assess');
+  assert.equal(getPhaseModelRef(cleared, 'request-assess'), null, 'override removed');
+  assert.ok(!('requestAssess' in (cleared.phaseModels || {})), 'key absent from phaseModels');
+});
+
+test('/model set-phase persists request-assess on the current project', async () => {
+  await seedModels();
+  const p = await makeProject('assesscli');
+  await setCurrentProject(p.id);
+
+  const session = createSession(p.id);
+  const ctx = buildCtx(session);
+  const prints = [];
+  ctx.print = (t) => prints.push(t);
+  await reloadAll(session, ctx);
+
+  const handled = await dispatchSlash('/model set-phase --phase=request-assess provB/model-b', ctx);
+  assert.equal(handled, true, 'dispatchSlash handled the command');
+  assert.ok(
+    prints.some((s) => s.includes('Phase model set') && s.includes('request-assess') && s.includes('provB/model-b')),
+    `expected a confirmation, got: ${JSON.stringify(prints)}`,
+  );
+
+  const reloaded = await getCurrentProject();
+  assert.equal(getPhaseModelRef(reloaded, 'request-assess'), 'provB/model-b', 'persisted on the project');
+  assert.equal(session.modelCfg?.ref, 'provA/model-a', 'session model unchanged');
+});
+
+test('runAgentTurn resolves a phase LLM for request-assess when the project has an override', async () => {
+  await seedModels();
+  const p = await makeProject('assesswire');
+  await setPhaseModelRef(p.id, 'request-assess', 'provB/model-b');
+
+  const session = createSession(p.id);
+  const ctx = buildCtx(session);
+  ctx.print = () => {};
+  await reloadAll(session, ctx);
+
+  // The session's active model is A (the default). The phase override is B.
+  assert.equal(session.modelCfg?.ref, 'provA/model-a', 'session model is A');
+  assert.equal(session.llm?.config?.apiKey, 'sk-a', 'session LLM uses provider A credentials');
+
+  // Replicate the resolver logic runAgentTurn uses for the assessment phase
+  // ('assessing request'): resolvePhaseLlm('request-assess') -> B credentials.
+  const { resolveModelRef } = await import('../lib/config/home.js');
+  const { LLMClient } = await import('../lib/llm/client.js');
+  const ref = getPhaseModelRef(session.project, 'request-assess');
+  assert.equal(ref, 'provB/model-b', 'override visible on session.project');
+  const phaseCfg = await resolveModelRef(ref);
+  assert.ok(phaseCfg, 'phase model resolves to a config');
+  const phaseLlm = new LLMClient(phaseCfg);
+  assert.equal(phaseLlm.config?.apiKey, 'sk-b', 'phase LLM uses provider B credentials');
+  assert.notEqual(phaseLlm.config?.apiKey, session.llm?.config?.apiKey, 'phase LLM differs from session LLM');
+});

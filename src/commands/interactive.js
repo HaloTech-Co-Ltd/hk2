@@ -1572,6 +1572,21 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     }
   }
 
+  // Same mechanism for the request-clarity assessment phase ('assessing
+  // request'): /model set-phase --phase=request-assess <ref> runs the assessor
+  // on that model instead of the session model. Resolved once per turn;
+  // resolve failure falls back to session.llm with a warning (never silently
+  // run on the wrong model).
+  let assessLlm = null;
+  if (canAssess) {
+    try {
+      assessLlm = await resolvePhaseLlm('request-assess');
+    } catch (err) {
+      ctx.print(`[warn] could not resolve phase model for request assessment, using session model: ${err.message}`);
+      assessLlm = null;
+    }
+  }
+
   // Start the spinner on the FIRST piece of real work: the rewrite (when
   // enabled), else KB retrieval. Assessment runs later, after retrieval.
   if (enableRewrite && session.llm) {
@@ -1680,7 +1695,9 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       // so follow-ups that are terse in isolation but unambiguous given the
       // conversation are not flagged unclear.
       const sessionDigest = buildSessionDigest(session, userText);
-      const assessment = await assessRequest(session.llm, userText, {
+      // Use the per-phase model when configured; otherwise the session model.
+      const llmForAssess = assessLlm || session.llm;
+      const assessment = await assessRequest(llmForAssess, userText, {
         timeoutMs: 15000,
         signal: abortCtrl.signal,
         context: ctxLines.join('\n'),
@@ -1691,6 +1708,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         unclear: assessment.unclear,
         interpretations: assessment.interpretations,
         hadSessionContext: !!sessionDigest,
+        phaseModelRef: assessLlm ? (getPhaseModelRef(session.project, 'request-assess') || null) : null,
       });
       if (!assessment.clear) {
         progress.pause();

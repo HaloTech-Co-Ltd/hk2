@@ -457,7 +457,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_PREFIX` | `install.sh` 用于放置 `hk2` 符号链接的安装前缀 | `/usr/local` |
 | `HK2_INSTALL_DIR` | `install.sh` 创建的自包含副本位置（默认为 `HK2_HOME`，即 `~/.hk2`） | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | 为 1 时，hk2 会在 BM25 检索前（每轮开始及每次 `kb_search` 工具调用时）用一次 LLM 调用将用户查询重写为英文函数名 + 关键词。 | `1` |
-| `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
+| `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。评估模型可通过 `/model set-phase --phase=request-assess <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
 | `HK2_ENABLE_PLANREVIEW` | 为 1 时，在用户确认计划后，hk2 会请求 LLM 复审已定稿的计划，查找问题（缺失步骤、顺序错误、目标模糊、策略有风险等）。若复审发现有问题，会将每个问题逐一呈现给用户确认（采纳复审建议 / 忽略该问题 / 自定义解决方案）；确认后的解决方案会附加到返回给代理的计划中。复审模型可通过 `/model set-phase --phase=plan-review <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都返回已确认的计划，不做更改。 | `0` |
 | `HK2_ENABLE_CODEREVIEW` | 为 1 时，整个计划执行完成后，hk2 会对完成结果（工作区 diff、变更文件、代理的最终总结）执行一步 Code Review，检查正确性、完整性与质量，并将发现的问题逐一列出，给出详细说明与建议。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都会被报告，本轮仍正常结束。 | `0` |
 | `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |

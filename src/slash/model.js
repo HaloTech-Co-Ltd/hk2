@@ -698,9 +698,11 @@ function parseFlags(tokens) {
  * that phase uses the configured model instead of the current session model.
  * Defaults to the session model when unset (the default state).
  *
- * Currently supported phases: rewrite-query, plan-review, code-review.
+ * Currently supported phases: rewrite-query, request-assess, plan-review,
+ * code-review.
  *   /model set-phase --phase=rewrite-query prov/model
  *   /model set-phase --phase=rewrite-query --clear
+ *   /model set-phase --phase=request-assess prov/model
  *   /model set-phase --phase=plan-review prov/model
  *   /model set-phase --phase=code-review prov/model
  */
@@ -721,6 +723,7 @@ async function setPhaseModel(rest, ctx) {
     ctx.print(`Examples:`);
     ctx.print(`  /model set-phase --phase=rewrite-query openai-local/gpt-4o`);
     ctx.print(`  /model set-phase --phase=rewrite-query --clear`);
+    ctx.print(`  /model set-phase --phase=request-assess openai-local/gpt-4o`);
     ctx.print(`  /model set-phase --phase=plan-review openai-local/gpt-4o`);
     ctx.print(`  /model set-phase --phase=code-review openai-local/gpt-4o`);
     return;
