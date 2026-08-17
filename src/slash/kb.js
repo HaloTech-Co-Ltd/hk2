@@ -704,37 +704,45 @@ async function knowledgeLearnKb(rest, ctx) {
       ? `Project: ${p.name} — Topic: ${topic}\n${description || ''}\n\nBelow are source files related to this topic. Extract knowledge entries.\n\n${batchContext}`
       : `Source documents for topic "${topic}": ${description}\n\nBelow are the document contents. Extract knowledge entries.\n\n${batchContext}`;
 
-    let raw = '';
-    let rawReasoning = '';
-    try {
+    const callExtract = async (enableReasoning) => {
+      let raw = '';
+      let rawReasoning = '';
       for await (const evt of ctx.streamLLM(
         [
           { role: 'system', content: extractSysPrompt },
           { role: 'user', content: extractUserPrompt },
         ],
-        { temperature: 0.1, maxChars: 65536, enableReasoning: true, timeoutMs: 300000 },
+        { temperature: 0.1, maxChars: 65536, enableReasoning, timeoutMs: enableReasoning ? 300000 : retryTimeoutMs },
       )) {
         if (evt.type === 'delta') raw += evt.text;
         else if (evt.type === 'reasoning') rawReasoning += evt.text;
       }
+      return { raw, rawReasoning };
+    };
+    let attempt;
+    try {
+      attempt = await callExtract(true);
     } catch (err) {
       ctx.print(`  LLM call failed: ${err.message} — skipping.`);
       return;
     }
-    // Reasoning models may put the JSON array in reasoning_content.
-    if (!raw.trim() && rawReasoning.trim()) {
-      const m = rawReasoning.match(/\[[\s\S]*\]/);
-      if (m) raw = m[0];
-    }
-
-    let proposed = null;
-    try { proposed = JSON.parse(raw); }
-    catch {
-      const m = raw.match(/\[[\s\S]*\]/);
-      if (m) { try { proposed = JSON.parse(m[0]); } catch {} }
+    let proposed = parseJsonArrayLoose(attempt.raw, attempt.rawReasoning);
+    if (!Array.isArray(proposed)) {
+      // Deep-reasoning models can burn the whole output budget in the thinking
+      // channel and emit an empty or truncated content stream — the root cause
+      // of silent "could not parse as JSON array" skips. Retry once with
+      // reasoning DISABLED so the JSON array must land in the content channel.
+      ctx.print('  (extraction output unparseable — retrying with reasoning disabled...)');
+      try {
+        const retry = await callExtract(false);
+        proposed = parseJsonArrayLoose(retry.raw, retry.rawReasoning);
+      } catch (err) {
+        ctx.print(`  retry failed: ${err.message}`);
+      }
     }
     if (!Array.isArray(proposed)) {
-      ctx.print('  (could not parse as JSON array — skipping)');
+      const head = (attempt.raw || attempt.rawReasoning || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+      ctx.print(`  (could not parse as JSON array — skipping. content=${attempt.raw.length}c reasoning=${attempt.rawReasoning.length}c; head: ${head || '(empty)'})`);
       return;
     }
     totalProposed += proposed.length;
@@ -891,19 +899,25 @@ Rules:
 File manifest:
 ${manifest}`;
 
-    let planRaw = '';
-    let planReasoning = '';
-    try {
+    const planCall = async (enableReasoning) => {
+      let raw = '';
+      let reasoning = '';
       for await (const evt of ctx.streamLLM(
         [
           { role: 'system', content: planSysPrompt },
           { role: 'user', content: `Plan the study of these ${fileCount} document(s).${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },
         ],
-        { temperature: 0.1, maxChars: planningBudgetFor(fileCount), enableReasoning: true, timeoutMs: 300000 },
+        { temperature: 0.1, maxChars: planningBudgetFor(fileCount), enableReasoning, timeoutMs: enableReasoning ? planTimeoutMs : retryTimeoutMs },
       )) {
-        if (evt.type === 'delta') planRaw += evt.text;
-        else if (evt.type === 'reasoning') planReasoning += evt.text;
+        if (evt.type === 'delta') raw += evt.text;
+        else if (evt.type === 'reasoning') reasoning += evt.text;
       }
+      return { raw, reasoning };
+    };
+    let planRaw = '';
+    let planReasoning = '';
+    try {
+      ({ raw: planRaw, reasoning: planReasoning } = await planCall(true));
     } catch (err) {
       ctx.print(`[Phase 1] planning LLM call failed: ${err.message}`);
     }
@@ -914,6 +928,23 @@ ${manifest}`;
     if (!plan && planReasoning.trim()) {
       plan = parsePlanText(planReasoning);
       planFromReasoning = !!plan;
+    }
+    // Retry once with reasoning DISABLED (mirrors CODE mode Phase 1): when the
+    // first attempt produced no parseable plan (e.g. a deep-reasoning model
+    // burned the whole output budget thinking), a non-reasoning call forces
+    // the answer into the content channel with a fresh budget.
+    if (!plan) {
+      ctx.print('[Phase 1] No parseable plan from content or reasoning - retrying with reasoning disabled...');
+      try {
+        const retry = await planCall(false);
+        plan = parsePlanText(retry.raw);
+        if (!plan && retry.reasoning.trim()) {
+          plan = parsePlanText(retry.reasoning);
+          planFromReasoning = !!plan;
+        }
+      } catch (err) {
+        ctx.print(`[Phase 1] retry planning call failed: ${err.message}`);
+      }
     }
     if (plan) {
       ctx.print(`[Phase 1] LLM plan parsed: ${plan.length} batch${plan.length === 1 ? '' : 'es'} (${planFromReasoning ? 'from reasoning' : 'from content'}).`);
@@ -1349,6 +1380,37 @@ Existing Eden entries (DO NOT duplicate):
 ${edenSummary || '(none)'}${userPrompt ? `\nAdditional user instructions (follow these when extracting knowledge):\n${userPrompt}` : ''}`;
 }
 
+
+/**
+ * Parse an LLM extraction response as a JSON array, tolerating the usual
+ * wrapping artifacts: fenced ```json blocks, leading/trailing prose, and the
+ * case where a reasoning model put the array in the reasoning channel behind
+ * an empty content ack. Returns null when nothing parseable is found.
+ */
+function parseJsonArrayLoose(content, reasoning = '') {
+  const tryParse = (text) => {
+    if (!text || !text.trim()) return null;
+    // Strip fenced blocks first: ```json\n[...]\n``` -> [...]
+    const fenced = extractFencedBlocks(text);
+    const candidates = [fenced, text].filter(c => c && c.trim());
+    for (const cand of candidates) {
+      try {
+        const v = JSON.parse(cand);
+        if (Array.isArray(v)) return v;
+      } catch {}
+      // Slice the outermost [...] span (skips prose around the array).
+      const m = cand.match(/\[[\s\S]*\]/);
+      if (m) {
+        try {
+          const v = JSON.parse(m[0]);
+          if (Array.isArray(v)) return v;
+        } catch {}
+      }
+    }
+    return null;
+  };
+  return tryParse(content) ?? tryParse(reasoning);
+}
 
 /**
  * Recursively walk a directory and return absolute paths of files whose
@@ -2364,4 +2426,5 @@ export const __learnTest = {
   buildDirMap,
   expandDirPlan,
   dirTreePlan,
+  parseJsonArrayLoose,
 };
