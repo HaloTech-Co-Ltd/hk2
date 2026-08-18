@@ -180,7 +180,22 @@ export async function interactive(opts = {}) {
   // then swaps the transcript out for the resumed one.
   if (opts.resume) {
     const wanted = opts.resume === true ? null : String(opts.resume);
+    // reloadAll created a brand-new empty transcript seconds ago (it doubles
+    // as the "exclude" anchor for a bare --resume). Whichever way resume goes,
+    // that file is dead weight this process will never append to:
+    //  - failure → we exit(2) below; leaving the empty .jsonl behind would
+    //    poison a LATER bare `hk2 --resume` (findLatestSessionId picks the
+    //    newest-mtime orphan → restores 0 messages instead of the user's real
+    //    last conversation) and clutter /session list.
+    //  - success → session.transcript is swapped onto the RESUMED session and
+    //    every further append lands there; the fresh file is never touched.
+    // Launch path ONLY — the in-REPL /session resume path must NOT delete:
+    // its live transcript can hold this REPL's own conversation.
+    const freshPath = session.transcript?.path ?? null;
     const ok = await resumeSessionInto(session, wanted);
+    if (freshPath && (!ok || session.transcript.path !== freshPath)) {
+      await fs.unlink(freshPath).catch(() => {});
+    }
     if (!ok) {
       console.error(wanted
         ? `Error: session '${wanted}' not found for this project. (/session list to browse.)`
