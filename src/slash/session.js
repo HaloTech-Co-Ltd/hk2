@@ -141,7 +141,10 @@ async function sessionResume(rest, ctx) {
     // REPL is writing right now is excluded, so this never no-ops).
     const ok = await ctx.resumeSession?.(null);
     if (!ok) ctx.print(`No previous session found for this project.`);
-    else ctx.print(`Resumed the latest previous session.`);
+    else {
+      ctx.print(`Resumed the latest previous session.`);
+      printRecentOutputs(ctx);
+    }
     return;
   }
   const ok = await ctx.resumeSession?.(id);
@@ -149,7 +152,20 @@ async function sessionResume(rest, ctx) {
   else {
     const info = ctx.getSessionInfo?.();
     if (info?.sessionId) ctx.print(`Resumed session ${info.sessionId} (${info.messageCount} messages in context).`);
+    printRecentOutputs(ctx);
   }
+}
+
+/**
+ * Print the last output events of the just-resumed conversation
+ * (ctx.recentOutputs). Gracefully no-ops when the ctx doesn't provide the
+ * helper (older callers).
+ */
+function printRecentOutputs(ctx) {
+  const lines = ctx.recentOutputs?.(5) || [];
+  if (lines.length === 0) return;
+  ctx.print('');
+  for (const line of lines) ctx.print(line);
 }
 
 function parseFlags(tokens) {

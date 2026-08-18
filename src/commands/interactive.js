@@ -203,8 +203,14 @@ export async function interactive(opts = {}) {
       process.exit(2);
     }
     const msgCount = session.messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
-    console.error(`Resumed session ${session.transcript.sessionId}: ${msgCount} message(s) restored into context`
-      + (session.lastTask ? '; interrupted task state recovered (type 请继续/continue to go on)' : ''));
+    // Deferred printout: in TTY mode the status-bar setup below clears the
+    // screen AFTER this point but BEFORE printBanner, wiping anything printed
+    // here. Stash both the summary line and the last-outputs preview and emit
+    // them right after the banner instead.
+    session.resumeNotice =
+      `Resumed session ${session.transcript.sessionId}: ${msgCount} message(s) restored into context`
+      + (session.lastTask ? '; interrupted task state recovered (type 请继续/continue to go on)' : '');
+    session.resumeOutputsPreview = formatRecentOutputs(session.messages);
   }
 
   const isInteractive = !!process.stdin.isTTY || opts.forceTty;
@@ -252,6 +258,20 @@ export async function interactive(opts = {}) {
   }
 
   printBanner(session, ctx);
+
+  // --resume feedback — emitted here (not in the resume block above) because
+  // the TTY clear during status-bar setup wipes anything printed earlier.
+  // Shows the restore summary plus the last 5 rounds of the conversation so
+  // the user immediately sees where they left off.
+  if (session.resumeNotice) {
+    console.error(session.resumeNotice);
+    session.resumeNotice = null;
+  }
+  if (session.resumeOutputsPreview?.length) {
+    for (const line of session.resumeOutputsPreview) console.error(line);
+    session.resumeOutputsPreview = null;
+    console.error('');
+  }
 
   const enqueue = async (line) => {
     session.queue.push(line);
@@ -349,6 +369,122 @@ export async function interactive(opts = {}) {
       : 'Goodbye');
   }
   process.exit(0);
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Flatten replayed LLM messages into ordered OUTPUT EVENTS — the same units
+ * the user watched scroll by in the live session:
+ *   { kind: 'user',  text }        context marker (a new question was asked)
+ *   { kind: 'tool',  name, args }  ONE tool call (args = parsed object)
+ *   { kind: 'reply', text }        ONE assistant text reply
+ *
+ * Why events, not "rounds": a single user question fans out into dozens of
+ * tool calls (real transcripts show e.g. 2 user events vs 37 tool_call
+ * events), so slicing by user turns yields 1-2 huge "rounds" and a
+ * "last 5 rounds" preview degenerates into stale round-openings. Keying on
+ * output events makes "last 5" mean the five most recent things the agent
+ * actually emitted. Consecutive tool_calls inside one replayed assistant
+ * message are flattened to individual events, preserving order.
+ *
+ * Pure data, no ANSI — exported for unit testing.
+ *
+ * @param {Array} messages LLM-shaped messages (as produced by replayTranscript)
+ * @returns {Array<{kind:'user',text:string}|{kind:'tool',name:string,args:object}|{kind:'reply',text:string}>}
+ */
+export function splitOutputUnits(messages) {
+  const events = [];
+  let sawUser = false; // defensive: replayTranscript never emits pre-user msgs
+  for (const m of messages || []) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.role === 'user') {
+      sawUser = true;
+      if (typeof m.content === 'string' && m.content.trim()) {
+        events.push({ kind: 'user', text: m.content });
+      }
+      continue;
+    }
+    if (m.role !== 'assistant' || !sawUser) continue; // role:'tool' too verbose
+    if (Array.isArray(m.tool_calls)) {
+      for (const c of m.tool_calls) {
+        events.push({
+          kind: 'tool',
+          name: c?.function?.name || '?',
+          args: typeof c?.function?.arguments === 'string'
+            ? safeParseArgs(c.function.arguments)
+            : (c?.function?.arguments || {}),
+        });
+      }
+    }
+    // tool_calls and content are independent — a live-loop assistant message
+    // may carry both; the replayed shape carries either.
+    if (typeof m.content === 'string' && m.content.trim()) {
+      events.push({ kind: 'reply', text: m.content });
+    }
+  }
+  return events;
+}
+
+/**
+ * Lines for the `you:` context marker of a user event. FULL fidelity: no
+ * truncation, no ellipsis — multi-line inputs keep every line (first line
+ * carries the `you:` prefix, the rest are aligned under it).
+ */
+function userMarkerLines(text) {
+  const raw = String(text ?? '').replace(/\r/g, '').split('\n');
+  return raw.map((l, i) => (i === 0 ? `you: ${l}` : `     ${l}`));
+}
+
+/** Every line of a reply, verbatim — no clamping, no truncation, no ellipsis. */
+function allLines(text) {
+  return String(text ?? '').replace(/\r/g, '').split('\n');
+}
+
+/**
+ * Render the LAST N OUTPUT EVENTS (default 5) of a resumed session as display
+ * lines, so the user immediately sees what the agent last DID — the most
+ * recent tool calls (rendered with toolHeader, matching the live cards) and
+ * reply texts. `user` events inside the window are shown as dim context
+ * markers but do NOT count toward N. Used by the `hk2 --resume` launch path
+ * (printed AFTER the welcome banner — the TTY clear at startup wipes anything
+ * printed earlier) and by `/session resume` (via ctx.recentOutputs).
+ *
+ * FULL fidelity: every reply line is printed verbatim and tool arguments are
+ * never truncated — no `… (N more line(s))` markers, no char caps.
+ *
+ * @param {Array} messages LLM-shaped messages (session.messages after resume)
+ * @param {{outputs?: number}} opts outputs: how many trailing output events to show
+ * @returns {string[]} styled lines; empty array when there is nothing to show
+ */
+export function formatRecentOutputs(messages, { outputs = 5 } = {}) {
+  const all = splitOutputUnits(messages);
+  const outputIdx = [];
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].kind !== 'user') outputIdx.push(i);
+  }
+  if (outputIdx.length === 0) return [];
+  const n = Math.max(1, outputs | 0);
+  const from = Math.max(0, outputIdx.length - n);
+  const shown = outputIdx.length - from;
+  const window = all.slice(outputIdx[from]);
+  const out = [
+    style.bold(style.accent(`── last ${shown} of ${outputIdx.length} output(s) ──`)),
+  ];
+  for (const ev of window) {
+    if (ev.kind === 'user') {
+      for (const line of userMarkerLines(ev.text)) out.push(style.muted(line));
+    } else if (ev.kind === 'tool') {
+      const token = ev.name === 'bash' ? 'bashMode'
+        : ev.name.startsWith('kb_') ? 'accent'
+        : 'border';
+      out.push(`  ${toolHeader(ev.name, ev.args, token, { full: true })}`);
+    } else {
+      out.push(style.dim('  reply:'));
+      for (const line of allLines(ev.text)) out.push(`  ${line}`);
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */
@@ -605,6 +741,12 @@ export function buildCtx(session) {
       // (excluding the one this REPL is currently writing to).
       return resumeSessionInto(session, sessionId || null);
     },
+    /**
+     * Render the last N output events (default 5) of the CURRENT conversation
+     * as display lines — used by /session resume to show what the agent last
+     * did. Returns [] when the conversation has no outputs yet.
+     */
+    recentOutputs: (n = 5) => formatRecentOutputs(session.messages, { outputs: n }),
     getSessionInfo: () => {
       const info = {
         sessionId: session.transcript?.sessionId,
@@ -900,9 +1042,14 @@ function cardWidthFor(lines, title) {
  * argument (the bash command, the read path, the find pattern, etc.) so the
  * user can see at a glance what the call actually does — matches the
  * per-tool renderers used by the styled output.
+ *
+ * `full` (resume preview) disables the 110-char argument preview: live tool
+ * cards keep it because their bordered rows are width-constrained by
+ * bodyLine(), while the resume preview prints unbounded full lines.
  */
-function toolHeader(name, args, token) {
-  const preview = (s) => s && s.length > 110 ? s.slice(0, 110) + '…' : (s || '');
+function toolHeader(name, args, token, { full = false } = {}) {
+  const preview = (s) => (full ? (s || '')
+    : (s && s.length > 110 ? s.slice(0, 110) + '…' : (s || '')));
   switch (name) {
     case 'bash':
       return `${style.success('$')} ${style.muted(preview(args.command))}`;
