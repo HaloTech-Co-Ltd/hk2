@@ -272,6 +272,10 @@ async function setDefaultModelForProject(rest, ctx) {
     } else {
       ctx.print(`Cleared project default model on ${cur.name}. Falling back to the global default.`);
     }
+    // Project reload too (mirrors the set path): reloadAll's model branch
+    // resolves the default against the session-pinned project RECORD, so the
+    // cleared override only takes effect once session.project is refreshed.
+    ctx.noteReloadProject?.();
     ctx.noteReloadModels?.();
     return;
   }

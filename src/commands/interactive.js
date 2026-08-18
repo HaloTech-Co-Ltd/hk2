@@ -849,7 +849,16 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
         session.llm = null;
       }
     } else {
-      const cfg = await resolveDefaultModel();
+      // Resolve the default against THIS session's project (the pin), NOT the
+      // global `current` pointer: `hk2 --project=postgres` must not inherit
+      // the global-current project's defaultModel override, and
+      // `hk2 --project=kernel-deepdive` must use its own override. session.project
+      // was (re)loaded above by the flags.project branch — which runs first even
+      // on a model-only reload, because every project-mutating command also
+      // flags a project reload — so a mid-session /model set-default current
+      // picks up the fresh record. null (no project) skips the override path
+      // entirely and falls through to the global models.json default.
+      const cfg = await resolveDefaultModel(session.project || null);
       if (cfg) {
         session.modelCfg = cfg;
         session.llm = new LLMClient(cfg);

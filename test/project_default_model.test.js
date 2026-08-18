@@ -266,6 +266,109 @@ test('project overrides are isolated per project', async () => {
   assert.equal(getProjectDefaultModelRef(rb), null, 'project B has no override');
 });
 
+// ---------------------------------------------------------------------------
+// 2b. Session-pinned resolution (the `--project=<name>` launch path)
+// ---------------------------------------------------------------------------
+// Regression for v1.1.48: reloadAll used to call resolveDefaultModel() with no
+// argument, so the project override was read from the GLOBAL `current` pointer
+// instead of the session pin. Symptom: with global current = A (override set)
+// and `hk2 --project=B`, session B wrongly inherited A's override, and
+// `hk2 --project=C` (C's own override) never saw C's override.
+
+test('resolveDefaultModel(project) uses the passed project, not the global current', async () => {
+  await seedModels();
+  const a = await makeProject('pinArgA');   // global-current project, override = B
+  const b = await makeProject('pinArgB');   // pinned project, NO override
+  const c = await makeProject('pinArgC');   // pinned project, override = B
+  await setProjectDefaultModelRef(a.id, 'provB/model-b');
+  await setProjectDefaultModelRef(c.id, 'provB/model-b');
+  await setCurrentProject(a.id);            // global current = A
+
+  // Explicit project record: pinned project with NO override -> global default
+  // (must NOT inherit the global-current project A's override).
+  const cfgB = await resolveDefaultModel(b);
+  assert.equal(cfgB.ref, 'provA/model-a', 'pinned project without override uses the global default');
+
+  // Explicit project record: pinned project WITH its own override -> wins.
+  // (Re-read from disk: the local `c` was captured BEFORE the override was
+  // written, and the runtime always resolves from a fresh record.)
+  const cFresh = (await loadProjects()).projects[c.id];
+  const cfgC = await resolveDefaultModel(cFresh);
+  assert.equal(cfgC.ref, 'provB/model-b', 'pinned project override applies');
+
+  // null = deliberately no project: skip the override entirely.
+  const cfgNull = await resolveDefaultModel(null);
+  assert.equal(cfgNull.ref, 'provA/model-a', 'null project falls through to the global default');
+
+  // undefined = legacy behavior: read the global current pointer.
+  const cfgLegacy = await resolveDefaultModel();
+  assert.equal(cfgLegacy.ref, 'provB/model-b', 'undefined falls back to the global current project');
+});
+
+test('reloadAll honors the session pin when resolving the default model', async () => {
+  await seedModels();
+  const a = await makeProject('pinA');      // will be the global current, override = B
+  const b = await makeProject('pinB');      // pinned via --project, NO override
+  const c = await makeProject('pinC');      // pinned via --project, override = B
+  await setProjectDefaultModelRef(a.id, 'provB/model-b');
+  await setProjectDefaultModelRef(c.id, 'provB/model-b');
+  await setCurrentProject(a.id);            // global current = A
+
+  // Session pinned to B (hk2 --project=B): B has no override, so the session
+  // must run on the GLOBAL default — not A's override.
+  const sb = createSession(b.id);
+  const ctxb = buildCtx(sb);
+  await reloadAll(sb, ctxb);
+  assert.equal(sb.project?.id, b.id, 'session B pinned to B');
+  assert.equal(sb.modelCfg?.ref, 'provA/model-a', 'session B uses the global default (no override leak)');
+
+  // Session pinned to C (hk2 --project=C): C's own override applies.
+  const sc = createSession(c.id);
+  const ctxc = buildCtx(sc);
+  await reloadAll(sc, ctxc);
+  assert.equal(sc.project?.id, c.id, 'session C pinned to C');
+  assert.equal(sc.modelCfg?.ref, 'provB/model-b', 'session C uses its own override');
+
+  // Session pinned to A (hk2 --project=A, also the global current): unchanged.
+  const sa = createSession(a.id);
+  const ctxa = buildCtx(sa);
+  await reloadAll(sa, ctxa);
+  assert.equal(sa.modelCfg?.ref, 'provB/model-b', 'session A still uses its override');
+
+  // Bare launch with NO global current at all: projectless session must fall
+  // through to the global default — never inherit some OTHER project's
+  // override just because a pointer in projects.json happens to be set.
+  const data = await loadProjects();
+  data.current = null;
+  const { saveProjects } = await import('../lib/config/home.js');
+  await saveProjects(data);
+  const snull = createSession(null);
+  const ctxnull = buildCtx(snull);
+  await reloadAll(snull, ctxnull);
+  assert.equal(snull.project, null, 'bare session has no project');
+  assert.equal(snull.modelCfg?.ref, 'provA/model-a', 'projectless session uses the global default');
+});
+
+test('mid-session project-default change is picked up on model reload', async () => {
+  await seedModels();
+  const p = await makeProject('pinlive');
+  await setCurrentProject(p.id);
+
+  const session = createSession(p.id);
+  const ctx = makeCtx(session);
+  await reloadAll(session, ctx);
+  assert.equal(session.modelCfg?.ref, 'provA/model-a', 'starts on the global default');
+
+  // Change the pinned project's override out-of-band (as /model set-default
+  // current would), then reload as that command does (project + model: the
+  // project branch refreshes session.project's record first, the model branch
+  // then resolves the default against the fresh record).
+  await setProjectDefaultModelRef(p.id, 'provB/model-b');
+  await reloadAll(session, ctx, { project: true, kb: false, model: true });
+  session.reloadFlags = { project: false, kb: false, model: false };
+  assert.equal(session.modelCfg?.ref, 'provB/model-b', 'reload reads the pinned project override');
+});
+
 test('session-only /model use override still wins over the project default', async () => {
   await seedModels();
   const p = await makeProject('usewins');
