@@ -151,6 +151,23 @@ export function createSession(pinnedProjectId = null) {
     // one at the head of history on the next turn.
     needsSystemPrompt: false,
     kbGuard: new KbFirstGuard(),
+    // Set when the agent successfully persisted knowledge via kb_save_knowledge
+    // this turn ({ saved: true } result) or the user explicitly approved/refused
+    // a proposal. End-of-turn learnNewKnowledge() is SKIPPED when a save
+    // already happened, so the same task is not learned twice. Reset at the
+    // start of each turn.
+    kbSavedThisTurn: false,
+    kbSavedEntries: [],
+    // Session-level "recently learned" cooldown (epoch ms). Refreshed whenever
+    // knowledge capture is HANDLED for this session's current task: agent saved
+    // via kb_save_knowledge, user answered the end-of-turn proposal (commit or
+    // decline), or the user declined an agent proposal. While kbLearnHandledAt is
+    // within the cooldown (HK2_KB_LEARN_COOLDOWN_MIN, default 0 = OFF, set
+    // positive minutes to enable),
+    // the end-of-turn [kb learn] fallback is skipped — follow-up turns of the
+    // same task and --resume'd sessions must not re-extract what was just
+    // learned. Restored from the transcript by resumeSessionInto.
+    kbLearnHandledAt: 0,
   };
 }
 
@@ -558,6 +575,37 @@ async function resumeSessionInto(session, sessionId) {
     lastEvent: lastTs,
     restoredTask: !!session.lastTask,
   });
+
+  // Restore the "recently learned" cooldown from the transcript so a resumed
+  // session doesn't re-extract knowledge that was just captured before the
+  // restart. We scan for the LATEST evidence of a handled knowledge capture:
+  //   - meta learned_knowledge (end-of-turn [kb learn] committed)
+  //   - tool_call kb_save_knowledge with result.saved/cancelled (agent saved,
+  //     or the user answered its y/N proposal)
+  // and take the most recent ts among them — matching the in-session behavior
+  // where a cancelled proposal also sets the skip flag. Hard tool errors and
+  // pure LLM declines (skip) are NOT logged distinctly and so do not arm the
+  // cooldown here; re-offering after a resume is the safer failure mode.
+  try {
+    let latest = 0;
+    for (const raw of text.split('\n')) {
+      if (!raw.trim()) continue;
+      if (!raw.includes('learned_knowledge') && !raw.includes('kb_save_knowledge')) continue;
+      let ev;
+      try { ev = JSON.parse(raw); } catch { continue; }
+      const ts = ev && typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      if (ev.type === 'meta' && ev.key === 'learned_knowledge') {
+        if (ts > latest) latest = ts;
+      } else if (ev.type === 'tool_call' && ev.name === 'kb_save_knowledge') {
+        const res = ev.result;
+        if (res && typeof res === 'object' && (res.saved || res.cancelled)) {
+          if (ts > latest) latest = ts;
+        }
+      }
+    }
+    session.kbLearnHandledAt = latest;
+  } catch { /* best-effort; cooldown stays 0 (fallback extraction enabled) */ }
   return true;
 }
 
@@ -2267,6 +2315,11 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   // source files, that's a signal the KB didn't have what it needed and we
   // should suggest a KB update at end of turn.
   session.bashSearchCommands = [];
+  // Reset the per-turn "already learned" flag: if the agent saves knowledge
+  // via kb_save_knowledge during THIS turn, maybeOfferKbUpdate will skip the
+  // redundant end-of-turn [kb learn] extraction.
+  session.kbSavedThisTurn = false;
+  session.kbSavedEntries = [];
   // Reset per-loop AND per-call token counters; cumulative session totals
   // (cumIn/cumOut) stay in session.tokens. callIn/callOut will also be reset
   // on every onTurnStart (per LLM call) after being committed to loopIn/loopOut.
@@ -2490,6 +2543,9 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       }
       process.stderr.write(style.bottomBorder({ width: w, token }) + '\n');
       session.transcript?.logToolCall(call, result);
+      // The unwrapped tool payload (result.result when ok), used by the
+      // kb_save_knowledge tracking below and the KB-hit-rate classifier.
+      const payload = result && result.ok ? result.result : null;
       // Record bash search-like commands for end-of-turn KB update suggestion
       if (call.name === 'bash') {
         try {
@@ -2499,13 +2555,27 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
           }
         } catch { /* ignore */ }
       }
+      // Track successful knowledge saves this turn: when the agent already
+      // persisted (or the user explicitly approved/refused) a kb_save_knowledge
+      // proposal, the end-of-turn [kb learn] extraction would re-learn the
+      // same thing. `saved: true` marks "done"; `cancelled: true` (user saw
+      // the proposal and declined) also counts as "handled" — the model
+      // already surfaced its knowledge and the user made the call. Only hard
+      // errors ({ error }) leave the flag unset so learn can still run.
+      if (call.name === 'kb_save_knowledge' && payload && typeof payload === 'object') {
+        if (payload.saved || payload.cancelled) {
+          session.kbSavedThisTurn = true;
+          if (payload.saved) {
+            session.kbSavedEntries.push({ id: payload.id, space: payload.space });
+          }
+        }
+      }
       // Per-loop KB-hit-rate tracking: record every call as either a KB call
       // or a no-KB fallback (bash-search / discovery tools / cold source-file
       // reads), preserving execution order via seq. Cached cache hits still
       // count - the agent still *chose* the KB. The result is the unwrapped
       // tool payload (result.result when ok) so the stats helper can classify
       // reads and estimate token savings.
-      const payload = result && result.ok ? result.result : null;
       const seq = session.loopCallSeq++;
       if (typeof call.name === 'string' && call.name.startsWith('kb_')) {
         session.loopKbCalls.push({ call, result: payload, seq });
@@ -2980,7 +3050,7 @@ function estimateMessagesTokens(messages) {
  * either derivable (Index: re-derived from code) or transient (Eden: lists
  * that evolve with the codebase).
  */
-async function maybeOfferKbUpdate(session, ctx) {
+export async function maybeOfferKbUpdate(session, ctx) {
   if (!session.project) return;
   if (!session.bashSearchCommands || session.bashSearchCommands.length === 0) return;
 
@@ -3007,9 +3077,46 @@ async function maybeOfferKbUpdate(session, ctx) {
   //      - Eden + HK2_ENABLE_AUTO_LEARN=1 → auto-commit
   //      - Eden + HK2_ENABLE_AUTO_LEARN=0 → prompt y/N
   //      - Holy → ALWAYS prompt y/N (even with auto-learn)
-  await learnNewKnowledge(session, ctx, { autoLearn });
+  //    SKIPPED when the agent already saved knowledge via kb_save_knowledge
+  //    this turn (or the user explicitly declined a proposal) — re-running
+  //    the extraction would duplicate what was just learned. A session-level
+  //    cooldown additionally covers follow-up turns of the same task and
+  //    --resume'd sessions.
+  if (session.kbSavedThisTurn) {
+    const savedPart = session.kbSavedEntries.length > 0
+      ? ` (${session.kbSavedEntries.map(e => `${e.space}:${e.id}`).join(', ')})`
+      : '';
+    const declinedPart = session.kbSavedEntries.length > 0
+      ? ''
+      : ' (you declined the proposal, nothing was written)';
+    ctx.print(`[kb learn] skipped — knowledge was already captured via kb_save_knowledge this turn${savedPart}${declinedPart}.`);
+    ctx.print('            Run /kb knowledge learn manually if you want a deeper study.');
+    session.kbLearnHandledAt = Date.now();
+  } else if (kbLearnInCooldown(session)) {
+    ctx.print(`[kb learn] skipped — this session's knowledge was captured/answered ${Math.floor((Date.now() - session.kbLearnHandledAt) / 60000)} min ago (within the learn cooldown you enabled via HK2_KB_LEARN_COOLDOWN_MIN; unset it or set 0 to always ask).`);
+    ctx.print('            Run /kb knowledge learn manually if you want a deeper study.');
+  } else {
+    await learnNewKnowledge(session, ctx, { autoLearn });
+  }
 
   session.bashSearchCommands = [];
+}
+
+/**
+ * Cooldown gate for the end-of-turn [kb learn] fallback. Returns true when a
+ * knowledge capture was handled recently enough that re-extracting the same
+ * task would be redundant. OFF by default (0): the end-of-turn prompt always
+ * reaches the user unless a positive window is explicitly configured — the
+ * user, not a timer, decides when learning is done. The cooldown window is
+ * memoized on the session so tests can override it deterministically.
+ */
+function kbLearnInCooldown(session) {
+  const minutes = Number.parseFloat(String(process.env.HK2_KB_LEARN_COOLDOWN_MIN ?? '0').trim());
+  const ms = (Number.isFinite(minutes) ? minutes : 0) * 60_000;
+  session.kbLearnCooldownMs = ms;
+  if (!Number.isFinite(minutes) || ms <= 0) return false;
+  if (!session.kbLearnHandledAt || session.kbLearnHandledAt <= 0) return false;
+  return Date.now() - session.kbLearnHandledAt < ms;
 }
 
 async function runKbUpdate(session, ctx) {
@@ -3051,6 +3158,7 @@ async function learnNewKnowledge(session, ctx, { autoLearn }) {
   }
 
   ctx.print('[kb learn] asking the model to summarize what it learned...');
+  ctx.print(style.dim('          (one LLM call, up to ~1 min; you will be asked y/N before anything is written)'));
 
   const sysPrompt = `You are extracting a reusable knowledge note from a completed coding task so future tasks on the same project can skip the discovery work.
 
@@ -3100,6 +3208,9 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
   }
   if (!parsed || parsed.skip) {
     ctx.print('[kb learn] the model declined to save a knowledge entry (no reusable knowledge identified).');
+    // The extraction ran and concluded there is nothing to save — re-running
+    // it for follow-up turns of the same task would just burn another minute.
+    session.kbLearnHandledAt = Date.now();
     return;
   }
 
@@ -3139,6 +3250,9 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
 
   if (!commit) {
     ctx.print('[kb learn] Cancelled. Nothing was written.');
+    // The user SAW the proposal and declined — treat as handled so follow-up
+    // turns don't re-prompt for the same knowledge.
+    session.kbLearnHandledAt = Date.now();
     return;
   }
 
@@ -3152,6 +3266,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
 
   ctx.print(`[kb learn] saved ${space} entry "${id}": ${record.title}`);
   ctx.print(`            path: ${p}`);
+  session.kbLearnHandledAt = Date.now();
   await session.transcript?.logMeta('learned_knowledge', { id, space, title: record.title });
 }
 
