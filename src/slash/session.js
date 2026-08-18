@@ -137,11 +137,19 @@ async function sessionNew(ctx) {
 async function sessionResume(rest, ctx) {
   const id = rest[0];
   if (!id) {
-    ctx.print(`Usage: /session resume <sessionId>`);
+    // No id → resume the project's LATEST previous session (the one this
+    // REPL is writing right now is excluded, so this never no-ops).
+    const ok = await ctx.resumeSession?.(null);
+    if (!ok) ctx.print(`No previous session found for this project.`);
+    else ctx.print(`Resumed the latest previous session.`);
     return;
   }
   const ok = await ctx.resumeSession?.(id);
   if (!ok) ctx.print(`Session not found: ${id}`);
+  else {
+    const info = ctx.getSessionInfo?.();
+    if (info?.sessionId) ctx.print(`Resumed session ${info.sessionId} (${info.messageCount} messages in context).`);
+  }
 }
 
 function parseFlags(tokens) {

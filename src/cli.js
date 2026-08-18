@@ -107,6 +107,13 @@ Usage:
       of the two flags may be given. Only meaningful with the default
       interactive mode (no --mode).
 
+  hk2 --resume [<sessionId>]
+      Resume a previous session: reopen its transcript and restore the full
+      conversation context (messages, tool-call history, interrupted-task
+      state). With no id, resumes the current project's LATEST session.
+      Combine with --project/--project-id to resume a session from another
+      project. Only meaningful with the default interactive mode.
+
   hk2 --project-list
       List all registered projects (name and id) and exit. The current
       project is marked with '*'. One-shot; does not enter the REPL.
@@ -136,6 +143,11 @@ Interactive REPL commands (full list via /help; per-command usage via /help <com
   /kb init | update | status | search | symbol | neighbors | knowledge | transform | drop
   /session info | list | new | resume | compact
   /clear | /compact | /help | /quit
+
+Session resume:
+  hk2 --resume                     Resume the current project's latest session
+  hk2 --resume <sessionId>         Resume a specific session by id
+  hk2 --project=<name> --resume    Resume another project's latest session
 
 Config locations:
   ~/.hk2/models.json           Multi-provider model registry
@@ -233,7 +245,15 @@ export async function run() {
       // into interactive(), which pins it per-session.
       console.error(`Selected project: ${resolved.name} (id=${resolved.id})`);
       const { interactive } = await import('./commands/interactive.js');
-      await interactive({ projectId: resolved.id });
+      await interactive({ projectId: resolved.id, resume: flags.resume });
+      return;
+    }
+
+    // --resume / --resume=<sessionId> without an explicit project: resolve
+    // the session under the CURRENT project (global `current` pointer).
+    if (flags.resume !== undefined) {
+      const { interactive } = await import('./commands/interactive.js');
+      await interactive({ resume: flags.resume });
       return;
     }
 

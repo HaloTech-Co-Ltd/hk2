@@ -81,6 +81,7 @@ import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../../lib/agent/task_state.js';
+import { replayTranscript, findLatestSessionId } from '../../lib/agent/transcript.js';
 import { VERSION } from '../version.js';
 
 /**
@@ -144,6 +145,11 @@ export function createSession(pinnedProjectId = null) {
     // continuation cue with no memory. Mirrored to disk via task_state.js so
     // a process restart (not just an in-session error) can also recover.
     lastTask: null,
+    // True right after a session resume: the replayed history contains no
+    // system prompt (replayTranscript skips system_prompt events — it must be
+    // rebuilt with the CURRENT tool list), so runAgentTurn inserts a fresh
+    // one at the head of history on the next turn.
+    needsSystemPrompt: false,
     kbGuard: new KbFirstGuard(),
   };
 }
@@ -166,6 +172,25 @@ export async function interactive(opts = {}) {
   const ctx = buildCtx(session);
 
   await reloadAll(session, ctx);
+
+  // --resume[=<sessionId>] / opts.resume: reopen a previous session's
+  // transcript instead of starting fresh. `true` means "the project's latest
+  // session" (hk2 --resume with no value). Must run AFTER reloadAll so the
+  // project (and its fresh transcript) is already resolved — resumeSession()
+  // then swaps the transcript out for the resumed one.
+  if (opts.resume) {
+    const wanted = opts.resume === true ? null : String(opts.resume);
+    const ok = await resumeSessionInto(session, wanted);
+    if (!ok) {
+      console.error(wanted
+        ? `Error: session '${wanted}' not found for this project. (/session list to browse.)`
+        : `Error: no previous session found for this project. Nothing to resume.`);
+      process.exit(2);
+    }
+    const msgCount = session.messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
+    console.error(`Resumed session ${session.transcript.sessionId}: ${msgCount} message(s) restored into context`
+      + (session.lastTask ? '; interrupted task state recovered (type 请继续/continue to go on)' : ''));
+  }
 
   const isInteractive = !!process.stdin.isTTY || opts.forceTty;
   session.rl = readline.createInterface({
@@ -298,11 +323,92 @@ export async function interactive(opts = {}) {
   paste.stop();
   session.statusBar?.stop();
   if (!session.rl.closed) session.rl.close();
-  if (isInteractive) console.error('Goodbye');
+  if (isInteractive) {
+    // Tell the user how to get this conversation back before the process
+    // exits — the transcript survives on disk and `hk2 --resume <id>` (or a
+    // bare `hk2 --resume` for the project's latest) reopens it with full
+    // context.
+    const sid = session.transcript?.sessionId;
+    console.error(sid
+      ? `Goodbye (using \`hk2 --resume ${sid}\` to resume the session)`
+      : 'Goodbye');
+  }
   process.exit(0);
 }
 
 /* ------------------------------------------------------------------ */
+
+/**
+ * Resume a previous session into `session` — the shared engine behind both
+ * `hk2 --resume <id>` (launch-time) and `/session resume <id>` (in-REPL).
+ *
+ * Replays the target transcript's JSONL into `session.messages` with FULL
+ * fidelity (assistant tool_calls + role:tool pairs, not just user/assistant
+ * text), restores the interrupted-task context (lastTask + planProgress)
+ * from task_state.js when it belongs to this session, and swaps the
+ * transcript object so subsequent events APPEND to the same file (history
+ * survives).
+ *
+ * @param {object} session the live REPL session
+ * @param {string|null} sessionId explicit id, or null for "the project's
+ *   latest session" (excludes the file this REPL is currently writing)
+ * @returns {Promise<boolean>} true on success; false = not found / no project
+ */
+async function resumeSessionInto(session, sessionId) {
+  if (!session.project) return false;
+  let id = sessionId;
+  if (!id) {
+    id = await findLatestSessionId(session.project.id, {
+      // NEVER pick the session this REPL just created / is writing — that
+      // would resume "now" (an empty history). At launch time reloadAll has
+      // already written the fresh transcript's session_start line to disk,
+      // so without this exclusion a bare `hk2 --resume` would find the
+      // brand-new empty session as the "latest".
+      exclude: session.transcript?.sessionId,
+    });
+    if (!id) return false;
+  }
+  const t = new Transcript(session.project.id, id);
+  if (!await exists(t.path)) return false;
+  const text = await fs.readFile(t.path, 'utf8');
+  const { messages, lastUserText, firstTs, lastTs } = replayTranscript(text);
+
+  session.transcript = t;
+  session.messages = messages;
+  session.lastAnswer = null;
+  session.toolCallCount = 0;
+  session.needsSystemPrompt = messages.length > 0;
+
+  // Restore interrupted-task context when task_state points at this session.
+  // (A /quit'd session that finished its task normally has no taskstate on
+  // disk — clearTaskState already ran — so nothing is restored and "请继续"
+  // is treated as a fresh request, which is correct.)
+  const saved = await loadTaskState(session.project.id);
+  if (saved && saved.userRequest && saved.sessionId === id) {
+    session.lastTask = {
+      userRequest: saved.userRequest,
+      capturedAt: saved.interruptedAt,
+      restored: true,
+    };
+    if (saved.planProgress && Array.isArray(saved.planProgress.steps)
+        && saved.planProgress.steps.some(s => s.status !== 'done')) {
+      session.planProgress = saved.planProgress;
+    }
+  } else {
+    session.lastTask = null;
+    session.planProgress = null;
+  }
+
+  await t.logMeta('resume', {
+    pid: process.pid,
+    cwd: process.cwd(),
+    replayedMessages: messages.length,
+    originalStart: firstTs,
+    lastEvent: lastTs,
+    restoredTask: !!session.lastTask,
+  });
+  return true;
+}
 
 export function buildCtx(session) {
   return {
@@ -465,6 +571,7 @@ export function buildCtx(session) {
     clearConversation: () => {
       session.messages = [];
       session.lastAnswer = null;
+      session.needsSystemPrompt = false;
     },
     newSession: async () => {
       const oldProject = session.project;
@@ -472,29 +579,16 @@ export function buildCtx(session) {
       session.messages = [];
       session.lastAnswer = null;
       session.toolCallCount = 0;
+      session.needsSystemPrompt = false;
       if (oldProject) {
         session.transcript = new Transcript(oldProject.id);
         await session.transcript.logMeta('start', { pid: process.pid, cwd: process.cwd(), reason: 'new-session' });
       }
     },
     resumeSession: async (sessionId) => {
-      if (!session.project) return false;
-      const t = new Transcript(session.project.id, sessionId);
-      const p = t.path;
-      if (!await exists(p)) return false;
-      session.transcript = t;
-      session.messages = [];
-      session.lastAnswer = null;
-      // Replay: simple — re-read the JSONL and rebuild messages[] minimally
-      const text = await fs.readFile(p, 'utf8');
-      for (const line of text.split('\n')) {
-        if (!line.trim()) continue;
-        let evt;
-        try { evt = JSON.parse(line); } catch { continue; }
-        if (evt.type === 'user') session.messages.push({ role: 'user', content: evt.text });
-        else if (evt.type === 'assistant') session.messages.push({ role: 'assistant', content: evt.text });
-      }
-      return true;
+      // sessionId undefined/null → the project's latest PREVIOUS session
+      // (excluding the one this REPL is currently writing to).
+      return resumeSessionInto(session, sessionId || null);
     },
     getSessionInfo: () => {
       const info = {
@@ -1974,14 +2068,22 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     ctx.print(style.warning(`  [mcp] attach failed: ${err.message} (continuing without MCP tools)`));
   }
 
-  if (session.messages.length === 0) {
+  if (session.messages.length === 0 || session.needsSystemPrompt) {
     const sysPrompt = buildSystemPrompt({
       project: session.project,
       tools,
       cwd: process.cwd(),
       graphText,
     });
-    session.messages.push({ role: 'system', content: sysPrompt });
+    if (session.messages.length === 0) {
+      session.messages.push({ role: 'system', content: sysPrompt });
+    } else {
+      // Resumed session: replayTranscript skipped the old system prompt (it
+      // references the tool list / KB graph of the process that wrote it) —
+      // splice a fresh one at the head of the replayed history.
+      session.messages.unshift({ role: 'system', content: sysPrompt });
+      session.needsSystemPrompt = false;
+    }
     await session.transcript?.logSystemPrompt(sysPrompt);
   } else {
     session.messages.push({
