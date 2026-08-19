@@ -2467,11 +2467,22 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   }
 
   if (session.messages.length === 0 || session.needsSystemPrompt) {
+    // Supreme code items: read fresh from the store on every system-prompt
+    // build so an amended code (via /kb code add|del) takes effect at the
+    // next prompt rebuild without waiting for a KB reload.
+    let supremeCodes;
+    if (session.project?.id) {
+      try {
+        const { readSupremeCode } = await import('../../lib/store/supreme_code.js');
+        supremeCodes = (await readSupremeCode(session.project.id))?.codes || [];
+      } catch { supremeCodes = undefined; }
+    }
     const sysPrompt = buildSystemPrompt({
       project: session.project,
       tools,
       cwd: process.cwd(),
       graphText,
+      supremeCodes,
     });
     if (session.messages.length === 0) {
       session.messages.push({ role: 'system', content: sysPrompt });
@@ -3427,6 +3438,7 @@ Output STRICT JSON only — no markdown fences, no prose. Schema:
 }
 
 Pick "holy" only for genuinely stable design knowledge. Pick "eden" for things that may evolve.
+The id "hk2-supreme-code" is reserved for the project's permanent Supreme Code — never propose it.
 If the conversation did not produce any reusable knowledge (one-off fix, trivial), output: {"skip": true}`;
 
   const userPrompt = `Task that was just completed:
@@ -3466,6 +3478,16 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
   const space0 = parsed.space === 'eden' ? 'eden' : 'holy';
   let space = space0;
   const id = String(parsed.id || 'learned').replace(/[^A-Za-z0-9_.-]/g, '_');
+  // The supreme-code entry is permanent and managed ONLY via /kb code add|del.
+  // The learn flow must never overwrite it — not even with user confirmation.
+  {
+    const { isSupremeCode } = await import('../../lib/store/supreme_code.js');
+    if (isSupremeCode(id)) {
+      ctx.print('[kb learn] refused: "hk2-supreme-code" is the permanent Supreme Code entry — manage it via /kb code add | /kb code del.');
+      session.kbLearnHandledAt = Date.now();
+      return;
+    }
+  }
   const record = {
     id,
     space,

@@ -73,6 +73,11 @@ import { addKbForProject, getKbMeta } from '../../lib/index/registry.js';
 import {
   readStats, listKnowledge, readKnowledge, deleteKnowledge, moveKnowledge,
 } from '../../lib/store/kb_store.js';
+import {
+  SUPREME_CODE_ID, SUPREME_CODE_MAX_ITEMS, isSupremeCode,
+  readSupremeCode, writeSupremeCode, ensureSupremeCode,
+  planCodeAdd, planCodeDel, parseCodeItemId, validateOneCodeItem,
+} from '../../lib/store/supreme_code.js';
 import { renderHelp, printCommandHelp, subcommandHelp } from './help.js';
 
 /** Topics under '/kb knowledge help <topic>' that map to a whole family's
@@ -91,6 +96,7 @@ export async function cmdKb(args, ctx) {
     case 'symbol': return symbolKb(rest, ctx);
     case 'neighbors': return neighborsKb(rest, ctx);
     case 'knowledge': return knowledgeKb(rest, ctx);
+    case 'code': case 'supreme': return codeKb(rest, ctx);
     case 'transform': return transformKb(rest, ctx);
     case 'drop': return dropKb(ctx);
     case 'help': case '?': case undefined:
@@ -207,6 +213,14 @@ async function statusKb(ctx) {
     return;
   }
   const stats = await readStats(p.id);
+  // The permanent supreme-code entry — self-heal when missing (projects
+  // initialized before the feature), then report its item count.
+  let supremeCount = 0;
+  try {
+    await ensureSupremeCode(p.id, { createdVia: 'kb-status-selfheal' });
+    const sc = await readSupremeCode(p.id);
+    supremeCount = sc ? sc.codes.length : 0;
+  } catch { /* non-fatal for status display */ }
   const [holyCount, edenCount] = await Promise.all([
     listKnowledge(p.id, 'holy').then(l => l.length).catch(() => 0),
     listKnowledge(p.id, 'eden').then(l => l.length).catch(() => 0),
@@ -218,6 +232,7 @@ async function statusKb(ctx) {
   ctx.print(`  updatedAt:    ${meta.updatedAt || '?'}`);
   ctx.print(``);
   ctx.print(`  Holy Space:   ${holyCount} entr${holyCount === 1 ? 'y' : 'ies'} (stable; updates require approval)`);
+  ctx.print(`  Supreme Code: ${supremeCount}/${SUPREME_CODE_MAX_ITEMS} item(s) — /kb code add|del (${SUPREME_CODE_ID})`);
   ctx.print(`  Eden Space:   ${edenCount} entr${edenCount === 1 ? 'y' : 'ies'} (frequently-updated)`);
   ctx.print(`  Index Space:`);
   if (stats) {
@@ -404,6 +419,11 @@ async function knowledgeAddKb(rest, ctx) {
       .replace(/^-+|-+$/g, '')
       .slice(0, 60);
     if (!id) id = 'untitled';
+  }
+  if (isSupremeCode(id)) {
+    ctx.print(`id "${SUPREME_CODE_ID}" is reserved for the permanent Supreme Code entry.`);
+    ctx.print(`Manage its items with: /kb code add | /kb code del`);
+    return;
   }
 
   // Parse comma-separated arrays
@@ -1937,8 +1957,9 @@ async function knowledgeEmptyKb(rest, ctx) {
   const counts = {};
   for (const space of spaces) {
     const entries = await listKnowledge(p.id, space).catch(() => []);
-    counts[space] = entries.length;
-    totalCount += entries.length;
+    const filtered = entries.filter(e => !isSupremeCode(e.id));
+    counts[space] = filtered.length;
+    totalCount += filtered.length;
   }
 
   if (totalCount === 0) {
@@ -1961,14 +1982,14 @@ async function knowledgeEmptyKb(rest, ctx) {
   for (const space of spaces) {
     const entries = await listKnowledge(p.id, space).catch(() => []);
     for (const e of entries) {
-      if (e.id) {
+      if (e.id && !isSupremeCode(e.id)) {
         await deleteKnowledge(p.id, space, e.id);
         removed++;
       }
     }
   }
   dropRuntime(p.id);
-  ctx.print(`Emptied: removed ${removed} entries from ${breakdown}.`);
+  ctx.print(`Emptied: removed ${removed} entries from ${breakdown} (supreme-code entry preserved).`);
 }
 
 async function knowledgeExportKb(rest, ctx) {
@@ -2107,6 +2128,10 @@ async function knowledgeImportKb(rest, ctx) {
       skipped.push({ id: e.id || '?', reason: 'missing required fields' });
       continue;
     }
+    if (isSupremeCode(e.id)) {
+      skipped.push({ id: e.id, reason: 'supreme-code entry is managed only via /kb code add|del' });
+      continue;
+    }
     if (existingIds[space].has(e.id) && !overwrite) {
       skipped.push({ id: e.id, reason: `already exists in ${space} (use --overwrite)` });
       continue;
@@ -2211,6 +2236,9 @@ async function knowledgeCleanupKb(rest, ctx) {
 
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
+      // The permanent supreme-code entry is never flagged for removal (same
+      // exclusion as /kb knowledge empty; deleteKnowledge() also refuses it).
+      if (isSupremeCode(e.id)) { totalKept++; continue; }
       const issues = [];
 
       // Check required fields
@@ -2317,9 +2345,212 @@ async function knowledgeCleanupKb(rest, ctx) {
   ctx.print(`Cleanup complete: ${totalRemoved} removed, ${totalKept} kept.`);
 }
 
+/* ------------------------------------------------------------------ */
+/* /kb code — the project Supreme Code (hk2-supreme-code) management    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * /kb code — manage the permanent supreme-code entry in Holy space.
+ *
+ * The entry is the project's fundamental law: max 100 items, 200 chars
+ * each, gapless 1..N numbering. Every mutation below shows a preview and
+ * requires an explicit y/N confirmation (Holy contract), then rewrites the
+ * whole entry atomically. Nothing else may create/delete/modify this entry.
+ *
+ * Usage:
+ *   /kb code list                                   show all items
+ *   /kb code add [code-id] --code-content="..."     add (append) or update item
+ *   /kb code add [code-id] --code-gen="..." [--model=provider/model-id]
+ *                                                   generate one item via LLM
+ *   /kb code del <code-id>                          delete + renumber
+ */
+async function codeKb(rest, ctx) {
+  const sub = rest[0];
+  const subArgs = rest.slice(1);
+  switch (sub) {
+    case 'add': case 'set': case 'update': return codeAddKb(subArgs, ctx);
+    case 'del': case 'rm': case 'delete': return codeDelKb(subArgs, ctx);
+    case 'list': case 'ls': case 'show': return codeListKb(subArgs, ctx);
+    case 'help': case '?': case undefined:
+      if (sub !== undefined && subArgs[0]) {
+        const lines = subcommandHelp('kb', 'code');
+        if (lines) { for (const l of lines) ctx.print(l); return; }
+        ctx.print(`Unknown /kb code topic: ${subArgs[0]}`);
+        return;
+      }
+      printCommandHelp(ctx, 'code');
+      return;
+    default:
+      ctx.print(`Unknown /kb code subcommand: ${sub}`);
+      printCommandHelp(ctx, 'code');
+  }
+}
+
+async function codeListKb(rest, ctx) {
+  const p = await getProjectOrFail(ctx);
+  if (!p) return;
+  const got = await readSupremeCode(p.id);
+  if (!got) {
+    ctx.print(`Supreme Code entry missing (this should not happen). Run /kb status to self-heal.`);
+    return;
+  }
+  ctx.print(`Supreme Code (${SUPREME_CODE_ID}) — ${got.codes.length}/${SUPREME_CODE_MAX_ITEMS} item(s), obeyed by ALL operations:`);
+  if (got.codes.length === 0) {
+    ctx.print(`  (empty — add the first law with: /kb code add --code-content="...")`);
+    return;
+  }
+  got.codes.forEach((c, i) => ctx.print(`  ${String(i + 1).padStart(3)}. ${c}`));
+}
+
+/** Resolve an LLM for --code-gen: --model=provider/model-id wins, else ctx.llm. */
+async function resolveCodeGenLlm(ctx, modelRef) {
+  if (!modelRef) return { llm: ctx.llm || null, ref: null };
+  const { resolveModelRef, splitModelRef } = await import('../../lib/config/home.js');
+  if (!splitModelRef(modelRef)) {
+    throw new Error(`invalid --model ref: ${modelRef} (expected provider/model-id)`);
+  }
+  const cfg = await resolveModelRef(modelRef);
+  if (!cfg) throw new Error(`model not found in registry: ${modelRef}`);
+  const { LLMClient } = await import('../../lib/llm/client.js');
+  return { llm: new LLMClient(cfg), ref: modelRef };
+}
+
+async function codeAddKb(rest, ctx) {
+  const flags = parseFlags(rest);
+  const rawId = flags.positional[0];
+  const content = flags['code-content'];
+  const gen = flags['code-gen'];
+  const modelRef = flags.model;
+
+  if (content === undefined && gen === undefined) {
+    ctx.print(`Usage: /kb code add [code-id] (--code-content=<text> | --code-gen=<instructions>) [--model=<provider>/<model-id>]`);
+    ctx.print(`  [code-id]   optional 1..N; omitted → append; <=N → update that item`);
+    ctx.print(`  Limits: ${SUPREME_CODE_MAX_ITEMS} items max, ${SUPREME_CODE_MAX_CHARS} chars each.`);
+    return;
+  }
+  if (content !== undefined && gen !== undefined) {
+    ctx.print(`Choose ONE of --code-content or --code-gen (not both).`);
+    return;
+  }
+  let id = null;
+  if (rawId !== undefined) {
+    id = parseCodeItemId(rawId);
+    if (id === null) {
+      ctx.print(`Invalid code-id "${rawId}": must be an integer 1..${SUPREME_CODE_MAX_ITEMS}.`);
+      return;
+    }
+  }
+
+  const p = await getProjectOrFail(ctx);
+  if (!p) return;
+  const got = await readSupremeCode(p.id);
+  const codes = got ? got.codes : [];
+
+  // Determine the final item text.
+  let text;
+  if (content !== undefined) {
+    const v = validateOneCodeItem(content);
+    if (!v.ok) { ctx.print(`Invalid --code-content: ${v.reason}`); return; }
+    text = v.content;  // verbatim apart from whitespace collapse (limit-checked)
+  } else {
+    // --code-gen: ask the (optionally specified) model to draft ONE item.
+    let llm;
+    try {
+      const resolved = await resolveCodeGenLlm(ctx, modelRef);
+      llm = resolved.llm;
+    } catch (err) {
+      ctx.print(`[code-gen] ${err.message}`);
+      return;
+    }
+    if (!llm) {
+      ctx.print(`[code-gen] no LLM available (set a model with /model set-default, or pass --model=provider/model-id).`);
+      return;
+    }
+    ctx.print(`[code-gen] drafting one supreme-code item${modelRef ? ` via ${modelRef}` : ''}...`);
+    const { buildCodeGenPrompt, sanitizeGeneratedCodeItem } = await import('../../lib/store/supreme_code.js');
+    const prompt = buildCodeGenPrompt(gen, codes);
+    let raw = '';
+    try {
+      const out = await llm.complete([{ role: 'user', content: prompt }], { temperature: 0.2, enableReasoning: false });
+      raw = typeof out === 'string' ? out : (out?.content ?? '');
+    } catch (err) {
+      ctx.print(`[code-gen] LLM call failed: ${err.message}`);
+      return;
+    }
+    const cleaned = sanitizeGeneratedCodeItem(raw);
+    const v = validateOneCodeItem(cleaned);
+    if (!v.ok) {
+      ctx.print(`[code-gen] generated item rejected: ${v.reason}`);
+      ctx.print(`  raw output: ${String(raw).slice(0, 200)}`);
+      return;
+    }
+    text = v.content;
+  }
+
+  // Plan + confirm + write.
+  const plan = planCodeAdd(codes, id, text);
+  if (!plan.ok) { ctx.print(plan.error); return; }
+  ctx.print(``);
+  ctx.print(`Supreme Code — ${plan.action === 'update' ? `UPDATE item ${plan.id}` : `APPEND as item ${plan.id}`}:`);
+  ctx.print(`  "${text}"`);
+  if (plan.action === 'update') ctx.print(`  (replaces: "${codes[plan.id - 1]}")`);
+  ctx.print(``);
+  const ok = await ctx.confirm(`Write to the Supreme Code (Holy, permanent)? (y/N) `);
+  if (!ok) { ctx.print(`Cancelled. Nothing was written.`); return; }
+  try {
+    await writeSupremeCode(p.id, plan.codes);
+  } catch (err) {
+    ctx.print(`Write failed: ${err.message}`);
+    return;
+  }
+  dropRuntime(p.id);
+  ctx.noteReloadKb?.();
+  ctx.print(`Saved. Supreme Code now has ${plan.codes.length} item(s) (item ${plan.id} ${plan.action}d).`);
+}
+
+async function codeDelKb(rest, ctx) {
+  const rawId = typeof rest[0] === 'string' ? rest[0] : '';
+  const flags = parseFlags(rest);
+  const idStr = rawId && !rawId.startsWith('--') ? rawId : flags.positional[0];
+  const id = parseCodeItemId(idStr);
+  if (!id) {
+    ctx.print(`Usage: /kb code del <code-id>`);
+    ctx.print(`  code-id must be an integer 1..${SUPREME_CODE_MAX_ITEMS}.`);
+    return;
+  }
+  const p = await getProjectOrFail(ctx);
+  if (!p) return;
+  const got = await readSupremeCode(p.id);
+  const codes = got ? got.codes : [];
+  const plan = planCodeDel(codes, id);
+  if (!plan.ok) { ctx.print(plan.error); return; }
+  ctx.print(`Delete supreme-code item ${id}: "${plan.removed}"`);
+  if (plan.codes.length > 0) {
+    ctx.print(`Items after ${id} shift up (renumbering is gapless): now ${plan.codes.length} item(s).`);
+  } else {
+    ctx.print(`(the Supreme Code entry itself is permanent and stays, now empty)`);
+  }
+  const ok = await ctx.confirm(`Delete item ${id} from the Supreme Code? (y/N) `);
+  if (!ok) { ctx.print(`Cancelled.`); return; }
+  try {
+    await writeSupremeCode(p.id, plan.codes);
+  } catch (err) {
+    ctx.print(`Write failed: ${err.message}`);
+    return;
+  }
+  dropRuntime(p.id);
+  ctx.noteReloadKb?.();
+  ctx.print(`Deleted item ${id}. Supreme Code now has ${plan.codes.length} item(s).`);
+}
+
 async function knowledgeDelKb(rest, ctx) {
   const id = rest[0];
   if (!id) { ctx.print(`Usage: /kb knowledge del <id>`); return; }
+  if (isSupremeCode(id)) {
+    ctx.print(`"${SUPREME_CODE_ID}" is the permanent Supreme Code entry — deletion is not allowed.`);
+    ctx.print(`Manage its items with /kb code add | /kb code del.`);
+    return;
+  }
   const p = await getProjectOrFail(ctx);
   if (!p) return;
   // Find the entry across both spaces
@@ -2351,6 +2582,10 @@ async function transformKb(rest, ctx) {
     ctx.print(`Usage: /kb transform <id> <from-space> <to-space>`);
     ctx.print(`  Spaces: holy | eden`);
     ctx.print(`  Example: /kb transform sql-commands eden holy`);
+    return;
+  }
+  if (isSupremeCode(id)) {
+    ctx.print(`"${SUPREME_CODE_ID}" is permanent — it cannot be moved between spaces.`);
     return;
   }
   if (!['holy', 'eden'].includes(fromSpace) || !['holy', 'eden'].includes(toSpace)) {
