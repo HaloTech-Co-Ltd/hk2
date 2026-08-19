@@ -174,3 +174,72 @@ test('Holy write is refused when confirm callback throws (defensive)', async () 
   const onDisk = await readKnowledge(PROJECT_ID, 'holy', entry.id).catch(() => null);
   assert.equal(onDisk, null, 'a throwing confirm must not write to Holy');
 });
+
+/* ---- y/N/E tri-state: NEW Holy writes can be redirected to Eden -------- */
+
+test('confirm receives isNew=true for a NEW Holy entry', async () => {
+  let seenIsNew = null;
+  const tools = buildTools(mockRt(), {
+    allowWrite: false,
+    projectId: PROJECT_ID,
+    knowledgeConfirm: async (_space, entry) => { seenIsNew = entry.isNew; return false; },
+  });
+  await executeToolCall(tools, {
+    name: 'kb_save_knowledge',
+    arguments: { ...sampleEntry, id: 'isnew-check' },
+  });
+  assert.equal(seenIsNew, true, 'a fresh id must be flagged isNew=true');
+});
+
+test("confirm('eden') redirects a NEW Holy write into Eden (no re-confirm)", async () => {
+  let calls = 0;
+  const tools = buildTools(mockRt(), {
+    allowWrite: false,
+    projectId: PROJECT_ID,
+    knowledgeConfirm: async () => { calls++; return 'eden'; },
+  });
+  const res = await executeToolCall(tools, {
+    name: 'kb_save_knowledge',
+    arguments: { ...sampleEntry, id: 'redirected-entry' },
+  });
+  assert.equal(calls, 1, 'redirect must not trigger a second confirmation');
+  assert.equal(res.result.saved, true);
+  assert.equal(res.result.space, 'eden', 'the entry must land in Eden, not Holy');
+  const inHoly = await readKnowledge(PROJECT_ID, 'holy', 'redirected-entry').catch(() => null);
+  const inEden = await readKnowledge(PROJECT_ID, 'eden', 'redirected-entry');
+  assert.equal(inHoly, null, 'Holy must stay untouched after an E redirect');
+  assert.ok(inEden, 'redirected entry persisted in Eden');
+});
+
+test("confirm('eden') does NOT redirect an UPDATE of an existing Holy entry", async () => {
+  // Seed Holy with the entry first (approved write).
+  const seedTools = buildTools(mockRt(), {
+    allowWrite: false,
+    projectId: PROJECT_ID,
+    knowledgeConfirm: async () => true,
+  });
+  await executeToolCall(seedTools, {
+    name: 'kb_save_knowledge',
+    arguments: { ...sampleEntry, id: 'existing-holy', intro: 'v1' },
+  });
+  // Now attempt an update whose confirm answers 'eden' — must be treated as
+  // NOT approved (updates keep the plain y/N contract; 'eden' is not y).
+  let seenIsNew = null;
+  const updTools = buildTools(mockRt(), {
+    allowWrite: false,
+    projectId: PROJECT_ID,
+    knowledgeConfirm: async (_s, entry) => { seenIsNew = entry.isNew; return 'eden'; },
+  });
+  const res = await executeToolCall(updTools, {
+    name: 'kb_save_knowledge',
+    arguments: { ...sampleEntry, id: 'existing-holy', intro: 'v2' },
+  });
+  assert.equal(seenIsNew, false, 'an existing id must be flagged isNew=false');
+  assert.equal(res.result.saved, false);
+  assert.equal(res.result.cancelled, true, "'eden' on an update is a refusal, not a redirect");
+  const onDisk = await readKnowledge(PROJECT_ID, 'holy', 'existing-holy');
+  assert.ok(onDisk, 'original Holy entry still present');
+  assert.equal(onDisk.intro, 'v1', 'Holy entry must not be modified by the refused update');
+  const inEden = await readKnowledge(PROJECT_ID, 'eden', 'existing-holy').catch(() => null);
+  assert.equal(inEden, null, 'no Eden copy may be created from an update refusal');
+});

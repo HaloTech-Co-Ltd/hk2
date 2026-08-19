@@ -168,6 +168,12 @@ export function createSession(pinnedProjectId = null) {
     // same task and --resume'd sessions must not re-extract what was just
     // learned. Restored from the transcript by resumeSessionInto.
     kbLearnHandledAt: 0,
+    // Holy-over-Eden conflicts detected by this turn's buildRequestGraph:
+    // [{ eden: {id,title}, holy: {id,title} }]. Populated right after graph
+    // retrieval, printed as a user-facing notice, and consumed at end of turn
+    // by syncConflictingEden() which stamps the Eden entries as superseded
+    // (Eden is auto-updatable, so this happens without an extra prompt).
+    kbConflicts: [],
   };
 }
 
@@ -607,6 +613,37 @@ async function resumeSessionInto(session, sessionId) {
     session.kbLearnHandledAt = latest;
   } catch { /* best-effort; cooldown stays 0 (fallback extraction enabled) */ }
   return true;
+}
+
+/**
+ * Three-way yes/no/eden prompt (y/N/E) for NEW Holy knowledge saves.
+ * Same readline mechanics as ctx.confirm (consumeNext + close-fallback), but
+ * additionally accepts e/eden which resolves to the string 'eden'. Unrecognized
+ * or empty input re-prompts; Ctrl+D / closed rl resolves false.
+ * Exported for unit tests.
+ */
+export function confirmThreeWay(session, promptText) {
+  if (!session.rl) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const onClose = () => resolve(false);
+    session.rl.once('close', onClose);
+    const done = (val) => {
+      session.rl.off('close', onClose);
+      resolve(val);
+    };
+    const ask = () => {
+      process.stderr.write(promptText);
+      session.consumeNext = (ans) => {
+        const v = (ans || '').trim().toLowerCase();
+        if (v === 'y' || v === 'yes') { done(true); return; }
+        if (v === 'n' || v === 'no') { done(false); return; }
+        if (v === 'e' || v === 'eden') { done('eden'); return; }
+        process.stderr.write('Please answer y, n, or e. ');
+        ask();
+      };
+    };
+    ask();
+  });
 }
 
 export function buildCtx(session) {
@@ -1793,6 +1830,12 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   // plan (not only the turn that first confirmed the plan via the plan tool).
   const planActiveAtStart = !!session.planProgress;
   session.hadPlanThisTurn = false;
+  // Per-turn Holy-over-Eden conflict list: reset at the TOP of the turn (before
+  // pass-1 graph retrieval populates it), consumed at end of turn by
+  // syncConflictingEden(). It MUST NOT be reset after pass-1/pass-2 retrieval
+  // — that would wipe the conflicts detected this turn and the end-of-turn
+  // Eden sync would silently become a no-op.
+  session.kbConflicts = [];
 
   // ---- Auto context compaction (safe turn boundary) ------------------------
   // Runs before any rewrite/retrieval/agent work so it never interrupts an
@@ -1962,6 +2005,18 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     });
     graphSummary = graph.summary;
     graphText = renderRequestGraph(graph, { maxChars: Math.floor((session.modelCfg.maxChars || 65536) / 2) });
+    // Holy-over-Eden priority: surface conflicts detected during retrieval so
+    // the user knows an Eden entry was overridden by Holy for this turn. The
+    // list is also kept for the end-of-turn Eden sync.
+    session.kbConflicts = graph.conflicts || [];
+    if (session.kbConflicts.length > 0) {
+      progress.pause();
+      process.stderr.write(`\n${style.warning(style.ICON.warn + ' [kb priority]')} Holy Space takes precedence over Eden. ${session.kbConflicts.length} Eden entr${session.kbConflicts.length === 1 ? 'y' : 'ies'} conflicted with Holy and ${session.kbConflicts.length === 1 ? 'was' : 'were'} suppressed from this turn's context:\n`);
+      for (const c of session.kbConflicts) {
+        process.stderr.write(`  - eden "${c.eden.title}" (${c.eden.id}) → superseded by holy "${c.holy.title}" (${c.holy.id})\n`);
+      }
+      process.stderr.write(style.dim('  The Eden entries will be marked superseded at the end of this task.\n'));
+    }
     await session.transcript?.logMeta('graph', { summary: graph.summary });
   } catch (err) {
     progress.done();
@@ -2036,6 +2091,9 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         if (clarification === null) {
           // User cancelled the clarification prompt (Ctrl+D / rl close):
           // abort the whole turn cleanly, mirroring plan-cancel handling.
+          // Still run the Eden sync: pass-1 already told the user conflicting
+          // entries "will be marked superseded at the end of this task".
+          await syncConflictingEden(session, ctx);
           progress.done();
           process.stderr.write(`${style.warning(style.ICON.warn + ' cancelled')}\n`);
           session.phase = 'idle';
@@ -2096,6 +2154,25 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       });
       graphSummary = graph.summary;
       graphText = renderRequestGraph(graph, { maxChars: Math.floor((session.modelCfg.maxChars || 65536) / 2) });
+      // Merge the pass-2 conflict list into the pass-1 list (union by eden
+      // id). Pass-1 already TOLD the user its conflicts "will be marked
+      // superseded at the end of this task" — dropping them just because the
+      // re-written query no longer matches would break that promise. Re-print
+      // only NEWLY detected conflicts to avoid noise.
+      const prevConflicts = session.kbConflicts || [];
+      const prevConflictIds = new Set(prevConflicts.map(c => c.eden.id));
+      const pass2Conflicts = graph.conflicts || [];
+      session.kbConflicts = [...prevConflicts];
+      for (const c of pass2Conflicts) {
+        if (!prevConflictIds.has(c.eden.id)) session.kbConflicts.push(c);
+      }
+      const newConflicts = pass2Conflicts.filter(c => !prevConflictIds.has(c.eden.id));
+      if (newConflicts.length > 0) {
+        process.stderr.write(`\n${style.warning(style.ICON.warn + ' [kb priority]')} ${newConflicts.length} additional Eden entr${newConflicts.length === 1 ? 'y' : 'ies'} suppressed by Holy after clarification:\n`);
+        for (const c of newConflicts) {
+          process.stderr.write(`  - eden "${c.eden.title}" (${c.eden.id}) → superseded by holy "${c.holy.title}" (${c.holy.id})\n`);
+        }
+      }
       // Refresh the prefetch descriptor: pass-2 replaced the pass-1 graph.
       if (graph && graphText) {
         const seen = new Set();
@@ -2249,10 +2326,11 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     },
     // Knowledge-save approval gate: the agent calls `kb_save_knowledge` to
     // persist learned entries. Holy Space is the source of truth - it MUST
-    // prompt the user y/N before every commit, regardless of env vars. Eden
+    // prompt the user before every commit, regardless of env vars. Eden
     // auto-commits only when HK2_ENABLE_AUTO_LEARN=1; otherwise it also
     // prompts. The progress spinner is paused while the prompt is on screen
-    // (same reason as planConfirm). Returns true to proceed, false to refuse.
+    // (same reason as planConfirm). Returns true (proceed) / false (refuse) /
+    // 'eden' (redirect a NEW Holy write into Eden, per the y/N/E rule).
     knowledgeConfirm: async (targetSpace, entry) => {
       progress.pause();
       const label = targetSpace === 'holy'
@@ -2262,8 +2340,18 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       if (targetSpace === 'holy') {
         process.stderr.write(`  Holy Space is the source of truth for stable design knowledge.\n`);
       }
-      const confirmed = await ctx.confirm(`Write "${entry?.id}" to ${targetSpace} space? (y/N) `);
-      if (!confirmed) {
+      // Tri-state (y/N/E) only for NEW Holy entries; updates and Eden keep (y/N).
+      const offerEden = targetSpace === 'holy' && entry?.isNew;
+      const suffix = offerEden ? ' (y/N/E) ' : ' (y/N) ';
+      if (offerEden) {
+        process.stderr.write(style.dim('  E = save this entry to Eden space instead of Holy.\n'));
+      }
+      const confirmed = offerEden
+        ? await confirmThreeWay(session, `Write "${entry?.id}" to ${targetSpace} space?${suffix}`)
+        : await ctx.confirm(`Write "${entry?.id}" to ${targetSpace} space?${suffix}`);
+      if (confirmed === 'eden') {
+        process.stderr.write(`${style.accent('  Redirected - saving to Eden space instead.')}\n`);
+      } else if (!confirmed) {
         process.stderr.write(`${style.dim('  Cancelled - nothing was written to the KB.')}\n`);
       }
       return confirmed;
@@ -2677,6 +2765,11 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     // case update silently.
     await maybeOfferKbUpdate(session, ctx);
 
+    // Holy-over-Eden priority, end-of-task step: stamp the Eden entries that
+    // conflicted with Holy this turn as superseded (Eden is auto-updatable,
+    // so no extra prompt), then remind the user what was synced.
+    await syncConflictingEden(session, ctx);
+
     session.phase = 'idle';
     session.turnStart = 0;
     finalizePlanProgress(session);
@@ -2732,6 +2825,12 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     // recovered via "请继续 / continue". For in-session errors session.lastTask
     // is already set, so the recovery injection above handles the next turn;
     // this write covers the cross-process case.
+    //
+    // The turn ended abruptly, but any Holy-over-Eden conflicts detected at
+    // retrieval time were already announced to the user — sync them now so
+    // the promise "will be marked superseded at the end of this task" holds
+    // even on error/interrupt paths.
+    await syncConflictingEden(session, ctx).catch(() => {});
     if (session.lastTask) {
       const planLines = formatPlanProgressLines(session);
       await saveTaskState(session.project?.id, {
@@ -3103,6 +3202,65 @@ export async function maybeOfferKbUpdate(session, ctx) {
 }
 
 /**
+ * Holy-over-Eden priority: end-of-task Eden sync.
+ *
+ * For every conflict recorded this turn (session.kbConflicts, populated by
+ * runAgentTurn right after buildRequestGraph), stamp the Eden entry with
+ * supersededBy = "holy:<id>" and prepend a supersession notice to its intro
+ * so future readers know Holy is authoritative. Eden is the auto-updatable
+ * space, so this runs WITHOUT a per-entry prompt (per the priority rule:
+ * "以Holy为准 + 更新Eden + 提醒用户"); the final print is the reminder.
+ * Best-effort: a failed write warns and continues to the next entry.
+ *
+ * Exported for unit tests (test/holy-eden-priority.test.js covers the tool
+ * layer; this one is exercised via test/kb-priority-sync.test.js).
+ */
+export async function syncConflictingEden(session, ctx) {
+  const conflicts = session.kbConflicts || [];
+  if (conflicts.length === 0) return;
+  if (!session.project || !session.rt) return;
+  const projectId = session.project.id;
+  const { readKnowledge, writeKnowledge } = await import('../../lib/store/kb_store.js');
+  const synced = [];
+  const failed = [];
+  for (const c of conflicts) {
+    if (!c?.eden?.id) continue;
+    try {
+      const entry = await readKnowledge(projectId, 'eden', c.eden.id);
+      if (!entry) continue; // already deleted / moved — nothing to sync
+      if (entry.supersededBy === `holy:${c.holy.id}`) { synced.push(c); continue; } // idempotent
+      const updated = {
+        ...entry,
+        supersededBy: `holy:${c.holy.id}`,
+        supersededAt: new Date().toISOString(),
+        intro: `[Superseded by holy:${c.holy.id} — Holy Space takes precedence; follow the Holy entry "${c.holy.title}" instead.]\n\n${entry.intro || ''}`,
+      };
+      await writeKnowledge(projectId, 'eden', updated);
+      const fresh = await readKnowledge(projectId, 'eden', c.eden.id);
+      if (fresh) session.rt.reloadKnowledge?.(fresh, 'eden');
+      synced.push(c);
+    } catch (err) {
+      failed.push({ c, err });
+    }
+  }
+  session.kbConflicts = [];
+  if (synced.length > 0) {
+    ctx.print('');
+    ctx.print(`${style.warning(style.ICON.warn + ' [kb priority]')} synced ${synced.length} Eden entr${synced.length === 1 ? 'y' : 'ies'} superseded by Holy:`);
+    for (const c of synced) {
+      ctx.print(`  - eden "${c.eden.title}" (${c.eden.id}) → supersededBy holy:${c.holy.id}`);
+    }
+    ctx.print(style.dim('  Eden entries keep their content but are marked superseded; Holy remains authoritative. Use /kb transform to move or /kb knowledge delete to remove them.'));
+    await session.transcript?.logMeta('kb_priority_sync', {
+      synced: synced.map(c => ({ eden: c.eden.id, holy: c.holy.id })),
+    }).catch(() => {});
+  }
+  for (const { c, err } of failed) {
+    ctx.print(`${style.warning('[kb priority]')} failed to sync eden "${c.eden.id}": ${err.message}`);
+  }
+}
+
+/**
  * Cooldown gate for the end-of-turn [kb learn] fallback. Returns true when a
  * knowledge capture was handled recently enough that re-extracting the same
  * task would be redundant. OFF by default (0): the end-of-turn prompt always
@@ -3214,7 +3372,8 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
     return;
   }
 
-  const space = parsed.space === 'eden' ? 'eden' : 'holy';
+  const space0 = parsed.space === 'eden' ? 'eden' : 'holy';
+  let space = space0;
   const id = String(parsed.id || 'learned').replace(/[^A-Za-z0-9_.-]/g, '_');
   const record = {
     id,
@@ -3230,12 +3389,35 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
   // Per-space policy
   let commit = false;
   if (space === 'holy') {
-    // Holy ALWAYS prompts — even with HK2_ENABLE_AUTO_LEARN=1
+    // Holy ALWAYS prompts — even with HK2_ENABLE_AUTO_LEARN=1.
+    // y/N/E tri-state (per the KB-priority rule): E saves this NEW entry to
+    // Eden instead of Holy. Only offered when the id does NOT already exist
+    // in Holy (an update keeps the plain y/N contract — same as
+    // toolKbSaveKnowledge).
+    const { readKnowledge: rk } = await import('../../lib/store/kb_store.js');
+    const existingHoly = await rk(session.project.id, 'holy', id).catch(() => null);
+    const isNewHoly = !existingHoly;
     ctx.print('');
     ctx.print(`[kb learn] Model proposes HOLY entry "${id}": ${record.title}`);
     ctx.print(`  intro (preview): ${(record.intro || '').slice(0, 200)}${(record.intro || '').length > 200 ? '...' : ''}`);
     ctx.print(`  Note: Holy Space is the stable source of truth. Updates require explicit approval even with HK2_ENABLE_AUTO_LEARN=1.`);
-    commit = await ctx.confirm(`Commit to Holy Space? (y/N) `);
+    let answer;
+    if (isNewHoly) {
+      ctx.print(style.dim('  E = save this entry to Eden space instead of Holy.'));
+      answer = await confirmThreeWay(session, `Commit "${id}" to Holy Space? (y/N/E) `);
+    } else {
+      answer = await ctx.confirm(`Commit to Holy Space? (y/N) `);
+    }
+    if (answer === 'eden') {
+      // Redirect to Eden without re-confirming — the user's single answer IS
+      // the approval for the Eden write (same contract as knowledgeConfirm).
+      space = 'eden';
+      record.space = 'eden';
+      commit = true;
+      ctx.print(style.accent('  Redirected — saving to Eden space instead.'));
+    } else {
+      commit = answer === true;
+    }
   } else {
     // Eden: auto-commit if autoLearn, else prompt
     if (autoLearn) {
