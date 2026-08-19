@@ -267,6 +267,94 @@ test('resume() re-arms a stopped spinner without resetting totalStart', () => {
     'resume() must begin a fresh waiting-for-model phase');
 });
 
+// ---------------------------------------------------------------------------
+// breakLine(): mid-phase warnings must start on a fresh line
+// ---------------------------------------------------------------------------
+//
+// TTY spinner frames end WITHOUT a newline (`\r⠋ rewriting query · 0.0s`), so a
+// warning printed by the phase-model fallback policy used to be glued straight
+// onto the timing text:
+//   ⠋ rewriting query · 0.0s[warn] phase model for rewrite-query is unreachable
+// The warn sinks in runAgentTurn / runCodeReview call progress.breakLine()
+// before ctx.print so the warning starts on its own line — without a blank
+// line between back-to-back warnings (breakLine is idempotent per line).
+
+function visibleText(s) {
+  return s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r/g, '');
+}
+
+class TtyRecordingStream extends RecordingStream {
+  constructor() { super(); this.isTTY = true; }
+}
+
+test('breakLine() breaks a pending TTY spinner frame so warnings start on their own line', () => {
+  const stream = new TtyRecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('rewriting query');           // renders \r⠋ rewriting query · 0.0s (no \n)
+  progress.breakLine();                        // <-- the fix
+  stream.write('[warn] phase model for rewrite-query is unreachable: ECONNREFUSED\n');
+  progress._render();                          // spinner re-claims the new line
+  progress.nextPhase('retrieving KB');
+  progress.done();
+
+  const out = visibleText(stream.chunks.join(''));
+  // No warning glued after the timing suffix ("0.0s[warn]") — the exact
+  // symptom from the report.
+  assert.ok(!/s\[warn\]/.test(out), 'warning must not be glued onto the spinner timing text');
+  // The warning occupies its own line (start-of-line after a newline).
+  assert.ok(/^\[warn\]/m.test(out), 'warning starts at the beginning of its own line');
+  // No blank-line gaps introduced.
+  assert.ok(!/\n\n/.test(out), 'no blank lines introduced');
+});
+
+test('breakLine() is idempotent: back-to-back warnings get no blank line between them', () => {
+  const stream = new TtyRecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('rewriting query');
+  progress.breakLine();
+  stream.write('[warn] unreachable\n');
+  progress.breakLine();                         // line already broken -> no-op
+  stream.write('[warn] falling back\n');
+  progress.done();
+
+  const out = visibleText(stream.chunks.join(''));
+  assert.ok(!/\n\n/.test(out), 'no blank line between back-to-back warnings');
+  assert.equal((out.match(/^\[warn\]/gm) || []).length, 2, 'both warnings on their own lines');
+});
+
+test('breakLine() is a no-op when no frame is pending (post-done / post-pause)', () => {
+  const stream = new TtyRecordingStream();
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('rewriting query');
+  progress.pause();                            // line wiped, midLine=false
+  const before = stream.chunks.length;
+  progress.breakLine();
+  assert.equal(stream.chunks.length, before, 'no output when the line is already broken');
+
+  progress.start('assessing request');
+  progress.done();                             // finalized with a newline
+  const before2 = stream.chunks.length;
+  progress.breakLine();
+  assert.equal(stream.chunks.length, before2, 'no output after done()');
+});
+
+test('non-TTY: breakLine() breaks the "[phase...]" header line the same way', () => {
+  const stream = new RecordingStream();       // isTTY falsy
+  const progress = new ProgressIndicator(stream);
+
+  progress.start('assessing request');         // writes "[assessing request...] " (no \n)
+  progress.breakLine();
+  stream.write('[warn] skipping the request-assess phase\n');
+  progress.done();
+
+  const out = visibleText(stream.chunks.join(''));
+  assert.ok(!/\[assessing request\.\.\.\] \[warn\]/.test(out), 'warning not glued to the phase header');
+  assert.ok(/^\[warn\]/m.test(out), 'warning on its own line');
+});
+
 test('multi-turn reasoning loop: BOTH turns record a thinking phase', () => {
   // THE regression test that v1.1.37 was missing. Simulates two full LLM turns
   // in an agent loop where each turn has a reasoning window, mirroring the

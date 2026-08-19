@@ -1803,7 +1803,7 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
       phase: 'code-review',
       phaseLlm: usingPhaseModel ? reviewLlm : null,
       sessionLlm: session.llm,
-      warn: (m) => ctx.print(m),
+      warn: (m) => { progress.breakLine(); ctx.print(m); },
       run: (llmForReview) => reviewCode(llmForReview, reviewText, { signal }),
     });
     await session.transcript?.logMeta('codeReview', {
@@ -2001,7 +2001,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         phase: 'rewrite-query',
         phaseLlm: rewriteLlm,
         sessionLlm: session.llm,
-        warn: (m) => ctx.print(m),
+        warn: (m) => { progress.breakLine(); ctx.print(m); },
         run: (llmForRewrite) => rewriteQuery(llmForRewrite, userText, {
           timeoutMs: 15000,
         }),
@@ -2124,7 +2124,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         phase: 'request-assess',
         phaseLlm: assessLlm,
         sessionLlm: session.llm,
-        warn: (m) => ctx.print(m),
+        warn: (m) => { progress.breakLine(); ctx.print(m); },
         run: (llmForAssess) => assessRequest(llmForAssess, userText, {
           timeoutMs: 15000,
           signal: abortCtrl.signal,
@@ -2325,7 +2325,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
           phase: 'plan-review',
           phaseLlm: usingPhaseModel ? reviewLlm : null,
           sessionLlm: session.llm,
-          warn: (m) => ctx.print(m),
+          warn: (m) => { progress.breakLine(); ctx.print(m); },
           run: (llmForReview) => reviewPlan(llmForReview, confirmed, {
             signal: abortCtrl.signal,
           }),

@@ -66,6 +66,11 @@ export class ProgressIndicator {
     this.spinnerIdx = 0;
     this.interval = null;
     this.stopped = false;
+    // True while a rendered frame (TTY spinner line / non-TTY phase header)
+    // sits on the stream WITHOUT a trailing newline. breakLine() uses this to
+    // decide whether another writer (ctx.print warnings) needs the line broken
+    // first — see breakLine().
+    this.midLine = false;
   }
 
   /** Begin the first phase */
@@ -152,6 +157,7 @@ export class ProgressIndicator {
     }
     this.phase = null;
     this.stopped = true;
+    this.midLine = false; // TTY: line wiped by \r\x1b[K; non-TTY: newline above
   }
 
   _beginPhase(phase) {
@@ -162,6 +168,7 @@ export class ProgressIndicator {
       this.interval = setInterval(() => this._render(), 200);
     } else {
       this.stream.write(`${muted('[' + phase + '...]')} `);
+      this.midLine = true; // header has no trailing newline yet
     }
   }
 
@@ -171,6 +178,7 @@ export class ProgressIndicator {
     this.spinnerIdx = (this.spinnerIdx + 1) % SPINNER.length;
     // Loader line: accent spinner, muted phase, dimmed elapsed suffix.
     this.stream.write(`\r${accent(spinner)} ${muted(this.phase)} ${dim(ICON.dot + ' ' + elapsed + 's')}`);
+    this.midLine = true; // frame ends without a newline
   }
 
   _endPhase() {
@@ -186,6 +194,7 @@ export class ProgressIndicator {
       this.stream.write(`${dim(ICON.dot + ' ' + elapsed + 's')}\n`);
     }
     this.phase = null;
+    this.midLine = false; // the finalized line ends with a newline
   }
 
   /**
@@ -212,6 +221,28 @@ export class ProgressIndicator {
       this.stream.write('\n');
     }
     this.phase = null;
+    this.midLine = false; // line is clear for whoever takes over next
+  }
+
+  /**
+   * Break the current line IF a rendered frame is sitting on the stream
+   * without a trailing newline, so the next writer (e.g. a ctx.print warning
+   * emitted mid-phase by the phase-model fallback policy) starts on a fresh
+   * line instead of being glued onto the spinner/timing text:
+   *
+   *   ⠋ rewriting query · 0.0s[warn] phase model ... is unreachable
+   *
+   * Idempotent: when the line is already broken (no frame pending) this is a
+   * no-op, so back-to-back warnings do not produce blank lines between them.
+   * After breaking, the spinner's next 200ms _render() re-claims the new line
+   * with \r as usual — the frame is transient, the warning stays on its own
+   * line. Safe to call in non-TTY mode (breaks the "[phase...]" header line)
+   * and when no phase is active.
+   */
+  breakLine() {
+    if (!this.midLine) return;
+    this.midLine = false;
+    this.stream.write('\n');
   }
 
   /**
@@ -232,6 +263,7 @@ export class ProgressIndicator {
       this.stream.write('\n');
     }
     this.phase = null;
+    this.midLine = false; // streaming output starts on a clean line
   }
 
   /** All done — print final stats */
