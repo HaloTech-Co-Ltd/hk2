@@ -487,12 +487,20 @@ async function knowledgeListKb(rest, ctx) {
   let total = 0;
   for (const space of spaces) {
     const list = await listKnowledge(p.id, space).catch(() => []);
+    // Pin the permanent supreme-code entry to the top of the Holy list. It is
+    // the project's fundamental law and must always be listed first, no
+    // matter the readdir / alphabetical ordering. Stable sort keeps the
+    // relative order of the remaining entries unchanged.
+    if (space === 'holy' && list.some(e => isSupremeCode(e.id))) {
+      list.sort((a, b) => (isSupremeCode(a.id) ? 0 : 1) - (isSupremeCode(b.id) ? 0 : 1));
+    }
     if (spaceFilter || spaces.length > 1) {
       ctx.print(`[${space}] ${list.length} entr${list.length === 1 ? 'y' : 'ies'}`);
     }
     for (const e of list) {
       const title = e.title || '(untitled)';
-      ctx.print(`  ${e.id.padEnd(28)}  ${title}`);
+      const mark = isSupremeCode(e.id) ? '  — supreme code (permanent; manage via /kb code)' : '';
+      ctx.print(`  ${e.id.padEnd(28)}  ${title}${mark}`);
       total++;
     }
   }
