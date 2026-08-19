@@ -216,11 +216,13 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | Command | Description |
 |---|---|
 | `/model list` | List all providers / models |
-| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | Add a model (`--model-options` sets model-specific feature options as a JSON object, e.g. `--model-options='{"enable_thinking":true}'`; default is no options; model types with declared features validate the options — e.g. `--model-type=glm-5.3` accepts `{"reasoning_effort":"max"}` with max the default/recommended, or high/low) |
+| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME] [--model-type=TYPE] [--model-options=JSON]` | Add a model (`--model-options` sets model-specific feature options as a JSON object, e.g. `--model-options='{"enable_thinking":true}'`; default is no options; model types with declared features validate the options — e.g. `--model-type=glm-5.3` accepts `{"reasoning_effort":"max"}` with max (deep reasoning) the default/recommended, or high (enhanced) / low (light)) |
 | `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | Modify a model's persisted settings (`--id` renames the model id / ref; the wire model code sent to the API is unaffected; `--model-options` replaces the model-specific options object wholesale — pass `'{}'` to clear; validated against the model type's declared features, e.g. glm-5.3 `reasoning_effort` ∈ max/high/low) |
 | `/model set-default <prov>/<id>` | Set global default (persisted) |
 | `/model set-default current <prov>/<id>` | Set the current project's default model (overrides the global default; `--clear` removes the override) |
 | `/model use <prov>/<id>` | Choose model for current session only |
+| `/model set-phase --phase=<name> <prov>/<id> [--clear]` | Per-project model override for one agent phase (`rewrite-query`, `request-assess`, `plan-review`, `code-review`); `--clear` removes the override so the phase falls back to the session model |
+| `/model add-mcpserver <prov>/<id> --type=http --name=<NAME> [--options=JSON]` | Attach an MCP server to an existing model; its tools appear to the agent as `mcp__<name>__<tool>`. `http` options: `{"url":..., "headers":{"Authorization":"Bearer $APIKEY"}}` (`$APIKEY` is substituted with the provider's `--api-key` at use time) |
 | `/model del <prov>/<id>` | Delete |
 | `/model show` | Show current default details |
 | `/model types` | List all supported `--model-type` values |
@@ -417,8 +419,9 @@ Each model has an `id` and a `name`. The `id` is the accounting key used in
 context-window hint such as `[1m]`. The `name` is the model code actually
 **sent in the API request body** (the wire `model` field) — set it to the
 exact string the provider expects (e.g. `glm-4.7`, never `GLM 4.7`). Keeping
-the hint on `id` and the clean code on `name` avoids `[modelCode不存在]` on
-gateways that reject `glm-4.7[1m]`.
+the hint on `id` and the clean code on `name` avoids "model code does not
+exist" errors (e.g. BigModel's `[modelCode: not found]`) on gateways that
+reject `glm-4.7[1m]`.
 
 ```json
 {

@@ -9,7 +9,7 @@
 - **Tree-sitter AST 解析**：hk2 使用原生 tree-sitter 语法对符号进行精确提取，覆盖 14 个包（15 个语法，因为 `tree-sitter-typescript` 同时导出 `typescript` 与 `tsx`）。若未安装对应语法，则回退到基于正则的解析器。
 - **代码知识图谱**：调用链、类继承关系、导入与继承关系以图谱形式存储于 `~/.hk2/kb/<projectId>/graph/` 之下，可通过 `kb_callchain`、`kb_class`、`kb_refs`、`kb_implements` 遍历。
 - **三空间知识库**：每个项目的知识库被划分为 Holy Space（稳定的设计知识）、Eden Space（频繁更新的目录/模式）与 Index Space（BM25 + 图谱 + 各空间索引）。
-- **文档解析**：Markdown、JSON、YAML、HTML、SGML、纯文本使用标准库解析；PDF 与 Word（.docx）通过可选的 `pdf-parse` 与 `mammoth` 支持；旧版 Office 二进制（.doc、.pptx、.ppt）采用无依赖方式提取。文档以 `doc:<relpath>` 条目形式归入 Eden Space。
+- **文档解析**：Markdown、JSON、YAML、HTML、SGML、纯文本使用标准库解析；PDF 与 Word（.docx）通过可选的 `pdf-parse` 与 `mammoth` 支持；旧版 Office 二进制（.doc、.pptx、.ppt）采用无依赖方式提取。文档以 `doc:<relpath>` 条目形式归入 Eden 空间。
 - **按请求构建知识图谱**：对每条用户消息，hk2 会从知识库中检索相关符号、调用链、类成员、知识条目与文档，并在 LLM 响应前将其作为上下文注入。
 - **知识库优先策略**：代理总是优先使用知识库工具（`kb_search`、`kb_symbol`、`kb_callchain`、`kb_class`、`kb_refs`、`kb_implements`、`kb_knowledge` 等），再回退到 `bash grep`/`find`。中途的守卫逻辑会检测违规行为并将代理引导回知识库。
 - **可恢复构建**：`/kb init` 每处理 100 个文件保存一次检查点（可配置）。若被中断，重新运行会从检查点恢复，无需重新解析。
@@ -172,18 +172,18 @@ hk2
 | `architecture-diagram` | 模块 / 层级关系的 Mermaid 流程图，附带简短图例。 |
 | `architecture-decisions` | 基于检测到的技术推断出的 4–8 条 ADR 风格条目，每条附带具体的修改建议。 |
 
-**`/kb knowledge learn`** 是合并后的统一深度研读命令（原 `/kb knowledge init` 现在是它的别名）。它有两种模式。**CODE 模式**（不带 `--file`；`--base-dir` 匹配已索引子目录，或裸调用）在 Phase 0 写入 3 个项目级概览条目，随后在 Phase 2 写入 N 个主题相关条目。**DOC 模式**（`--file=<path>` 或未索引的 `--base-dir`）深度研读 Markdown / PDF / Word / PowerPoint 文档并写入所选空间：
+**`/kb knowledge learn`** 是合并后的统一深度研读命令（原 `/kb knowledge init` 现在是它的别名）。它有两种模式。**代码模式**（不带 `--file`；`--base-dir` 匹配已索引子目录，或裸调用）在阶段 0 写入 3 个项目级概览条目，随后在阶段 2 写入 N 个主题相关条目。**文档模式**（`--file=<路径>` 或未索引的 `--base-dir`）深度研读 Markdown / PDF / Word / PowerPoint 文档并写入所选空间：
 
 | 条目 id | 阶段 | 内容 |
 |---|---|---|
 | `api-docs` | 0 | 对全项目最重要的公开 / 导出符号的编号参考。 |
 | `code-walkthrough` | 0 | 4–8 个章节，逐步剖析最核心的抽象。 |
 | `usage-examples` | 0 | 3–5 个使用真实公开符号的编号快速上手示例。 |
-| `<topic-id>`（动态） | 2 | 每个 LLM 规划的主题一个条目，每个聚焦一个连贯的子系统（如 `buffer-pool`、`transaction-mgmt`、`wal-replay`）。 |
+| `<主题 id>`（动态） | 2 | 每个 LLM 规划的主题一个条目，每个聚焦一个连贯的子系统（如 `buffer-pool`、`transaction-mgmt`、`wal-replay`）。 |
 
-DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；大文件会被切分为顺序分片以保证内容不丢失，且每个文档都保证被某个批次覆盖（规划遗漏的文件会获得单文件兜底批次）。
+文档模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；大文件会被切分为顺序分片以保证内容不丢失，且每个文档都保证被某个批次覆盖（规划遗漏的文件会获得单文件兜底批次）。
 
-**规模化行为（postgres 等大项目，约 3500 文件）：**索引文件超过 300 个时，规划器从文件级切换为**目录级规划**——LLM 只分组目录（map 缩小约 30 倍），每个目录令牌再被确定性展开为具体文件并切分为 ≤30 文件的批次。若 LLM 计划仍不可用（推理模型可能把整个预算耗在思考上），命令会先禁用推理重试一次，最终回退到确定性目录分组——研读永远以全覆盖继续，绝不中断。
+**规模化行为（postgres 等大项目，约 3500 文件）：**索引文件超过 300 个时，规划器从文件级切换为**目录级规划**——LLM 只分组目录（规划图缩小约 30 倍），每个目录令牌再被确定性展开为具体文件并切分为 ≤30 文件的批次。若 LLM 计划仍不可用（推理模型可能把整个预算耗在思考上），命令会先禁用推理重试一次，最终回退到确定性目录分组——研读永远以全覆盖继续，绝不中断。
 
 **规划超时：**慢速供应商可能超过默认 300 秒规划预算；可用 `--plan-timeout-ms=N`（或环境变量 `HK2_PLAN_TIMEOUT_MS`）覆盖。
 
@@ -196,9 +196,9 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 | `/kb knowledge list [--space=holy\|eden]` | 列出知识条目 |
 | `/kb knowledge show <id>` | 显示条目全文（同时检索两个空间） |
 | `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | 手动添加条目 |
-| `/kb knowledge learn [--space=eden\|holy] [--file=路径] [--base-dir=目录] [--per-batch-chars=N] [--dry-run] [--no-survey] [--plan-timeout-ms=N]` | 统一的深度研读命令。CODE 模式（裸调用，或 `--base-dir` 匹配已索引子目录）：两阶段研读已索引源码；Phase 0 写入三个项目级概览条目；Phase 1 规划主题批次（对 postgres 等大项目按规模自适应），Phase 2 逐批执行。LLM 计划不可用时回退到确定性目录分组——绝不中断。DOC 模式（`--file` 或未索引的 `--base-dir`）：深度研读 Markdown / PDF / Word / PowerPoint / 文本文档并写入 `--space`。旧别名 `init`/`bootstrap`/`scan` 路由到此处（全项目 CODE 模式）。 |
+| `/kb knowledge learn [--space=eden\|holy] [--file=路径] [--base-dir=目录] [--per-batch-chars=N] [--dry-run] [--no-survey] [--plan-timeout-ms=N]` | 统一的深度研读命令。代码模式（裸调用，或 `--base-dir` 匹配已索引子目录）：两阶段研读已索引源码；阶段 0 写入三个项目级概览条目；阶段 1 规划主题批次（对 postgres 等大项目按规模自适应），阶段 2 逐批执行。LLM 计划不可用时回退到确定性目录分组——绝不中断。文档模式（`--file` 或未索引的 `--base-dir`）：深度研读 Markdown / PDF / Word / PowerPoint / 文本文档并写入 `--space`。旧别名 `init`/`bootstrap`/`scan` 路由到此处（全项目代码模式）。 |
 | `/kb knowledge export <eden\|holy\|all> <path>` | 将条目导出为 JSON 文件（版本 2 格式，每个条目带 `space` 标签） |
-| `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 从 JSON 导入条目。`adaptive` 会按条目原始空间路由。导入到 Holy 始终提示 y/N。 |
+| `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 从 JSON 导入条目。`adaptive`（自适应）会按条目原始空间路由。导入到 Holy 始终提示 y/N。 |
 | `/kb knowledge housekeep <eden\|holy\|all>` | 移除缺失字段、重复 id 或标题/关键词近似的条目。Holy 始终提示确认。 |
 | `/kb knowledge empty <eden\|holy\|all>` | 删除指定空间（们）的全部条目。不可逆，始终提示 y/N。 |
 | `/kb knowledge del <id>` | 删除条目（需确认） |
@@ -211,11 +211,13 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 | 命令 | 说明 |
 |---|---|
 | `/model list` | 列出所有提供商 / 模型 |
-| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--model-options=JSON]` | 添加模型（`--model-options` 以 JSON 对象设置模型特性参数，如 `--model-options='{"enable_thinking":true}'`；默认无特性参数；声明了特性的模型类型会校验取值，如 `--model-type=glm-5.3` 接受 `{"reasoning_effort":"max"}`，默认且推荐 max（深度推理），可选 high（增强）/ low（轻度）） |
+| `/model add <prov> <id> [--api=...] [--base-url=...] [--api-key=...] [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME] [--model-type=TYPE] [--model-options=JSON]` | 添加模型（`--model-options` 以 JSON 对象设置模型特性参数，如 `--model-options='{"enable_thinking":true}'`；默认无特性参数；声明了特性的模型类型会校验取值，如 `--model-type=glm-5.3` 接受 `{"reasoning_effort":"max"}`，默认且推荐 max（深度推理），可选 high（增强推理）/ low（轻度推理）） |
 | `/model set <prov>/<id> [--name=...] [--id=NEW_ID] [--reasoning=on\|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-options=JSON] [--api=...] [--base-url=...] [--api-key=...]` | 修改模型配置（持久化；`--id` 重命名模型 id / 引用键，不影响发送给 API 的模型代码；`--model-options` 整体替换特性参数对象，传 `'{}'` 即清空；取值会按模型类型声明的特性校验，如 glm-5.3 的 `reasoning_effort` ∈ max/high/low） |
 | `/model set-default <prov>/<id>` | 设为全局默认（持久化） |
 | `/model set-default current <prov>/<id>` | 设置当前项目的默认模型（优先于全局默认；`--clear` 清除覆盖） |
 | `/model use <prov>/<id>` | 仅当前会话选用模型 |
+| `/model set-phase --phase=<名称> <prov>/<id> [--clear]` | 为当前项目的某个智能体阶段（`rewrite-query`、`request-assess`、`plan-review`、`code-review`）配置专属模型；`--clear` 清除该覆盖，阶段回退为使用会话模型 |
+| `/model add-mcpserver <prov>/<id> --type=http --name=<名称> [--options=JSON]` | 为已有模型挂载 MCP 服务器；其工具以 `mcp__<名称>__<工具>` 形式提供给代理。`http` 类型的 options 形如 `{"url":..., "headers":{"Authorization":"Bearer $APIKEY"}}`（`$APIKEY` 在使用时替换为该提供商的 `--api-key`） |
 | `/model del <prov>/<id>` | 删除 |
 | `/model show` | 显示当前默认模型详情 |
 | `/model types` | 列出所有支持的 `--model-type` 取值 |
@@ -237,7 +239,7 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 | `/kb knowledge add [...]` | 手动添加条目 |
 | `/kb knowledge learn [--dry-run] [--base-dir=路径] [--file=路径] [--space=eden\|holy] [--per-batch-chars=N] [--no-survey] [--plan-timeout-ms=N]` | 深度研读项目代码（或单个子目录 / 文档）-> 自动生成知识条目。完整参数说明见 `/help knowledge` |
 | `/kb knowledge export <scope> <path>` | 将条目导出为 JSON |
-| `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 导入条目（adaptive 按原始空间路由） |
+| `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 导入条目（`adaptive` 按原始空间路由） |
 | `/kb knowledge housekeep <scope>` | 移除重复与无效条目 |
 | `/kb knowledge empty <scope>` | 删除指定空间（们）的全部条目 |
 | `/kb knowledge del <id>` | 删除条目 |
@@ -279,7 +281,7 @@ DOC 模式（`--file` / 未索引的 `--base-dir`）从文档中提取条目；�
 | `kb_knowledge` | 按 id 查找知识条目（Holy + Eden） |
 | `kb_search_knowledge` | 按自然语言查询搜索知识条目 |
 | `kb_save_knowledge` | 将新的知识条目保存到 Holy 或 Eden |
-| `mcp__<server>__<tool>` | 通过 `/model add-mcpserver` 附加到当前模型的 MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个 agent 回合在内置工具之后挂载；不可达的服务器跳过并警告 |
+| `mcp__<server>__<tool>` | 通过 `/model add-mcpserver` 附加到当前模型的 MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个代理回合在内置工具之后挂载；不可达的服务器跳过并警告 |
 
 ### 知识库优先策略
 
@@ -394,7 +396,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 
 ### models.json 结构
 
-每个模型有 `id` 和 `name` 两个字段。`id` 是 `provider/id` 引用（如 `local/glm-4.7`）里的账户/索引键，可以携带尾部括号形式的上下文窗口提示（例如 `[1m]`）。`name` 才是**实际发送到 API 请求体**的模型代码（wire `model` 字段）——请把它设为服务商期望的精确字符串（例如 `glm-4.7`，而非 `GLM 4.7`）。把提示留在 `id` 上、把干净代码放在 `name` 里，可避免部分网关拒绝 `glm-4.7[1m]` 而报 `[modelCode不存在]`。
+每个模型有 `id` 和 `name` 两个字段。`id` 是 `provider/id` 引用（如 `local/glm-4.7`）里的账户/索引键，可以携带尾部括号形式的上下文窗口提示（例如 `[1m]`）。`name` 才是**实际发送到 API 请求体**的模型代码（即请求中的 `model` 字段）——请把它设为服务商期望的精确字符串（例如 `glm-4.7`，而非 `GLM 4.7`）。把提示留在 `id` 上、把干净代码放在 `name` 里，可避免部分网关拒绝 `glm-4.7[1m]` 而报“模型代码不存在”类错误（例如 BigModel 的 `[modelCode不存在]`）。
 
 ```json
 {
@@ -461,16 +463,18 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。评估模型可通过 `/model set-phase --phase=request-assess <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
 | `HK2_ENABLE_PLANREVIEW` | 为 1 时，在用户确认计划后，hk2 会请求 LLM 复审已定稿的计划，查找问题（缺失步骤、顺序错误、目标模糊、策略有风险等）。若复审发现有问题，会将每个问题逐一呈现给用户确认（采纳复审建议 / 忽略该问题 / 自定义解决方案）；确认后的解决方案会附加到返回给代理的计划中。复审模型可通过 `/model set-phase --phase=plan-review <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都返回已确认的计划，不做更改。 | `0` |
 | `HK2_ENABLE_CODEREVIEW` | 为 1 时，整个计划执行完成后，hk2 会对完成结果（工作区 diff、变更文件、代理的最终总结）执行一步 Code Review，检查正确性、完整性与质量，并将发现的问题逐一列出，给出详细说明与建议。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都会被报告，本轮仍正常结束。 | `0` |
-| `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index Space）。 | `0` |
-| `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden Space。无论此标志如何，Holy Space 始终提示 y/N。 | `0` |
+| `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index 空间）。 | `0` |
+| `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden 空间。无论此标志如何，Holy 空间始终提示 y/N。 | `0` |
+| `HK2_KB_LEARN_COOLDOWN_MIN` | 设为正整数分钟数时，若本会话任务的知识捕获在该时间窗口内已被处理（代理通过 `kb_save_knowledge` 保存/婉拒、已回答的轮末提案、或抽取模型的跳过），则跳过轮末的 `[kb learn]` 追问。该锚点通过会话记录在 `--resume` 后恢复。当代理本轮已通过 `kb_save_knowledge` 保存知识时，无论此变量如何都跳过 `[kb learn]`。 | `0`（关闭） |
 | `HK2_ENABLE_AUTOCOMPACT` | 为 1 时，当已使用的上下文长度达到模型上下文窗口的 `HK2_AUTOCOMPACT_PCTUSED`% 后，hk2 会在下一轮开始时自动压缩历史对话。压缩会原样保留最近 4 轮 user/assistant，并将其之前的对话（含工具结果）用 LLM 总结为一条 system 消息；LLM 失败时回退为朴素截断。仅在轮次边界触发，绝不中断正在进行的动作。 | `0` |
 | `HK2_AUTOCOMPACT_PCTUSED` | 1-100 的整数，上下文使用率触发阈值。仅当已使用的上下文长度 ≥ `模型上下文窗口 × HK2_AUTOCOMPACT_PCTUSED / 100` 时才触发自动压缩。 | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
-| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 规划调用超时（毫秒）。慢速供应商（大文件映射上的推理模型）可能超过默认 300 秒。单次运行可用 `--plan-timeout-ms=N` 覆盖。 | `300000` |
+| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划调用超时（毫秒）。慢速供应商（大文件映射上的推理模型）可能超过默认 300 秒。单次运行可用 `--plan-timeout-ms=N` 覆盖。 | `300000` |
 | `HK2_INDEX_PARALLEL` | KB 索引解析池的并行度（`/kb init` / `/kb update`）。`0` 或未设置 = 自动（取当前系统 CPU 数）；正整数 N 则固定为 N。 | `0` |
 | `HK2_DEBUG` | 打印错误堆栈 | - |
 | `HK2_NO_COLOR` | 为 1 时禁用 ANSI 颜色（亦遵从标准 `NO_COLOR` 环境变量）。 | - |
 | `HK2_ASCII` | 为 1 时，强制使用 ASCII 字符替代 UTF-8 的制表/加载动画/图标（适用于非 UTF-8 终端）。 | - |
+| `HK2_HIDE_THINKING` | 未设置或为 `1`（默认）时，`✎ thinking` 推理窗口最多渲染 5 行内容，之后以灰暗提示报告隐藏了多少行。为 `0` 时渲染完整推理流（旧行为）。 | `1` |
 | `ANTHROPIC_API_KEY` | 首次初始化时自动创建 `anthropic` 提供商 | - |
 | `OPENAI_API_KEY` | 首次初始化时自动创建 `openai` 提供商 | - |
 
