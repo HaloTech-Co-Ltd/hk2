@@ -99,6 +99,9 @@ test('rewriteQuery falls back on LLM stream error (defensive)', async () => {
   const out = await rewriteQuery(throwingLlm(), 'real query');
   assert.equal(out.fallback, true);
   assert.equal(out.rewrittenQuery, 'real query');
+  // Transport failures must NOT be silent: the reason is surfaced via `error`
+  // so callers can warn + apply the phase-model fallback policy.
+  assert.match(out.error, /boom/);
 });
 
 test('rewriteQuery falls back on empty stream', async () => {
@@ -178,6 +181,9 @@ test('assessRequest with no interpretations is treated as clear (avoid dead-end)
 test('assessRequest falls back to clear on LLM stream error', async () => {
   const out = await assessRequest(throwingLlm(), 'real query');
   assert.equal(out.clear, true);
+  // Transport failures must NOT be silent: the reason is surfaced via `error`
+  // so callers can warn + apply the phase-model fallback policy.
+  assert.match(out.error, /boom/);
 });
 
 test('assessRequest returns clear:true immediately for empty / whitespace query', async () => {

@@ -36,6 +36,7 @@ import {
 } from '../lib/config/home.js';
 import { createSession, buildCtx, reloadAll } from '../src/commands/interactive.js';
 import { dispatchSlash } from '../src/slash/index.js';
+import { runPhaseWithFallback, runPhaseWithSkipOnUnreachable, phaseModelFallbackEnabled } from '../src/phase_fallback.js';
 
 let __seq = 0;
 async function makeSourceDir(name) {
@@ -411,4 +412,392 @@ test('runAgentTurn resolves a phase LLM for request-assess when the project has 
   const phaseLlm = new LLMClient(phaseCfg);
   assert.equal(phaseLlm.config?.apiKey, 'sk-b', 'phase LLM uses provider B credentials');
   assert.notEqual(phaseLlm.config?.apiKey, session.llm?.config?.apiKey, 'phase LLM differs from session LLM');
+});
+
+// ---------------------------------------------------------------------------
+// 6. HK2_ENABLE_PHASEMODEL_FALLBACK policy (unreachable phase model)
+// ---------------------------------------------------------------------------
+//
+// Regression for the reported bug: a phase model configured via
+// /model set-phase but UNREACHABLE (connection refused / timeout / HTTP
+// error) used to look like a successful phase — rewriteQuery swallowed the
+// transport error and returned a fallback object, assessRequest returned
+// { clear: true }, and no warning was ever printed.
+//
+// Policy (src/phase_fallback.js), driven by HK2_ENABLE_PHASEMODEL_FALLBACK
+// (default 1):
+//   1: warn, then re-run the phase on the session (main) model.
+//   0: warn, then skip the phase entirely.
+// Each phase (rewrite-query, request-assess) evaluates its OWN model.
+
+// A fake LLM client whose stream throws (simulates an unreachable endpoint).
+function deadLlm(reason = 'connect ECONNREFUSED') {
+  const err = new Error(reason);
+  return {
+    config: { model: 'dead-model' },
+    stream: async function* () { throw err; },
+  };
+}
+
+// A fake LLM client whose stream succeeds; records which model ran.
+function aliveLlm(tag, raw) {
+  return {
+    config: { model: tag },
+    stream: async function* () {
+      yield { type: 'delta', text: raw ?? JSON.stringify({ clear: true }) };
+    },
+  };
+}
+
+// run() stub mimicking rewriteQuery's contract: success returns a plain
+// object, transport failure returns { ...result, error }.
+function phaseRunStub() {
+  const seen = [];
+  return {
+    seen,
+    run: async (llm) => {
+      seen.push(llm.config.model);
+      // Simulate the rewrite_query contract: the LLM stream throws inside
+      // callLlm, the phase fn catches and returns { ...fallback, error }.
+      let out;
+      try {
+        for await (const evt of llm.stream([])) { /* drain */ }
+        out = { ok: true, model: llm.config.model };
+      } catch (err) {
+        out = { ok: false, error: err.message };
+      }
+      return out;
+    },
+  };
+}
+
+test('phaseModelFallbackEnabled defaults to true and parses the env var', () => {
+  const prev = process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  try {
+    delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+    assert.equal(phaseModelFallbackEnabled(), true, 'default: fallback enabled');
+    for (const v of ['1', 'yes', 'true', 'on', 'YES']) {
+      process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = v;
+      assert.equal(phaseModelFallbackEnabled(), true, `${v} -> true`);
+    }
+    for (const v of ['0', 'no', 'false', 'off', 'garbage']) {
+      process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = v;
+      assert.equal(phaseModelFallbackEnabled(), false, `${v} -> false`);
+    }
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+    else process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = prev;
+  }
+});
+
+test('no phase model configured: pass-through on the session model, no warnings', async () => {
+  const warns = [];
+  const stub = phaseRunStub();
+  const session = aliveLlm('session-model');
+  const out = await runPhaseWithFallback({
+    phase: 'rewrite-query',
+    phaseLlm: null,
+    sessionLlm: session,
+    warn: (m) => warns.push(m),
+    run: stub.run,
+  });
+  assert.deepEqual(stub.seen, ['session-model'], 'ran once, on the session model');
+  assert.equal(out.skipped, false);
+  assert.equal(out.usedFallback, false);
+  assert.equal(out.error, null);
+  assert.equal(warns.length, 0, "no override -> no policy, today's behavior");
+  assert.equal(out.llm, session);
+});
+
+test('healthy phase model: runs on it once, no warnings, no fallback', async () => {
+  const warns = [];
+  const stub = phaseRunStub();
+  const phase = aliveLlm('phase-model');
+  const session = aliveLlm('session-model');
+  const out = await runPhaseWithFallback({
+    phase: 'rewrite-query',
+    phaseLlm: phase,
+    sessionLlm: session,
+    warn: (m) => warns.push(m),
+    run: stub.run,
+  });
+  assert.deepEqual(stub.seen, ['phase-model'], 'ran once, on the phase model');
+  assert.equal(out.skipped, false);
+  assert.equal(out.usedFallback, false);
+  assert.equal(out.error, null);
+  assert.equal(warns.length, 0);
+  assert.equal(out.llm, phase);
+});
+
+test('unreachable phase model + FALLBACK=1 (default): warns then re-runs on the session model', async () => {
+  const prev = process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  const warns = [];
+  const stub = phaseRunStub();
+  try {
+    const out = await runPhaseWithFallback({
+      phase: 'rewrite-query',
+      phaseLlm: deadLlm(),
+      sessionLlm: aliveLlm('session-model'),
+      warn: (m) => warns.push(m),
+      run: stub.run,
+    });
+    assert.equal(out.skipped, false);
+    assert.equal(out.usedFallback, true, 'degraded to the session model');
+    assert.match(out.error, /ECONNREFUSED/, 'phase-model failure reason surfaced');
+    assert.ok(out.result && out.result.ok, 'phase completed on the session model');
+    assert.equal(out.result.model, 'session-model');
+    assert.equal(out.llm.config.model, 'session-model', 'later passes reuse the session model');
+    // Warning contract: unreachable -> warn; fallback decision -> warn.
+    assert.ok(warns.some((m) => m.includes('unreachable') && m.includes('rewrite-query')), 'unreachable warning names the phase');
+    assert.ok(warns.some((m) => m.includes('falling back to the session model')), 'fallback warning printed');
+    assert.equal(warns.length, 2, 'exactly two warnings');
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+    else process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = prev;
+  }
+});
+
+test('unreachable phase model + FALLBACK=0: warns and skips the phase', async () => {
+  const prev = process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = '0';
+  const warns = [];
+  const stub = phaseRunStub();
+  try {
+    const out = await runPhaseWithFallback({
+      phase: 'request-assess',
+      phaseLlm: deadLlm(),
+      sessionLlm: aliveLlm('session-model'),
+      warn: (m) => warns.push(m),
+      run: stub.run,
+    });
+    assert.equal(out.skipped, true, 'phase skipped entirely');
+    assert.equal(out.result, null, 'no phase result');
+    assert.equal(out.llm, null, 'nothing to reuse for later passes');
+    assert.match(out.error, /ECONNREFUSED/);
+    assert.deepEqual(stub.seen, ['dead-model'], 'session model never invoked');
+    assert.ok(warns.some((m) => m.includes('unreachable') && m.includes('request-assess')));
+    assert.ok(warns.some((m) => m.includes('skipping the request-assess phase') && m.includes('HK2_ENABLE_PHASEMODEL_FALLBACK=0')));
+    assert.equal(warns.length, 2);
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+    else process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = prev;
+  }
+});
+
+test('unreachable phase model + FALLBACK=1 + session model also fails: second warning, never silent', async () => {
+  const prev = process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  const warns = [];
+  const stub = phaseRunStub();
+  try {
+    const out = await runPhaseWithFallback({
+      phase: 'rewrite-query',
+      phaseLlm: deadLlm('phase endpoint down'),
+      sessionLlm: deadLlm('session endpoint down'),
+      warn: (m) => warns.push(m),
+      run: stub.run,
+    });
+    assert.equal(out.skipped, false);
+    assert.equal(out.usedFallback, true);
+    assert.ok(out.result && out.result.error, 'degraded fallback result (historic behavior)');
+    assert.ok(warns.some((m) => m.includes('unreachable')));
+    assert.ok(warns.some((m) => m.includes('falling back to the session model')));
+    assert.ok(warns.some((m) => m.includes('session model also failed')), 'double failure is warned, not silent');
+    assert.equal(warns.length, 3);
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+    else process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = prev;
+  }
+});
+
+test('result-object error (thrown contract) is treated as a transport failure too', async () => {
+  // Defensive: a phase fn that THROWS instead of returning { error } must not
+  // bypass the policy.
+  const warns = [];
+  let calls = 0;
+  const out = await runPhaseWithFallback({
+    phase: 'rewrite-query',
+    phaseLlm: { config: { model: 'phase-model' } },
+    sessionLlm: aliveLlm('session-model'),
+    warn: (m) => warns.push(m),
+    run: async (llm) => {
+      calls++;
+      if (llm.config.model === 'phase-model') throw new Error('connect timeout');
+      return { ok: true, model: llm.config.model };
+    },
+  });
+  assert.equal(calls, 2, 'phase model failed, session model retried');
+  assert.equal(out.usedFallback, true);
+  assert.equal(out.result.model, 'session-model');
+  assert.ok(warns.some((m) => m.includes('unreachable')));
+});
+
+test('each phase evaluates its own model: rewrite dead + assess alive are independent', async () => {
+  // The two phases may be pinned to DIFFERENT providers; one dying must not
+  // affect the other. runAgentTurn calls runPhaseWithFallback separately per
+  // phase, so this locks in the wiring contract.
+  const warns = [];
+
+  const rewriteRun = await runPhaseWithFallback({
+    phase: 'rewrite-query',
+    phaseLlm: deadLlm('rewrite endpoint down'),
+    sessionLlm: aliveLlm('session-model'),
+    warn: (m) => warns.push(m),
+    run: async (llm) => {
+      try {
+        for await (const evt of llm.stream([])) { /* drain */ }
+        return { ok: true, model: llm.config.model };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    },
+  });
+  assert.equal(rewriteRun.usedFallback, true, 'rewrite fell back to the session model');
+
+  const assessRun = await runPhaseWithFallback({
+    phase: 'request-assess',
+    phaseLlm: aliveLlm('assess-model'),
+    sessionLlm: aliveLlm('session-model'),
+    warn: (m) => warns.push(m),
+    run: async (llm) => {
+      try {
+        for await (const evt of llm.stream([])) { /* drain */ }
+        return { ok: true, model: llm.config.model };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    },
+  });
+  assert.equal(assessRun.usedFallback, false, 'healthy assess phase model still used');
+  assert.equal(assessRun.llm.config.model, 'assess-model');
+  assert.equal(assessRun.error, null);
+  assert.ok(!warns.some((m) => m.includes('request-assess')), 'no assess-phase warning');
+});
+
+// ---------------------------------------------------------------------------
+// 7. Review phases (plan-review / code-review): SKIP on unreachable
+// ---------------------------------------------------------------------------
+//
+// Review phases are quality gates, so they use a different policy than
+// rewrite-query / request-assess: when the model that would run the review
+// (the configured phase model, or the session model when no override exists)
+// is unreachable, print warnings and SKIP the phase — NEVER silently re-run it
+// on another model (that would change what the user believes reviewed their
+// plan/code). HK2_ENABLE_PHASEMODEL_FALLBACK does not apply here.
+
+test('review policy: healthy phase model runs once, no warnings, no skip', async () => {
+  const warns = [];
+  const stub = phaseRunStub();
+  const phase = aliveLlm('review-model');
+  const session = aliveLlm('session-model');
+  const out = await runPhaseWithSkipOnUnreachable({
+    phase: 'plan-review',
+    phaseLlm: phase,
+    sessionLlm: session,
+    warn: (m) => warns.push(m),
+    run: stub.run,
+  });
+  assert.deepEqual(stub.seen, ['review-model'], 'ran once, on the review model');
+  assert.equal(out.skipped, false);
+  assert.equal(out.usedFallback, false);
+  assert.equal(out.error, null);
+  assert.equal(warns.length, 0);
+  assert.equal(out.llm, phase);
+});
+
+test('review policy: unreachable phase model warns and skips (never falls back)', async () => {
+  const warns = [];
+  const stub = phaseRunStub();
+  const session = aliveLlm('session-model');
+  const out = await runPhaseWithSkipOnUnreachable({
+    phase: 'plan-review',
+    phaseLlm: deadLlm(),
+    sessionLlm: session,
+    warn: (m) => warns.push(m),
+    run: stub.run,
+  });
+  assert.equal(out.skipped, true, 'review skipped entirely');
+  assert.equal(out.result, null);
+  assert.equal(out.llm, null);
+  assert.match(out.error, /ECONNREFUSED/);
+  assert.deepEqual(stub.seen, ['dead-model'], 'session model NEVER invoked — no fallback');
+  assert.ok(warns.some((m) => m.includes('unreachable') && m.includes('plan-review')), 'unreachable warning names the phase');
+  assert.ok(warns.some((m) => m.includes('skipping the plan-review phase')), 'skip warning printed');
+  assert.equal(warns.length, 2, 'exactly two warnings');
+});
+
+test('review policy ignores HK2_ENABLE_PHASEMODEL_FALLBACK (=1 still skips, no fallback)', async () => {
+  const prev = process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+  process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = '1';
+  const warns = [];
+  const stub = phaseRunStub();
+  try {
+    const out = await runPhaseWithSkipOnUnreachable({
+      phase: 'code-review',
+      phaseLlm: deadLlm('review endpoint down'),
+      sessionLlm: aliveLlm('session-model'),
+      warn: (m) => warns.push(m),
+      run: stub.run,
+    });
+    assert.equal(out.skipped, true, 'even with FALLBACK=1 the review is skipped, not re-run');
+    assert.equal(out.usedFallback, false);
+    assert.deepEqual(stub.seen, ['dead-model'], 'session model never invoked');
+    assert.equal(warns.length, 2);
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ENABLE_PHASEMODEL_FALLBACK;
+    else process.env.HK2_ENABLE_PHASEMODEL_FALLBACK = prev;
+  }
+});
+
+test('review policy: no phase model configured runs on the session model', async () => {
+  const warns = [];
+  const stub = phaseRunStub();
+  const session = aliveLlm('session-model');
+  const out = await runPhaseWithSkipOnUnreachable({
+    phase: 'code-review',
+    phaseLlm: null,
+    sessionLlm: session,
+    warn: (m) => warns.push(m),
+    run: stub.run,
+  });
+  assert.deepEqual(stub.seen, ['session-model'], 'ran once, on the session model');
+  assert.equal(out.skipped, false);
+  assert.equal(out.usedFallback, false);
+  assert.equal(warns.length, 0);
+  assert.equal(out.llm, session);
+});
+
+test('review policy: no phase model + dead session model also warns and skips', async () => {
+  // A dead session model with no override must not degrade to a silent
+  // "no issues found" — the same never-silent contract applies.
+  const warns = [];
+  const stub = phaseRunStub();
+  const out = await runPhaseWithSkipOnUnreachable({
+    phase: 'code-review',
+    phaseLlm: null,
+    sessionLlm: deadLlm('session endpoint down'),
+    warn: (m) => warns.push(m),
+    run: stub.run,
+  });
+  assert.equal(out.skipped, true);
+  assert.equal(out.result, null);
+  assert.match(out.error, /session endpoint down/);
+  assert.ok(warns.some((m) => m.includes('session model for code-review is unreachable')), 'warning names the session model');
+  assert.ok(warns.some((m) => m.includes('skipping the code-review phase')));
+  assert.equal(warns.length, 2);
+});
+
+test('review policy: thrown contract (run throws) is treated as unreachable too', async () => {
+  const warns = [];
+  const out = await runPhaseWithSkipOnUnreachable({
+    phase: 'plan-review',
+    phaseLlm: { config: { model: 'review-model' } },
+    sessionLlm: aliveLlm('session-model'),
+    warn: (m) => warns.push(m),
+    run: async () => { throw new Error('connect timeout'); },
+  });
+  assert.equal(out.skipped, true);
+  assert.match(out.error, /connect timeout/);
+  assert.equal(warns.length, 2);
 });

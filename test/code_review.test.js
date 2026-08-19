@@ -243,6 +243,9 @@ test('reviewCode returns ok when the LLM stream throws', async () => {
   const result = await reviewCode(throwingLlm(new Error('network down')), SAMPLE_REVIEW);
   assert.equal(result.ok, true);
   assert.deepEqual(result.issues, []);
+  // Transport failures must NOT be silent: the reason is surfaced via `error`
+  // so the caller can warn + skip the phase (src/phase_fallback.js).
+  assert.match(result.error, /network down/);
 });
 
 test('reviewCode returns ok for an empty review text', async () => {

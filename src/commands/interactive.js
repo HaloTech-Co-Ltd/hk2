@@ -56,6 +56,7 @@ import readline from 'node:readline';
 import { ensureHome, getCurrentProject, getProject, setCurrentProject, resolveDefaultModel, resolveModelRef, getPhaseModelRef } from '../../lib/config/home.js';
 import { getRuntime, dropRuntime } from '../../lib/retrieval/kb_runtime.js';
 import { LLMClient } from '../../lib/llm/client.js';
+import { runPhaseWithFallback, runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
 import { buildTools, KbFirstGuard } from '../../lib/agent/tools.js';
 import { getMcpTools, invalidateMcpTools, invalidateAllMcpTools } from '../../lib/agent/mcp.js';
 import { runLoop } from '../../lib/agent/loop.js';
@@ -1793,19 +1794,34 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
       diffText,
       answerText: assistantText || '',
     });
-    const result = await reviewCode(reviewLlm, reviewText, { signal });
+    // Review phases use the "skip on unreachable" policy — NEVER a session-
+    // model fallback (see runPhaseWithSkipOnUnreachable): substituting an
+    // unplanned model would change what reviewed the code. Warnings are
+    // printed by the policy; skip -> no "no issues found" message, the turn
+    // simply ends without a review.
+    const reviewRun = await runPhaseWithSkipOnUnreachable({
+      phase: 'code-review',
+      phaseLlm: usingPhaseModel ? reviewLlm : null,
+      sessionLlm: session.llm,
+      warn: (m) => ctx.print(m),
+      run: (llmForReview) => reviewCode(llmForReview, reviewText, { signal }),
+    });
     await session.transcript?.logMeta('codeReview', {
-      ok: result.ok,
-      issueCount: result.issues ? result.issues.length : 0,
+      skipped: reviewRun.skipped,
+      ...(reviewRun.skipped ? { error: reviewRun.error } : {}),
+      ok: reviewRun.result ? reviewRun.result.ok : null,
+      issueCount: reviewRun.result && reviewRun.result.issues ? reviewRun.result.issues.length : 0,
       changedFileCount: changedFiles.length,
-      phaseModelRef: usingPhaseModel ? (getPhaseModelRef(session.project, 'code-review') || null) : null,
+      phaseModelRef: usingPhaseModel && !reviewRun.skipped ? (getPhaseModelRef(session.project, 'code-review') || null) : null,
     });
 
-    if (result.ok || !result.issues || result.issues.length === 0) {
+    if (reviewRun.skipped) {
+      // Model unreachable: warnings already printed; end without a review.
+    } else if (reviewRun.result.ok || !reviewRun.result.issues || reviewRun.result.issues.length === 0) {
       ctx.print(style.dim('  Code review complete - no issues found.'));
     } else {
-      ctx.print(style.warning(`  Code review found ${result.issues.length} issue(s):`));
-      result.issues.forEach((issue, i) => {
+      ctx.print(style.warning(`  Code review found ${reviewRun.result.issues.length} issue(s):`));
+      reviewRun.result.issues.forEach((issue, i) => {
         ctx.print('');
         ctx.print(style.warning(style.bold(`  Issue ${i + 1}: ${issue.title}`)));
         if (issue.detail) ctx.print(style.dim(`    ${issue.detail}`));
@@ -1908,6 +1924,11 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   const enableAssess = enableRewrite && envFlag('HK2_ENABLE_REQUEST_ASSESS', 1);
   const canAssess = enableAssess && session.llm && !!(session.rl && session.rl.terminal);
   let rewrite = null;
+  // Outcome of the rewrite phase under the HK2_ENABLE_PHASEMODEL_FALLBACK
+  // policy: filled in by pass-1 and REUSED by the post-clarification pass-2
+  // rewrite, so the same phase never probes a dead endpoint twice per turn
+  // (and never repeats its warnings).
+  let rewritePhaseRun = null;
 
   // Resolve a per-phase model override for the rewrite phase. When the current
   // project has configured /model set-phase --phase=rewrite-query <ref>, the
@@ -1968,19 +1989,44 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     }
     try {
       const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
-      // Use the per-phase model when configured; otherwise the session model.
-      const llmForRewrite = rewriteLlm || session.llm;
-      rewrite = await rewriteQuery(llmForRewrite, userText, {
-        timeoutMs: 15000,
+      // HK2_ENABLE_PHASEMODEL_FALLBACK policy (default 1): when a configured
+      // phase model is UNREACHABLE (connection refused / timeout / HTTP
+      // error), warn and re-run the phase on the session (main) model (=1),
+      // or skip the phase entirely (=0). Previously the transport error was
+      // swallowed inside rewriteQuery, so a dead phase model looked like a
+      // successful fallback rewrite with no warning at all. Each phase
+      // evaluates its OWN model — the rewrite-query override and the
+      // request-assess override may point at different providers.
+      const rewriteRun = await runPhaseWithFallback({
+        phase: 'rewrite-query',
+        phaseLlm: rewriteLlm,
+        sessionLlm: session.llm,
+        warn: (m) => ctx.print(m),
+        run: (llmForRewrite) => rewriteQuery(llmForRewrite, userText, {
+          timeoutMs: 15000,
+        }),
       });
-      await session.transcript?.logMeta('rewrite', {
-        intent: rewrite.intent,
-        functionNames: rewrite.functionNames,
-        keywords: rewrite.keywords,
-        rewrittenQuery: rewrite.rewrittenQuery,
-        fallback: rewrite.fallback,
-        phaseModelRef: rewriteLlm ? (getPhaseModelRef(session.project, 'rewrite-query') || null) : null,
-      });
+      rewritePhaseRun = rewriteRun;
+      if (rewriteRun.skipped) {
+        // FALLBACK=0: warning already printed; retrieval proceeds on the
+        // raw query (same effect as a failed rewrite).
+        rewrite = null;
+      } else {
+        rewrite = rewriteRun.result;
+        await session.transcript?.logMeta('rewrite', {
+          intent: rewrite.intent,
+          functionNames: rewrite.functionNames,
+          keywords: rewrite.keywords,
+          rewrittenQuery: rewrite.rewrittenQuery,
+          fallback: rewrite.fallback,
+          // Audit trail: record the ref only when the phase model was
+          // ACTUALLY used; phaseModelFallback records the degradation.
+          phaseModelRef: rewriteLlm && !rewriteRun.usedFallback
+            ? (getPhaseModelRef(session.project, 'rewrite-query') || null)
+            : null,
+          phaseModelFallback: rewriteRun.usedFallback,
+        });
+      }
     } catch (err) {
       progress.done();
       ctx.print(`[warn] query rewrite failed, using raw query: ${err.message}`);
@@ -2070,22 +2116,39 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       // so follow-ups that are terse in isolation but unambiguous given the
       // conversation are not flagged unclear.
       const sessionDigest = buildSessionDigest(session, userText);
-      // Use the per-phase model when configured; otherwise the session model.
-      const llmForAssess = assessLlm || session.llm;
-      const assessment = await assessRequest(llmForAssess, userText, {
-        timeoutMs: 15000,
-        signal: abortCtrl.signal,
-        context: ctxLines.join('\n'),
-        sessionContext: sessionDigest,
+      // Same HK2_ENABLE_PHASEMODEL_FALLBACK policy as the rewrite phase, but
+      // evaluated INDEPENDENTLY: the request-assess override may be a
+      // different model that is alive when the rewrite model is dead (or
+      // vice versa), so the rewrite phase's outcome must not carry over.
+      const assessRun = await runPhaseWithFallback({
+        phase: 'request-assess',
+        phaseLlm: assessLlm,
+        sessionLlm: session.llm,
+        warn: (m) => ctx.print(m),
+        run: (llmForAssess) => assessRequest(llmForAssess, userText, {
+          timeoutMs: 15000,
+          signal: abortCtrl.signal,
+          context: ctxLines.join('\n'),
+          sessionContext: sessionDigest,
+        }),
       });
-      await session.transcript?.logMeta('assess', {
-        clear: assessment.clear,
-        unclear: assessment.unclear,
-        interpretations: assessment.interpretations,
-        hadSessionContext: !!sessionDigest,
-        phaseModelRef: assessLlm ? (getPhaseModelRef(session.project, 'request-assess') || null) : null,
-      });
-      if (!assessment.clear) {
+      // FALLBACK=0 and the phase model unreachable: assessRun.skipped (warn
+      // already printed) -> assessment stays null, no clarification round,
+      // the turn falls through to the agent loop on the pass-1 rewrite+graph.
+      const assessment = assessRun.skipped ? null : assessRun.result;
+      if (assessment) {
+        await session.transcript?.logMeta('assess', {
+          clear: assessment.clear,
+          unclear: assessment.unclear,
+          interpretations: assessment.interpretations,
+          hadSessionContext: !!sessionDigest,
+          phaseModelRef: assessLlm && !assessRun.usedFallback
+            ? (getPhaseModelRef(session.project, 'request-assess') || null)
+            : null,
+          phaseModelFallback: assessRun.usedFallback,
+        });
+      }
+      if (assessment && !assessment.clear) {
         progress.pause();
         clarification = await confirmClarification(assessment, session);
         if (clarification === null) {
@@ -2121,22 +2184,31 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       }
       try {
         const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
-        // Reuse the per-phase model resolved at the top of the turn so the
-        // post-clarification pass stays on the same model as pass-1.
-        const llmForRewrite = rewriteLlm || session.llm;
-        rewrite = await rewriteQuery(llmForRewrite, userText, {
-          timeoutMs: 15000,
-          clarification,
-        });
-        await session.transcript?.logMeta('rewrite', {
-          intent: rewrite.intent,
-          functionNames: rewrite.functionNames,
-          keywords: rewrite.keywords,
-          rewrittenQuery: rewrite.rewrittenQuery,
-          fallback: rewrite.fallback,
-          afterClarification: true,
-          phaseModelRef: rewriteLlm ? (getPhaseModelRef(session.project, 'rewrite-query') || null) : null,
-        });
+        // Pass-2 stays SKIPPED when pass-1 skipped the phase
+        // (HK2_ENABLE_PHASEMODEL_FALLBACK=0): re-probing the dead model would
+        // just repeat the warning and pay the 15s timeout again.
+        if (!rewritePhaseRun?.skipped) {
+          // Reuse the model that actually produced pass-1's outcome (the
+          // phase model, or the session model after a fallback) so the
+          // post-clarification pass stays consistent with pass-1.
+          const llmForRewrite = rewritePhaseRun?.llm || rewriteLlm || session.llm;
+          rewrite = await rewriteQuery(llmForRewrite, userText, {
+            timeoutMs: 15000,
+            clarification,
+          });
+          await session.transcript?.logMeta('rewrite', {
+            intent: rewrite.intent,
+            functionNames: rewrite.functionNames,
+            keywords: rewrite.keywords,
+            rewrittenQuery: rewrite.rewrittenQuery,
+            fallback: rewrite.fallback,
+            afterClarification: true,
+            phaseModelRef: rewriteLlm && !rewritePhaseRun?.usedFallback
+              ? (getPhaseModelRef(session.project, 'rewrite-query') || null)
+              : null,
+            phaseModelFallback: !!rewritePhaseRun?.usedFallback,
+          });
+        }
       } catch (err) {
         ctx.print(`[warn] post-clarification rewrite failed, keeping prior query: ${err.message}`);
       }
@@ -2244,15 +2316,34 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       progress.nextPhase('reviewing plan');
       setPhase('reviewing plan');
       try {
-        const result = await reviewPlan(reviewLlm, confirmed, {
-          signal: abortCtrl.signal,
+        // Review phases use the "skip on unreachable" policy — NEVER a session-
+        // model fallback (see runPhaseWithSkipOnUnreachable): substituting an
+        // unplanned model would change what reviewed the plan. Warnings are
+        // printed by the policy; skip -> the confirmed plan passes through
+        // unchanged, with no "no issues found" message.
+        const reviewRun = await runPhaseWithSkipOnUnreachable({
+          phase: 'plan-review',
+          phaseLlm: usingPhaseModel ? reviewLlm : null,
+          sessionLlm: session.llm,
+          warn: (m) => ctx.print(m),
+          run: (llmForReview) => reviewPlan(llmForReview, confirmed, {
+            signal: abortCtrl.signal,
+          }),
         });
         progress.pause(); // stop the spinner before printing the menu / result
         await session.transcript?.logMeta('planReview', {
-          ok: result.ok,
-          issueCount: result.issues ? result.issues.length : 0,
-          phaseModelRef: usingPhaseModel ? (getPhaseModelRef(session.project, 'plan-review') || null) : null,
+          skipped: reviewRun.skipped,
+          ...(reviewRun.skipped ? { error: reviewRun.error } : {}),
+          ok: reviewRun.result ? reviewRun.result.ok : null,
+          issueCount: reviewRun.result && reviewRun.result.issues ? reviewRun.result.issues.length : 0,
+          phaseModelRef: usingPhaseModel && !reviewRun.skipped ? (getPhaseModelRef(session.project, 'plan-review') || null) : null,
         });
+        if (reviewRun.skipped) {
+          // Model unreachable: warnings already printed; proceed with the
+          // confirmed plan as-is (review skipped, not "passed").
+          return confirmed;
+        }
+        const result = reviewRun.result;
         if (result.ok || !result.issues || result.issues.length === 0) {
           ctx.print(style.dim('  Plan review complete - no issues found. Proceeding with the confirmed plan.'));
           return confirmed;
