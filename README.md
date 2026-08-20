@@ -142,6 +142,26 @@ How does login verify the password?
 | **Eden** | Frequently-updated knowledge (function catalogs, command lists, observed patterns, module summaries, **parsed docs**, **auto-generated summaries**). | Auto-updatable when `HK2_ENABLE_AUTO_LEARN=1`; otherwise prompts y/N. |
 | **Index** | Code index (BM25 over symbols), knowledge graph (call chains / class hierarchy / imports / inheritance), and per-space indexes over Holy/Eden entries. | Auto-updatable when `HK2_ENABLE_AUTOUPDATEKB=1`; otherwise prompts y/N. |
 
+### Project Supreme Code (`hk2-supreme-code`)
+
+Every project's Holy Space carries one **permanent, protected entry** — `hk2-supreme-code` — holding the project's *fundamental laws*: short, imperative rules that EVERY hk2 operation (reading, writing, editing, planning, answering) must obey and can never violate. It is created **empty** by `/kb init` (legacy projects get an empty shell auto-created), so nothing is enforced until you write laws into it.
+
+- **Design purpose**: a single, always-visible place for the project owner to encode non-negotiable constraints — security policies, coding standards, compliance requirements — that outrank the agent's general preferences and every other KB entry.
+- **Injection**: on each request the items are rendered into the system prompt as a `# Project Supreme Code (MUST OBEY — never violate)` section placed *before* the KB knowledge-graph context. If an operation would violate any item, the agent must refuse it, cite the item's number, and propose a compliant alternative.
+- **Protection**: the entry itself can never be deleted, renamed, moved, emptied, imported over, or auto-updated — enforced at both the command layer and the storage layer.
+
+Usage (the only way to modify it; every write requires an explicit y/N confirmation):
+
+```
+/kb code list                                # show all items
+/kb code add --code-content="API keys are strictly forbidden in any code file"
+/kb code add 1 --code-content="..."          # update item 1 in place
+/kb code add --code-gen="draft one rule about commit message format"
+/kb code del 2                               # delete item 2; later items shift up
+```
+
+Limits: max **100 items**, **200 characters** each, numbered 1..N with no gaps (`/kb code add` without an id appends as item N+1; an id > N+1 is rejected). Keep items short and imperative — genuinely complex rules belong in their own Holy entry, referenced from a code item as `**KB(entry-id)**`. `/kb status` shows the current count.
+
 ### Knowledge graph
 
 On `/kb init`, hk2 builds a code knowledge graph from the AST:
