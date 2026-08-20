@@ -83,23 +83,26 @@ test('/kb knowledge list pins supreme-code first in Holy space', async () => {
   const holyEntryLines = lines.filter((l, i) =>
     i > holyHeaderIdx && i < edenHeaderIdx && /^\s{2}\S/.test(l));
   assert.equal(holyEntryLines.length, 3, 'three holy entries listed');
-  assert.match(holyEntryLines[0], /^  hk2-supreme-code/, 'supreme-code pinned first');
+  assert.match(holyEntryLines[0], /^  📌 hk2-supreme-code/, 'supreme-code pinned first with pushpin');
   assert.match(holyEntryLines[0], /supreme code \(permanent/, 'annotation present');
   assert.match(holyEntryLines[1], /^  aaa-alpha-principle/, 'remaining order preserved (1)');
+  assert.doesNotMatch(holyEntryLines[1], /📌/, 'no pushpin on ordinary entries (1)');
   assert.match(holyEntryLines[2], /^  bbb-beta-principle/, 'remaining order preserved (2)');
+  assert.doesNotMatch(holyEntryLines[2], /📌/, 'no pushpin on ordinary entries (2)');
 
   // Eden must NOT be reordered or annotated
   const edenEntryLines = lines.filter((l, i) => i > edenHeaderIdx && /^\s{2}\S/.test(l));
   assert.equal(edenEntryLines.length, 1);
   assert.match(edenEntryLines[0], /^  eden-notes/);
   assert.doesNotMatch(edenEntryLines[0], /supreme code/);
+  assert.doesNotMatch(edenEntryLines[0], /📌/);
 
   // --space=holy filter also pins first
   const ctx2 = mockCtx();
   await cmdKb(['knowledge', 'list', '--space=holy'], ctx2);
   const entryLines2 = ctx2.output.filter(l => /^\s{2}\S/.test(l));
   assert.equal(entryLines2.length, 3);
-  assert.match(entryLines2[0], /^  hk2-supreme-code/);
+  assert.match(entryLines2[0], /^  📌 hk2-supreme-code/);
 });
 
 test('/kb knowledge list with empty supreme-code still pins (shell only)', async () => {
@@ -116,5 +119,5 @@ test('/kb knowledge list with empty supreme-code still pins (shell only)', async
   await cmdKb(['knowledge', 'list', '--space=holy'], ctx);
   const entryLines = ctx.output.filter(l => /^\s{2}\S/.test(l));
   assert.ok(entryLines.length >= 1);
-  assert.match(entryLines[0], /^  hk2-supreme-code/);
+  assert.match(entryLines[0], /^  📌 hk2-supreme-code/);
 });

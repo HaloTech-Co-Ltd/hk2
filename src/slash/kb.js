@@ -500,8 +500,11 @@ async function knowledgeListKb(rest, ctx) {
     }
     for (const e of list) {
       const title = e.title || '(untitled)';
+      // Pushpin marks the permanent Supreme Code entry so it stands out from
+      // ordinary knowledge entries at a glance.
+      const pin = isSupremeCode(e.id) ? '📌 ' : '';
       const mark = isSupremeCode(e.id) ? '  — supreme code (permanent; manage via /kb code)' : '';
-      ctx.print(`  ${e.id.padEnd(28)}  ${title}${mark}`);
+      ctx.print(`  ${pin}${e.id.padEnd(28)}  ${title}${mark}`);
       total++;
     }
   }
@@ -519,7 +522,8 @@ async function knowledgeShowKb(rest, ctx) {
   for (const space of ['holy', 'eden']) {
     const entry = await readKnowledge(p.id, space, id).catch(() => null);
     if (entry) {
-      ctx.print(`## ${entry.title || entry.id}  [${space}]`);
+      const pin = isSupremeCode(entry.id) ? '📌 ' : '';
+      ctx.print(`## ${pin}${entry.title || entry.id}  [${space}]`);
       if (entry.id !== entry.title) ctx.print(`id: ${entry.id}`);
       if (entry.intro) { ctx.print(''); ctx.print(entry.intro); }
       if (entry.keyFiles?.length) { ctx.print(''); ctx.print('keyFiles:'); for (const f of entry.keyFiles) ctx.print(`  ${f}`); }
@@ -2821,7 +2825,7 @@ async function codeListKb(rest, ctx) {
     ctx.print(`Supreme Code entry missing (this should not happen). Run /kb status to self-heal.`);
     return;
   }
-  ctx.print(`Supreme Code (${SUPREME_CODE_ID}) — ${got.codes.length}/${SUPREME_CODE_MAX_ITEMS} item(s), obeyed by ALL operations:`);
+  ctx.print(`📌 Supreme Code (${SUPREME_CODE_ID}) — ${got.codes.length}/${SUPREME_CODE_MAX_ITEMS} item(s), obeyed by ALL operations:`);
   if (got.codes.length === 0) {
     ctx.print(`  (empty — add the first law with: /kb code add --code-content="...")`);
     return;
