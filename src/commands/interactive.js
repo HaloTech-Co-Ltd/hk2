@@ -175,6 +175,19 @@ export function createSession(pinnedProjectId = null) {
     // by syncConflictingEden() which stamps the Eden entries as superseded
     // (Eden is auto-updatable, so this happens without an extra prompt).
     kbConflicts: [],
+    // Mid-task user input: while runAgentTurn is active, non-slash input is
+    // captured here (FIFO) instead of session.queue, and injected into the
+    // RUNNING conversation at the agent loop's round boundary (after all
+    // tool_calls of the current round complete, before the next LLM call) —
+    // see runLoop's onRoundBoundary. Slash commands are NOT captured; they
+    // keep the legacy behavior of waiting for the turn to end, because they
+    // may mutate session state (model / KB / project) the in-flight turn
+    // still depends on. Menu input (session.consumeNext) is checked BEFORE
+    // enqueue in the rl line handler, so plan/confirm menus are unaffected.
+    userInputQueue: [],
+    // True while runAgentTurn is executing (armed at turn start, disarmed in
+    // its finally). enqueue() consults this to decide whether to capture.
+    agentTurnActive: false,
   };
 }
 
@@ -298,6 +311,15 @@ export async function interactive(opts = {}) {
   }
 
   const enqueue = async (line) => {
+    // Mid-task capture: while an agent turn runs, plain input becomes an
+    // in-task instruction delivered at the agent loop's round boundary (after
+    // the current action completes) instead of sitting in session.queue until
+    // the whole task finishes. Slash commands keep the legacy behavior.
+    if (captureMidTaskInput(session, line)) {
+      const n = session.userInputQueue.length;
+      process.stderr.write(style.success(`${style.ICON.ok} queued #${n} ${style.dim('· delivered after the current action')}`) + '\n');
+      return;
+    }
     session.queue.push(line);
     if (session.processing) return;
     session.processing = true;
@@ -1199,7 +1221,7 @@ function printBanner(session, ctx) {
     '',
     style.dim('interactive REPL · per-project KB'),
     '',
-    style.italic(style.dim('esc to interrupt')),
+    style.italic(style.dim('esc to interrupt · typing mid-task queues an instruction')),
   ];
   // Pair logo rows with tagline rows (left logo, right tagline).
   const headerRows = [];
@@ -1296,6 +1318,75 @@ export function isContinuationCue(text) {
   // cue followed by more Chinese text ("继续，把剩下的做完") still matches.
   const contZhRe = /^(请继续|继续吧|继续做|继续|接着做|接着来|接着|往下做|往下|进行)/i;
   return contRe.test(t) || contZhRe.test(t);
+}
+
+/**
+ * Mid-task input capture: called from enqueue() for every line arriving while
+ * an agent turn is running. Returns true when the line was captured as an
+ * in-task instruction (pushed onto session.userInputQueue, to be delivered at
+ * the next round boundary) and must NOT enter the normal session.queue.
+ *
+ * NOT captured (returns false): slash commands (they may reload model / KB /
+ * project state the in-flight turn depends on — they keep the legacy
+ * post-turn behavior) and blank lines (let the normal path drop them).
+ * Exported for unit testing the capture rule without a live REPL.
+ */
+export function captureMidTaskInput(session, line) {
+  if (!session || !session.agentTurnActive) return false;
+  if (!line || typeof line !== 'string') return false;
+  if (!line.trim()) return false;
+  if (line.trim().startsWith('/')) return false;
+  if (!Array.isArray(session.userInputQueue)) session.userInputQueue = [];
+  session.userInputQueue.push(line);
+  return true;
+}
+
+/**
+ * Batch the queued mid-task instructions into ONE user message, tagged so the
+ * model knows these arrived while it was working and should be folded into
+ * the in-flight task rather than treated as a brand-new task. Returns null
+ * when there is nothing to inject. Exported for unit testing.
+ */
+export function buildMidTaskInjection(lines) {
+  const items = (lines || []).map(l => String(l).trim()).filter(Boolean);
+  if (items.length === 0) return null;
+  const body = items.map(l => `- ${l}`).join('\n');
+  return '## Additional user instruction (queued while the task was running)\n' +
+    `${body}\n\n` +
+    'These arrived from the user while you were executing the current task. ' +
+    'Fold them into the work in progress — finish or adjust the current task ' +
+    'accordingly; do not restart from scratch unless the user explicitly asks.';
+}
+
+/**
+ * Disarm mid-task capture and hand any undelivered instructions back to the
+ * normal queue. Safe to call multiple times (idempotent disarm). Used BOTH by
+ * runAgentTurn's finally AND by its early-cancel paths that return before the
+ * try block begins (clarification cancel) — every exit from a turn that armed
+ * `agentTurnActive` must disarm it, or enqueue() would keep capturing (and
+ * silently swallowing) all subsequent plain input. Exported for unit testing.
+ */
+export function disarmMidTaskCapture(session) {
+  if (!session) return [];
+  session.agentTurnActive = false;
+  return flushMidTaskQueue(session);
+}
+
+/**
+ * Move any still-queued mid-task instructions back onto the normal input
+ * queue. Called from runAgentTurn's finally when the turn ended before a
+ * round boundary could deliver them (e.g. the model's final reply carried no
+ * tool calls, so the last boundary never fired). The leftovers are unshifted
+ * to the FRONT of session.queue — the user's instructions to the agent take
+ * priority over housekeeping slash commands typed during the same turn — and
+ * are then handled as fresh user turns right after this task. Returns the
+ * transferred lines (empty array when nothing was pending).
+ */
+export function flushMidTaskQueue(session) {
+  if (!session || !Array.isArray(session.userInputQueue) || session.userInputQueue.length === 0) return [];
+  const leftover = session.userInputQueue.splice(0);
+  if (leftover.length > 0 && Array.isArray(session.queue)) session.queue.unshift(...leftover);
+  return leftover;
 }
 
 /**
@@ -1852,6 +1943,11 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   // — that would wipe the conflicts detected this turn and the end-of-turn
   // Eden sync would silently become a no-op.
   session.kbConflicts = [];
+  // Mid-task input: arm the capture flag for the whole turn (enqueue() routes
+  // non-slash input to session.userInputQueue while this is true) and make
+  // sure no stale queue survives from an earlier aborted turn.
+  session.agentTurnActive = true;
+  session.userInputQueue = [];
 
   // ---- Auto context compaction (safe turn boundary) ------------------------
   // Runs before any rewrite/retrieval/agent work so it never interrupts an
@@ -2158,6 +2254,10 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
           // entries "will be marked superseded at the end of this task".
           await syncConflictingEden(session, ctx);
           progress.done();
+          // Mid-task input: this return exits BEFORE the main try/finally, so
+          // disarm here explicitly — leaving agentTurnActive armed would make
+          // enqueue() capture (and never deliver) every subsequent line.
+          disarmMidTaskCapture(session);
           process.stderr.write(`${style.warning(style.ICON.warn + ' cancelled')}\n`);
           session.phase = 'idle';
           session.turnStart = 0;
@@ -2782,6 +2882,25 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       tools,
       callbacks,
       signal: abortCtrl.signal,
+      // Round-boundary injection of mid-task user input: fires after every
+      // tool_call of a round completed, before the next LLM call starts. All
+      // queued instructions are batched into ONE tagged user message so the
+      // model sees them as in-task guidance, not a conversation break. The
+      // user sees their lines echoed (userMarkerLines) exactly like a normal
+      // prompt, preserving the mental model of "I just said this".
+      onRoundBoundary: async (_turnIdx) => {
+        if (!session.userInputQueue || session.userInputQueue.length === 0) return;
+        const lines = session.userInputQueue.splice(0);
+        const injected = buildMidTaskInjection(lines);
+        if (!injected) return;
+        process.stderr.write('\n');
+        for (const ln of userMarkerLines(lines.join('\n'))) {
+          process.stderr.write(style.muted(ln) + '\n');
+        }
+        process.stderr.write('\n');
+        session.messages.push({ role: 'user', content: injected });
+        await session.transcript?.logUser(injected);
+      },
       llmOpts: {
         maxChars: session.modelCfg.maxChars,
         temperature: session.modelCfg.temperature,
@@ -2945,6 +3064,16 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     }
   } finally {
     if (canInterrupt && rlInput) rlInput.off('keypress', onKeypress);
+    // Mid-task input: the turn is over. Disarm capture FIRST so lines arriving
+    // from now on go through the normal queue path, then hand any instructions
+    // that never reached a round boundary (e.g. the model's final reply had no
+    // tool calls, or the turn aborted early) back to the normal queue — they
+    // become fresh user turns right after this task, so nothing typed by the
+    // user is ever dropped.
+    const leftover = disarmMidTaskCapture(session);
+    if (leftover.length > 0) {
+      process.stderr.write(style.dim(`(queued instruction${leftover.length > 1 ? 's' : ''} passed to a new turn — the task finished before they could be delivered mid-run)`) + '\n');
+    }
     // Snapshot the last measured context size (peak single-call input tokens)
     // for the next turn's auto-compaction threshold check. loopPeakIn/callIn
     // are reset at the start of the next turn, so this is the only point that

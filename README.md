@@ -377,6 +377,20 @@ with detail and a suggestion. The review model is configurable via
 `/model set-phase --phase=code-review <ref>` (same mechanism as `plan-review`);
 when unset it uses the session model. See the env-var table.
 
+### Typing while a task runs
+
+You can keep typing while the agent is working. Plain text entered mid-task is
+queued (echoed as `✓ queued #N · delivered after the current action`) and
+injected into the RUNNING conversation at the agent loop's round boundary —
+after the current action (the LLM call plus all of its tool calls) completes,
+before the next LLM call starts. The model receives them as in-task guidance
+("fold into the work in progress, do not restart from scratch"), so the
+current action is never disturbed. Slash commands keep the legacy behavior
+(they run after the turn ends, since they may switch model / KB / project
+state the in-flight turn still depends on); plan-confirmation menus are
+unaffected. If the task finishes before a queued instruction can be delivered
+mid-run, it is handed to a fresh turn right after — nothing you type is lost.
+
 ## Configuration layout
 
 ```
