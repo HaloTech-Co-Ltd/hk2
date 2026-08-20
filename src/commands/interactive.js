@@ -704,6 +704,39 @@ export function buildCtx(session) {
         ask();
       });
     },
+    /**
+     * Numeric menu prompt (1..N) for slash commands that offer a choice list
+     * (e.g. /kb knowledge housekeep conflict resolution). Same readline
+     * mechanics as confirm: re-prompts on invalid input, Enter defaults to
+     * the LAST option, Ctrl+D / closed rl also returns the last option
+     * (fail-safe: the caller treats "last" as the conservative skip).
+     * Returns the 1-based index of the chosen option.
+     */
+    choose: async (promptText, options = []) => {
+      const n = options.length;
+      if (n === 0) return null;
+      if (!session.rl) return n; // non-interactive: conservative default (last)
+      return await new Promise((resolve) => {
+        const onClose = () => resolve(n);
+        session.rl.once('close', onClose);
+        const done = (val) => {
+          session.rl.off('close', onClose);
+          resolve(val);
+        };
+        const ask = () => {
+          process.stderr.write(promptText);
+          session.consumeNext = (ans) => {
+            const v = (ans || '').trim();
+            if (!v) { done(n); return; }              // Enter → default (last)
+            const num = parseInt(v, 10);
+            if (Number.isInteger(num) && num >= 1 && num <= n) { done(num); return; }
+            process.stderr.write(`Please answer 1-${n}. `);
+            ask();
+          };
+        };
+        ask();
+      });
+    },
     get lastAnswer() { return session.lastAnswer; },
     get llm() { return session.llm; },
     get modelCfg() { return session.modelCfg; },

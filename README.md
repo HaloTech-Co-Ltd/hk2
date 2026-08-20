@@ -204,7 +204,7 @@ Retrieve any of them via `kb_knowledge("<id>")` or `kb_search_knowledge("overvie
 | `/kb knowledge learn [--space=eden\|holy] [--file=PATH] [--base-dir=DIR] [--per-batch-chars=N] [--dry-run] [--no-survey] [--plan-timeout-ms=N]` | Unified deep-study command. CODE mode (bare, or `--base-dir` matching an indexed subdirectory): two-phase deep-study of indexed source files; Phase 0 writes the three project-wide survey entries; Phase 1 plans topic batches (scale-aware for large projects like postgres), Phase 2 executes each batch. Falls back to deterministic directory grouping when the LLM plan is unusable — never aborts. DOC mode (`--file` or a non-indexed `--base-dir`): deep-study Markdown / PDF / Word / PowerPoint / text documents into `--space`. Legacy `init`/`bootstrap`/`scan` aliases route here (whole-project CODE mode). |
 | `/kb knowledge export <eden\|holy\|all> <path>` | Export entries to a JSON file (version 2 format with per-entry `space` tags) |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | Import entries from JSON. `adaptive` routes each entry to its original space. Holy imports always prompt y/N. |
-| `/kb knowledge housekeep <eden\|holy\|all>` | Remove entries with missing fields, duplicate ids, or near-duplicate titles/keywords. Holy always prompts. |
+| `/kb knowledge housekeep <eden\|holy\|all> [--model=<provider>/<model-id>]` | LLM-assisted: remove broken entries, merge duplicate/similar entries (y/N); with `all`, resolve Eden↔Holy conflicts via a per-pair choice menu. Supreme-code never touched; knowledge indexes rebuilt on change. |
 | `/kb knowledge empty <eden\|holy\|all>` | Remove ALL entries from the specified space(s). Irreversible, always prompts y/N. |
 | `/kb knowledge del <id>` | Delete an entry (requires confirmation) |
 | `/kb transform <id> <from> <to>` | Move an entry between Holy and Eden (requires confirmation) |
@@ -245,7 +245,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/kb knowledge learn [--dry-run] [--base-dir=PATH] [--file=PATH] [--space=eden\|holy] [--per-batch-chars=N] [--no-survey] [--plan-timeout-ms=N]` | Deep-study project code (or one subdirectory / documents) → auto-generate knowledge. Full flag docs: `/help knowledge` |
 | `/kb knowledge export <scope> <path>` | Export entries to JSON |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | Import entries (adaptive routes by original space) |
-| `/kb knowledge housekeep <scope>` | Remove duplicates and invalid entries |
+| `/kb knowledge housekeep <scope>` | LLM-assisted dedup/merge + conflict resolution |
 | `/kb knowledge empty <scope>` | Remove ALL entries from space(s) |
 | `/kb knowledge del <id>` | Delete entry |
 | `/kb transform <id> <from> <to>` | Move between Holy and Eden |

@@ -72,6 +72,7 @@ import { buildIndex } from '../../lib/index/indexer.js';
 import { addKbForProject, getKbMeta } from '../../lib/index/registry.js';
 import {
   readStats, listKnowledge, readKnowledge, deleteKnowledge, moveKnowledge,
+  writeKnowledge, rebuildKnowledgeIndex,
 } from '../../lib/store/kb_store.js';
 import {
   SUPREME_CODE_ID, SUPREME_CODE_MAX_ITEMS, isSupremeCode,
@@ -2213,145 +2214,563 @@ async function knowledgeImportKb(rest, ctx) {
   ctx.print(`Imported: holy=${imported.holy}, eden=${imported.eden}, total=${imported.holy + imported.eden}.`);
 }
 
+/**
+ * /kb knowledge housekeep — LLM-assisted KB maintenance for one space
+ * (eden | holy) or both (all).
+ *
+ * Usage:
+ *   /kb knowledge housekeep <eden|holy|all> [--model=<provider>/<model-id>]
+ *
+ * Pipeline (all writes confirmed by the user; the permanent supreme-code
+ * entry "hk2-supreme-code" is never touched):
+ *
+ *   Phase 1 (deterministic) — broken-entry scan (missing title/intro,
+ *            duplicate ids) flagged for removal, y/N confirm. Same rules the
+ *            old cleanup-only implementation used.
+ *   Phase 2 (deterministic pre-filter + LLM) — near-duplicate / similar
+ *            content clusters WITHIN a space are found cheaply first (title
+ *            mutual containment or keyword overlap > 0.6 — the same
+ *            thresholds as findHolyConflict / crossCheckEntries), then each
+ *            candidate cluster is judged by the model: duplicate / similar /
+ *            distinct. Duplicate & similar clusters get a merged entry which
+ *            REPLACES all members (one write + deletes, y/N confirm; Holy
+ *            asks with an "irreversible" warning).
+ *   Phase 3 (scope=all only) — Eden entries that conflict with Holy entries
+ *            (same pre-filter heuristic) are judged by the model: conflict /
+ *            duplicate / complementary, with a suggested resolution. The user
+ *            chooses per pair:
+ *              1. stamp Eden supersededBy=holy:<id>   (Holy wins, Eden kept)
+ *              2. delete the Eden entry               (Holy wins, Eden gone)
+ *              3. merge Eden's unique content into the Holy entry (Holy is
+ *                 REWRITTEN — needs its own y/N, Holy contract)
+ *              4. skip
+ *   Finally — if anything was written, both knowledge indexes
+ *   (holy.idx.json / eden.idx.json) are rebuilt and the KB runtime cache is
+ *   dropped so the next query sees fresh state.
+ *
+ * --model=<provider>/<model-id> selects the judging model (validated against
+ * the registry); without it the current session model (ctx.llm) is used.
+ */
 async function knowledgeCleanupKb(rest, ctx) {
-  const scope = rest[0];
+  const flags = parseFlags(rest);
+  const scope = flags.positional[0];
   if (!scope || !['eden', 'holy', 'all'].includes(scope)) {
-    ctx.print(`Usage: /kb knowledge cleanup <eden|holy|all>`);
+    ctx.print(`Usage: /kb knowledge housekeep <eden|holy|all> [--model=<provider>/<model-id>]`);
     return;
   }
   const p = await getProjectOrFail(ctx);
   if (!p) return;
 
+  // ---- Model resolution: --model=<provider/model-id> wins, else ctx.llm ----
+  const modelRef = typeof flags.model === 'string' ? flags.model : '';
+  let llm = ctx.llm || null;
+  if (modelRef) {
+    try {
+      const got = await resolveCodeGenLlm(ctx, modelRef);
+      llm = got.llm;
+      ctx.print(`[housekeep] model: ${modelRef}`);
+    } catch (err) {
+      ctx.print(`Error: ${err.message}`);
+      return;
+    }
+  } else if (!llm) {
+    ctx.print(`No LLM configured. Run /model add + /model set-default first, or pass --model=<provider>/<model-id>.`);
+    return;
+  }
+
   const spaces = scope === 'all' ? ['eden', 'holy'] : [scope];
   const { deleteKnowledge } = await import('../../lib/store/kb_store.js');
-  const { getRuntime } = await import('../../lib/retrieval/kb_runtime.js');
+  const rt = await getRuntime(p.id).catch(() => null);
 
+  let dirty = false;           // any write happened → rebuild indexes at the end
   let totalRemoved = 0;
-  let totalKept = 0;
+  let totalMerged = 0;
+  let totalStamps = 0;
 
+  /* ================= Phase 1 + 2 per space ================= */
   for (const space of spaces) {
     const entries = await listKnowledge(p.id, space).catch(() => []);
     if (entries.length === 0) {
-      ctx.print(`[${space}] 0 entries — nothing to clean.`);
+      ctx.print(`[${space}] 0 entries — nothing to housekeep.`);
       continue;
     }
 
     ctx.print(``);
-    ctx.print(`[${space}] Scanning ${entries.length} entries...`);
+    ctx.print(`[${space}] Scanning ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}...`);
 
+    /* ---------- Phase 1: broken entries (deterministic) ---------- */
     const toRemove = [];
-    const seen = new Map(); // normalized-title → { id, introLen, idx }
-
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      // The permanent supreme-code entry is never flagged for removal (same
-      // exclusion as /kb knowledge empty; deleteKnowledge() also refuses it).
-      if (isSupremeCode(e.id)) { totalKept++; continue; }
+    const seenIds = new Set();
+    for (const e of entries) {
+      // The permanent supreme-code entry is never flagged for removal
+      // (same exclusion as /kb knowledge empty; deleteKnowledge() also refuses it).
+      if (isSupremeCode(e.id)) continue;
       const issues = [];
-
-      // Check required fields
       if (!e.id) issues.push('missing id');
+      else if (seenIds.has(e.id)) issues.push(`duplicate id "${e.id}"`);
       if (!e.title || !e.title.trim()) issues.push('missing title');
       if (!e.intro || !e.intro.trim()) issues.push('missing intro');
-
-      // Check for exact id duplicates
-      if (e.id && seen.has('__id:' + e.id)) {
-        issues.push(`duplicate id "${e.id}"`);
+      if (e.id) seenIds.add(e.id);
+      if (issues.length > 0) toRemove.push({ entry: e, reasons: issues });
+    }
+    if (toRemove.length > 0) {
+      ctx.print(`  ${toRemove.length} broken entr${toRemove.length === 1 ? 'y' : 'ies'}:`);
+      for (const { entry, reasons } of toRemove) {
+        ctx.print(`    - ${entry.id || '(no id)'}: ${reasons.join('; ')}`);
       }
-
-      // Check for near-duplicate titles
-      const normTitle = (e.title || '').toLowerCase().trim();
-      if (normTitle) {
-        for (const [key, existing] of seen) {
-          if (key.startsWith('__title:')) {
-            const prevTitle = key.slice(9);
-            if (prevTitle === normTitle ||
-                (prevTitle.length > 10 && (prevTitle.includes(normTitle) || normTitle.includes(prevTitle)))) {
-              const thisIntro = (e.intro || '').length;
-              if (thisIntro <= existing.introLen) {
-                issues.push(`near-duplicate of "${existing.id}"`);
-              }
-              break;
-            }
-          }
+      const prompt = space === 'holy'
+        ? `Remove these ${toRemove.length} Holy entr${toRemove.length === 1 ? 'y' : 'ies'}? This is irreversible. (y/N) `
+        : `Remove these ${toRemove.length} Eden entr${toRemove.length === 1 ? 'y' : 'ies'}? (y/N) `;
+      if (await ctx.confirm(prompt)) {
+        let removed = 0;
+        for (const { entry } of toRemove) {
+          if (entry.id && await deleteKnowledge(p.id, space, entry.id)) removed++;
         }
-      }
-
-      // Check keyword overlap for near-duplicates
-      if (e.keywords && Array.isArray(e.keywords) && e.keywords.length > 0) {
-        const thisKws = new Set(e.keywords.map(k => k.toLowerCase()));
-        for (const [key, existing] of seen) {
-          if (key.startsWith('__kws:')) {
-            const prevKws = existing.kws;
-            if (prevKws && prevKws.size > 0) {
-              let overlap = 0;
-              for (const k of thisKws) if (prevKws.has(k)) overlap++;
-              const ratio = overlap / Math.min(thisKws.size, prevKws.size);
-              if (ratio > 0.7) {
-                const thisIntro = (e.intro || '').length;
-                if (thisIntro <= existing.introLen) {
-                  issues.push(`keyword-overlap with "${existing.id}" (${Math.round(ratio * 100)}%)`);
-                }
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (issues.length > 0) {
-        toRemove.push({ entry: e, reasons: issues });
+        totalRemoved += removed;
+        dirty = true;
+        ctx.print(`  Removed ${removed} broken entr${removed === 1 ? 'y' : 'ies'}.`);
       } else {
-        seen.set('__id:' + (e.id || ''), { id: e.id, introLen: (e.intro || '').length });
-        if (normTitle) seen.set('__title:' + normTitle, { id: e.id, introLen: (e.intro || '').length });
-        if (e.keywords) seen.set('__kws:' + (e.id || ''), { id: e.id, introLen: (e.intro || '').length, kws: new Set(e.keywords.map(k => k.toLowerCase())) });
-        totalKept++;
+        ctx.print(`  Skipped — broken entries kept.`);
       }
     }
 
-    if (toRemove.length === 0) {
-      ctx.print(`  clean — no issues found (${entries.length} entries kept).`);
+    /* ---------- Phase 2: near-duplicate clusters (pre-filter → LLM) ---------- */
+    const alive = entries.filter(e =>
+      !isSupremeCode(e.id) && e.id && e.title && e.intro &&
+      !toRemove.some(r => r.entry.id === e.id));
+    const clusters = clusterSimilarEntries(alive);
+    if (clusters.length === 0) {
+      ctx.print(`  no near-duplicate candidates (${alive.length} entr${alive.length === 1 ? 'y' : 'ies'} scanned).`);
       continue;
     }
+    ctx.print(`  ${clusters.length} similar-cluster candidate(s) — asking the model to judge...`);
 
-    ctx.print(`  ${toRemove.length} entr${toRemove.length === 1 ? 'y' : 'ies'} flagged for removal:`);
-    for (const { entry, reasons } of toRemove) {
-      ctx.print(`    - ${entry.id || '(no id)'}: ${reasons.join('; ')}`);
-    }
-
-    // Confirm
-    const isHoly = space === 'holy';
-    const prompt = isHoly
-      ? `Remove these ${toRemove.length} Holy entr${toRemove.length === 1 ? 'y' : 'ies'}? This is irreversible. (y/N) `
-      : `Remove these ${toRemove.length} Eden entr${toRemove.length === 1 ? 'y' : 'ies'}? (y/N) `;
-    const ok = await ctx.confirm(prompt);
-    if (!ok) {
-      ctx.print(`  Skipped — all ${entries.length} entries kept.`);
-      continue;
-    }
-
-    // Delete
-    let removed = 0;
-    for (const { entry } of toRemove) {
-      if (entry.id) {
-        const deleted = await deleteKnowledge(p.id, space, entry.id);
-        if (deleted) removed++;
+    for (const cluster of clusters) {
+      const verdict = await judgeCluster(llm, cluster);
+      if (!verdict) {
+        ctx.print(`  (judge unavailable for cluster [${cluster.map(e => e.id).join(', ')}] — skipping)`);
+        continue;
+      }
+      if (verdict.relation === 'distinct') {
+        ctx.print(`  [distinct] ${cluster.map(e => e.id).join(' + ')} — keep all.`);
+        continue;
+      }
+      // duplicate | similar → merge proposal
+      if (!verdict.merged || !verdict.merged.title || !verdict.merged.intro) {
+        ctx.print(`  (${verdict.relation} but no usable merged entry for [${cluster.map(e => e.id).join(', ')}] — skipping)`);
+        continue;
+      }
+      const label = verdict.relation === 'duplicate' ? 'DUPLICATE' : 'SIMILAR';
+      ctx.print(`  [${label}] ${cluster.map(e => e.id).join(' + ')}`);
+      printMergedPreview(ctx, verdict, cluster);
+      let ok;
+      if (space === 'holy') {
+        ok = await ctx.confirm(`Replace these ${cluster.length} Holy entries with ONE merged entry? This is irreversible. (y/N) `);
+      } else {
+        ok = await ctx.confirm(`Replace these ${cluster.length} Eden entries with ONE merged entry? (y/N) `);
+      }
+      if (!ok) {
+        ctx.print(`  Skipped.`);
+        continue;
+      }
+      const primary = pickPrimary(cluster);
+      const record = {
+        ...primary,
+        id: primary.id,
+        space,
+        title: verdict.merged.title,
+        intro: verdict.merged.intro,
+        keyFiles: uniqList(cluster, 'keyFiles'),
+        keySymbols: uniqList(cluster, 'keySymbols'),
+        // Union of the members' keywords PLUS the model's fused keywords —
+        // printMergedPreview shows merged.keywords at the y/N prompt, so the
+        // written entry must contain exactly what the user confirmed.
+        keywords: uniqList([primary, ...cluster, verdict.merged], 'keywords'),
+        housekeptAt: new Date().toISOString(),
+        housekeptFrom: cluster.map(e => e.id),
+        source: 'kb-knowledge-housekeep',
+      };
+      try {
+        await writeKnowledge(p.id, space, record);
+        for (const e of cluster) {
+          if (e.id !== primary.id) await deleteKnowledge(p.id, space, e.id);
+        }
+        const fresh = await readKnowledge(p.id, space, record.id);
+        if (fresh && rt) rt.reloadKnowledge?.(fresh, space);
+        totalMerged++;
+        dirty = true;
+        ctx.print(`  Merged → "${record.id}" (absorbed ${cluster.length - 1} other entr${cluster.length - 1 === 1 ? 'y' : 'ies'}).`);
+      } catch (err) {
+        ctx.print(`  merge write failed: ${err.message}`);
       }
     }
-    totalRemoved += removed;
-    ctx.print(`  Removed ${removed}, kept ${entries.length - removed}.`);
   }
 
-  // Refresh runtime
-  const rt = await getRuntime(p.id).catch(() => null);
-  if (rt && totalRemoved > 0) {
-    const { dropRuntime } = await import('../../lib/retrieval/kb_runtime.js');
-    dropRuntime(p.id);
+  /* ================= Phase 3: Eden vs Holy conflicts (scope=all only) ===== */
+  if (scope === 'all') {
+    // Already-superseded Eden entries are retired (same convention as
+    // graph.js retrieval and clusterSimilarEntries): a conflict resolved by
+    // a previous run — option 1 here, or syncConflictingEden — must never
+    // re-trigger the judge call, the menu, or a second [Superseded by ...]
+    // banner stacked onto the intro.
+    const edenEntries = (await listKnowledge(p.id, 'eden').catch(() => []))
+      .filter(e => e.id && !isSupremeCode(e.id) && !e.supersededBy);
+    const holyEntries = (await listKnowledge(p.id, 'holy').catch(() => []))
+      .filter(e => e.id && !isSupremeCode(e.id));
+    const pairs = [];
+    const matched = new Set(); // eden id → already in a pair
+    for (const e of edenEntries) {
+      const h = findConflictingHoly(e, holyEntries);
+      if (h && !matched.has(e.id)) {
+        pairs.push({ eden: e, holy: h });
+        matched.add(e.id);
+      }
+    }
+    if (pairs.length === 0) {
+      ctx.print(``);
+      ctx.print(`[all] no Eden↔Holy conflict candidates.`);
+    } else {
+      ctx.print(``);
+      ctx.print(`[all] ${pairs.length} Eden↔Holy conflict candidate(s) — asking the model to judge...`);
+      for (const pair of pairs) {
+        const verdict = await judgeConflict(llm, pair);
+        if (!verdict) {
+          ctx.print(`  (judge unavailable for eden "${pair.eden.id}" vs holy "${pair.holy.id}" — skipping)`);
+          continue;
+        }
+        if (verdict.relation === 'complementary') {
+          ctx.print(`  [complementary] eden "${pair.eden.id}" ↔ holy "${pair.holy.id}" — keep both, no action.`);
+          continue;
+        }
+        ctx.print(``);
+        ctx.print(`  [${verdict.relation === 'conflict' ? 'CONFLICT' : 'DUPLICATE'}] eden "${pair.eden.title}" (${pair.eden.id})`);
+        ctx.print(`               ↔ holy "${pair.holy.title}" (${pair.holy.id})`);
+        if (verdict.reason) ctx.print(`    model note: ${String(verdict.reason).slice(0, 300)}`);
+        if (verdict.suggestion) ctx.print(`    model suggests: ${String(verdict.suggestion).slice(0, 300)}`);
+        const choice = await chooseOption(ctx, [
+          `Stamp Eden supersededBy=holy:${pair.holy.id} (Holy wins; Eden kept but retired from retrieval)`,
+          `Delete the Eden entry "${pair.eden.id}" (Holy wins; Eden removed)`,
+          `Merge Eden's unique content into the Holy entry (REWRITES Holy "${pair.holy.id}")`,
+          `Skip — keep both as-is`,
+        ]);
+        if (choice === 1) {
+          const entry = await readKnowledge(p.id, 'eden', pair.eden.id);
+          if (entry) {
+            const updated = {
+              ...entry,
+              supersededBy: `holy:${pair.holy.id}`,
+              supersededAt: new Date().toISOString(),
+              intro: `[Superseded by holy:${pair.holy.id} — Holy Space takes precedence; follow the Holy entry "${pair.holy.title}" instead.]\n\n${entry.intro || ''}`,
+            };
+            await writeKnowledge(p.id, 'eden', updated);
+            const fresh = await readKnowledge(p.id, 'eden', pair.eden.id);
+            if (fresh && rt) rt.reloadKnowledge?.(fresh, 'eden');
+            totalStamps++;
+            dirty = true;
+            ctx.print(`    stamped eden "${pair.eden.id}" → supersededBy holy:${pair.holy.id}`);
+          }
+        } else if (choice === 2) {
+          if (await deleteKnowledge(p.id, 'eden', pair.eden.id)) {
+            totalRemoved++;
+            dirty = true;
+            ctx.print(`    deleted eden "${pair.eden.id}"`);
+          }
+        } else if (choice === 3) {
+          if (!verdict.merged || !verdict.merged.intro) {
+            ctx.print(`    no merged content provided by the model — nothing to merge. Use option 1 or 2 instead.`);
+          } else {
+            printHolyMergePreview(ctx, pair.holy, verdict);
+            const ok = await ctx.confirm(`Rewrite Holy "${pair.holy.id}" with the merged content? (y/N) `);
+            if (ok) {
+              const holyEntry = await readKnowledge(p.id, 'holy', pair.holy.id);
+              if (holyEntry) {
+                const updated = {
+                  ...holyEntry,
+                  title: verdict.merged.title || holyEntry.title,
+                  intro: verdict.merged.intro,
+                  keyFiles: uniqList([holyEntry, pair.eden], 'keyFiles'),
+                  keySymbols: uniqList([holyEntry, pair.eden], 'keySymbols'),
+                  keywords: uniqList([holyEntry, pair.eden], 'keywords'),
+                  housekeptAt: new Date().toISOString(),
+                  housekeptFrom: [pair.holy.id, pair.eden.id],
+                };
+                await writeKnowledge(p.id, 'holy', updated);
+                const fresh = await readKnowledge(p.id, 'holy', pair.holy.id);
+                if (fresh && rt) rt.reloadKnowledge?.(fresh, 'holy');
+                totalMerged++;
+                dirty = true;
+                ctx.print(`    merged eden content into holy "${pair.holy.id}" (eden entry kept — stamp or delete it separately next).`);
+              }
+            } else {
+              ctx.print(`    Skipped Holy rewrite.`);
+            }
+          }
+        } else {
+          ctx.print(`    skipped.`);
+        }
+      }
+    }
   }
 
+  /* ================= Final: rebuild knowledge indexes if dirty ============ */
   ctx.print(``);
-  ctx.print(`Cleanup complete: ${totalRemoved} removed, ${totalKept} kept.`);
+  if (dirty) {
+    for (const space of (scope === 'all' ? ['holy', 'eden'] : [scope])) {
+      try {
+        const res = await rebuildKnowledgeIndex(p.id, space);
+        ctx.print(`rebuilt ${space} knowledge index (${res.count} entries → ${space}.idx.json)`);
+      } catch (err) {
+        ctx.print(`warning: ${space} knowledge index rebuild failed: ${err.message}`);
+      }
+    }
+    dropRuntime(p.id);          // next query reloads fresh state incl. new idx
+    ctx.noteReloadKb?.();
+  } else {
+    ctx.print(`No changes written — indexes left untouched.`);
+  }
+  ctx.print(`Housekeep complete: ${totalMerged} merged, ${totalStamps} superseded/stamped, ${totalRemoved} removed.`);
 }
+
+/* ------------------------------------------------------------------ */
+/* /kb knowledge housekeep helpers                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Deterministic near-duplicate pre-filter (cheap, no LLM).
+ * Groups entries whose titles mutually contain each other or whose keyword
+ * sets overlap > 0.6 — the exact thresholds used by findHolyConflict /
+ * crossCheckEntries, so housekeep candidates match what the retrieval layer
+ * already considers "the same thing".
+ *
+ * Union-find over pairwise similarity; returns clusters of size >= 2.
+ * Entries already stamped supersededBy are excluded (they are retired by
+ * design, not duplicates to fix). Exported for unit tests.
+ */
+export function clusterSimilarEntries(entries) {
+  const active = entries.filter(e => e && e.id && !e.supersededBy);
+  const parent = new Map(active.map(e => [e.id, e.id]));
+  const find = (x) => {
+    let r = x;
+    while (parent.get(r) !== r) r = parent.get(r);
+    return r;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  const kwSets = new Map(active.map(e => [e.id, new Set((e.keywords || []).map(k => String(k).toLowerCase()))]));
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const a = active[i], b = active[j];
+      if (pairwiseSimilar(a, b, kwSets)) union(a.id, b.id);
+    }
+  }
+  const groups = new Map();
+  for (const e of active) {
+    const root = find(e.id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(e);
+  }
+  return [...groups.values()].filter(g => g.length >= 2);
+}
+
+function pairwiseSimilar(a, b, kwSets) {
+  const at = String(a.title || '').toLowerCase().trim();
+  const bt = String(b.title || '').toLowerCase().trim();
+  if (at && bt && (at.includes(bt) || bt.includes(at))) return true;
+  const ak = kwSets.get(a.id), bk = kwSets.get(b.id);
+  if (ak && bk && ak.size > 0 && bk.size > 0) {
+    let ov = 0;
+    for (const k of ak) if (bk.has(k)) ov++;
+    if (ov / Math.min(ak.size, bk.size) > 0.6) return true;
+  }
+  return false;
+}
+
+/**
+ * Same heuristic as findHolyConflict (lib/agent/graph.js): the first Holy
+ * entry whose title mutually contains the Eden title, or whose keyword sets
+ * overlap > 0.6. Local copy so the slash layer doesn't import agent code.
+ * Exported for unit tests.
+ */
+export function findConflictingHoly(edenEntry, holyEntries) {
+  const eTitle = String(edenEntry.title || '').toLowerCase();
+  const eKws = new Set((edenEntry.keywords || []).map(k => String(k).toLowerCase()));
+  for (const h of holyEntries) {
+    const hTitle = String(h.title || '').toLowerCase();
+    if (eTitle && hTitle && (eTitle.includes(hTitle) || hTitle.includes(eTitle))) return h;
+    const hKws = new Set((h.keywords || []).map(k => String(k).toLowerCase()));
+    if (eKws.size > 0 && hKws.size > 0) {
+      let ov = 0;
+      for (const k of eKws) if (hKws.has(k)) ov++;
+      if (ov / Math.min(eKws.size, hKws.size) > 0.6) return h;
+    }
+  }
+  return null;
+}
+
+/**
+ * Ask the LLM whether a cluster of same-space entries is duplicate / similar
+ * / distinct, and (when not distinct) produce one merged entry covering all
+ * members. Returns null when the call or the parse fails.
+ */
+async function judgeCluster(llm, cluster) {
+  const sys = `You are the maintainer of a software project's knowledge base. You judge whether knowledge entries in the SAME space cover the same ground, and when they do, you fuse them into ONE definitive entry.
+
+Reply with ONLY a JSON object (no markdown fences, no prose):
+{
+  "relation": "duplicate" | "similar" | "distinct",
+  "reason": "one short sentence",
+  "merged": {
+    "title": "best title for the fused entry",
+    "intro": "fused intro: 2-5 paragraphs of prose covering ALL unique facts, file paths, symbols and commands from every member. Do not lose information; drop only true redundancy.",
+    "keywords": ["union of the most useful search keywords"]
+  }
+}
+
+"merged" may be null when relation is "distinct".
+duplicate = same topic, substantially the same content.
+similar   = same topic, complementary content worth fusing.
+distinct  = different topics that merely share vocabulary.`;
+  const user = `Entries in the same space:\n\n${cluster.map(e =>
+    `## ${e.id} — ${e.title || ''}\nkeywords: ${(e.keywords || []).join(', ') || '(none)'}\nkeyFiles: ${(e.keyFiles || []).join(', ') || '(none)'}\nkeySymbols: ${(e.keySymbols || []).join(', ') || '(none)'}\nintro:\n${String(e.intro || '').slice(0, 2500)}`
+  ).join('\n\n')}\n\nReply with ONLY the JSON object.`;
+  const raw = await streamToText(llm, sys, user);
+  if (raw == null) return null;
+  const parsed = parseJsonObjectLoose(raw);
+  if (!parsed || !['duplicate', 'similar', 'distinct'].includes(parsed.relation)) return null;
+  return parsed;
+}
+
+/**
+ * Ask the LLM whether an Eden entry conflicts with / duplicates a Holy entry
+ * or is genuinely complementary. Returns null on call/parse failure.
+ */
+async function judgeConflict(llm, { eden, holy }) {
+  const sys = `You are the maintainer of a software project's knowledge base. It has two spaces: HOLY (stable, hand-curated, authoritative) and EDEN (auto-updated, may drift). You judge the relationship between one Eden entry and one Holy entry.
+
+Reply with ONLY a JSON object (no markdown fences, no prose):
+{
+  "relation": "conflict" | "duplicate" | "complementary",
+  "reason": "one short sentence",
+  "suggestion": "one short sentence recommending the best resolution for a human",
+  "merged": {
+    "title": "title for the fused HOLY entry (Holy's title preferred)",
+    "intro": "fused intro that keeps ALL of Holy's content and adds any unique facts from Eden. Holy is the backbone; Eden contributes extras.",
+    "keywords": ["union of the most useful search keywords"]
+  }
+}
+
+"merged" is only meaningful when relation is conflict or duplicate.
+conflict      = they state different/incompatible things about the same topic.
+duplicate     = Eden merely restates Holy (nothing unique worth keeping).
+complementary = different topics / genuinely additive — keep both.`;
+  const user = `## EDEN entry "${eden.id}" — ${eden.title || ''}\nkeywords: ${(eden.keywords || []).join(', ') || '(none)'}\nintro:\n${String(eden.intro || '').slice(0, 2500)}\n\n## HOLY entry "${holy.id}" — ${holy.title || ''}\nkeywords: ${(holy.keywords || []).join(', ') || '(none)'}\nintro:\n${String(holy.intro || '').slice(0, 2500)}\n\nReply with ONLY the JSON object.`;
+  const raw = await streamToText(llm, sys, user);
+  if (raw == null) return null;
+  const parsed = parseJsonObjectLoose(raw);
+  if (!parsed || !['conflict', 'duplicate', 'complementary'].includes(parsed.relation)) return null;
+  return parsed;
+}
+
+/** Run one (system, user) LLM call and collect the text channel. Null on error. */
+async function streamToText(llm, sys, user) {
+  if (!llm) return null;
+  let raw = '';
+  try {
+    for await (const evt of llm.stream([
+      { role: 'system', content: sys },
+      { role: 'user', content: user },
+    ], { temperature: 0.1, maxChars: 16384, enableReasoning: false, timeoutMs: 180000 })) {
+      if (evt.type === 'delta') raw += evt.text;
+    }
+  } catch {
+    return null;
+  }
+  return raw;
+}
+
+/** Extract the first JSON object from raw LLM output (fences tolerated). */
+function parseJsonObjectLoose(raw) {
+  const s = String(raw || '');
+  try { const v = JSON.parse(s); if (v && typeof v === 'object') return v; } catch {}
+  const fenced = extractFencedBlocks(s);
+  for (const cand of [fenced, s]) {
+    if (!cand || !cand.trim()) continue;
+    const m = cand.match(/\{[\s\S]*\}/);
+    if (m) {
+      try {
+        const v = JSON.parse(m[0]);
+        if (v && typeof v === 'object') return v;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+/**
+ * Numeric menu prompt (1..N). Uses ctx.choose when the host provides one
+ * (interactive REPL); otherwise prints the menu and defaults to the LAST
+ * option (skip) — housekeep never mutates without an explicit interactive
+ * decision. Returns the chosen 1-based number.
+ */
+async function chooseOption(ctx, options, fallback = null) {
+  const chooser = ctx.choose;
+  if (typeof chooser === 'function') {
+    const idx = await chooser(`  choose [1-${options.length}] (Enter = ${options.length}): `, options);
+    if (Number.isInteger(idx) && idx >= 1 && idx <= options.length) return idx;
+    if (idx == null) return fallback == null ? options.length : fallback;
+    // defensive: a host may return the raw line — try parsing it
+    const n = parseInt(String(idx).trim(), 10);
+    if (Number.isInteger(n) && n >= 1 && n <= options.length) return n;
+    return fallback == null ? options.length : fallback;
+  }
+  ctx.print(`    resolution options:`);
+  options.forEach((o, i) => ctx.print(`      ${i + 1}. ${o}`));
+  ctx.print(`    (non-interactive session — defaulting to option ${options.length})`);
+  return fallback == null ? options.length : fallback;
+}
+
+/**
+ * The cluster member the merged entry inherits id/createdAt from: the oldest
+ * entry wins (stable ids), tie-break by id for determinism.
+ */
+function pickPrimary(cluster) {
+  const sorted = [...cluster].sort((a, b) =>
+    String(a.createdAt || '').localeCompare(String(b.createdAt || '')) || String(a.id).localeCompare(String(b.id)));
+  return sorted[0];
+}
+
+/** Union of a list-field across entries, order-preserving, case-insensitive dedup. */
+function uniqList(entries, field) {
+  const out = [];
+  const seen = new Set();
+  for (const e of entries || []) {
+    for (const v of (Array.isArray(e?.[field]) ? e[field] : [])) {
+      const s = String(v);
+      const key = s.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); out.push(s); }
+    }
+  }
+  return out;
+}
+
+function printMergedPreview(ctx, verdict, cluster) {
+  ctx.print(`    merged title: ${verdict.merged.title}`);
+  const intro = String(verdict.merged.intro || '');
+  ctx.print(`    merged intro (${intro.length} chars): ${intro.slice(0, 240).replace(/\n/g, ' ')}${intro.length > 240 ? '...' : ''}`);
+  if (verdict.merged.keywords?.length) {
+    ctx.print(`    merged keywords: ${verdict.merged.keywords.join(', ')}`);
+  }
+  ctx.print(`    replaces: ${cluster.map(e => e.id).join(', ')}`);
+}
+
+function printHolyMergePreview(ctx, holy, verdict) {
+  ctx.print(`    new Holy title: ${verdict.merged.title || holy.title}`);
+  const intro = String(verdict.merged.intro || '');
+  ctx.print(`    new Holy intro (${intro.length} chars): ${intro.slice(0, 240).replace(/\n/g, ' ')}${intro.length > 240 ? '...' : ''}`);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* /kb code — the project Supreme Code (hk2-supreme-code) management    */
@@ -2654,6 +3073,13 @@ function parseFlags(tokens) {
 
 // Exposed for unit tests (test/learn_knowledge.test.js). These are pure
 // helpers used by /kb knowledge learn; not part of the public CLI surface.
+/** Pure helpers of /kb knowledge housekeep, exposed for unit tests
+ *  (test/kb_housekeep.test.js). Not part of the public CLI surface. */
+export const __housekeepTest = {
+  clusterSimilarEntries,
+  findConflictingHoly,
+};
+
 export const __learnTest = {
   isLearnableExt,
   walkLearnFiles,
