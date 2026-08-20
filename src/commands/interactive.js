@@ -3477,7 +3477,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
 
   const space0 = parsed.space === 'eden' ? 'eden' : 'holy';
   let space = space0;
-  const id = String(parsed.id || 'learned').replace(/[^A-Za-z0-9_.-]/g, '_');
+  let id = String(parsed.id || 'learned').replace(/[^A-Za-z0-9_.-]/g, '_');
   // The supreme-code entry is permanent and managed ONLY via /kb code add|del.
   // The learn flow must never overwrite it — not even with user confirmation.
   {
@@ -3499,9 +3499,113 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
     autoLearned: true,
   };
 
+  // ================= Validation against the existing KB =================
+  // Before any write, check the KB for (a) the same meaning (skip — no
+  // re-learning), (b) a related entry this knowledge should UPDATE in
+  // place (merge onto it), (c) a direct contradiction (conflict — Holy
+  // conflicts are ALWAYS decided by the user; Eden conflicts follow the
+  // validator's winner + stated reason), or (d) nothing related (new —
+  // when related entries exist, state why we are NOT updating them).
+  // Best-effort: any validation failure falls through as 'new' so the
+  // normal per-space confirmation path still runs. Gate:
+  // HK2_KB_LEARN_VALIDATE (default on, set 0 to disable).
+  let preApproved = false;
+  let validateInfo = null;
+  if (envFlag('HK2_KB_LEARN_VALIDATE', 1)) {
+    const { listKnowledge } = await import('../../lib/store/kb_store.js');
+    const { findCandidateEntries, validateLearnedEntry } = await import('../../lib/agent/kb_validate.js');
+    const holyList = await listKnowledge(session.project.id, 'holy').catch(() => []);
+    // Eden entries stamped supersededBy="holy:*" are RETIRED (Holy takes
+    // precedence — the same exclusion buildRequestGraph applies). Never merge
+    // onto or conflict with a retired entry: writing it back would silently
+    // strip the stamp and resurrect it into retrieval.
+    const edenList = (await listKnowledge(session.project.id, 'eden').catch(() => []))
+      .filter(e => !e.supersededBy);
+    const candidates = findCandidateEntries(record, holyList, edenList);
+    if (candidates.length > 0) {
+      ctx.print('');
+      ctx.print(style.dim(`[kb learn validate] ${candidates.length} related entr${candidates.length === 1 ? 'y' : 'ies'} found (${candidates.slice(0, 3).map(c => `${c.space}:${c.entry.id}`).join(', ')}${candidates.length > 3 ? ' ...' : ''}) — validating...`));
+    }
+    const verdict = await validateLearnedEntry(session.llm, record, candidates, { timeoutMs: 60000 });
+    validateInfo = { validation: verdict.verdict, validatedAgainst: verdict.targetId };
+
+    if (verdict.verdict === 'duplicate') {
+      // Same or essentially the same meaning already in the KB — skip the
+      // write entirely to avoid duplicate learning.
+      ctx.print(`[kb learn] skipped — the KB already contains the same knowledge ("${verdict.targetId}").`);
+      ctx.print(`  reason: ${verdict.reason || '(not provided)'}`);
+      session.kbLearnHandledAt = Date.now();
+      return;
+    }
+
+    const cand = candidates.find(c => c.entry.id === verdict.targetId);
+
+    if (verdict.verdict === 'update' && cand) {
+      // Related entry covers the same topic — merge onto it instead of
+      // creating a near-identical sibling. The write keeps the existing
+      // entry's id + space; createdAt is carried over explicitly below
+      // (writeKnowledge only preserves it when the record already has one).
+      ctx.print(`[kb learn validate] "${verdict.targetId}" covers the same topic — merging into it instead of creating a sibling entry.`);
+      ctx.print(`  reason: ${verdict.reason || '(not provided)'}`);
+      id = cand.entry.id;
+      record.id = cand.entry.id;
+      space = cand.space;
+      record.space = cand.space;
+      record.title = cand.entry.title || record.title;
+      record.intro = verdict.mergedIntro;
+      record.createdAt = cand.entry.createdAt; // keep the original creation time
+      record.keywords = [...new Set([...(cand.entry.keywords || []), ...record.keywords])];
+      record.keyFiles = [...new Set([...(cand.entry.keyFiles || []), ...record.keyFiles])];
+      record.keySymbols = [...new Set([...(cand.entry.keySymbols || []), ...record.keySymbols])];
+      record.updatedByLearn = true;
+    } else if (verdict.verdict === 'conflict' && cand) {
+      // Direct contradiction with an existing entry.
+      ctx.print(`${style.warning(style.ICON.warn + ' [kb learn validate]')} the new entry CONFLICTS with ${cand.space}:"${verdict.targetId}":`);
+      ctx.print(`  existing: ${(cand.entry.intro || '').replace(/\s+/g, ' ').slice(0, 160)}${(cand.entry.intro || '').length > 160 ? '...' : ''}`);
+      ctx.print(`  proposed: ${(record.intro || '').replace(/\s+/g, ' ').slice(0, 160)}${(record.intro || '').length > 160 ? '...' : ''}`);
+      ctx.print(`  validator verdict: ${verdict.conflictWinner === 'new' ? 'the NEW entry wins' : 'the EXISTING entry wins'}. reason: ${verdict.reason || '(not provided)'}`);
+      if (cand.space === 'holy') {
+        // Holy conflicts are ALWAYS decided by the user — Holy Space is
+        // the source of truth and every write needs explicit approval.
+        const apply = await ctx.confirm(`Update holy entry "${verdict.targetId}" with the new knowledge (new wins)? (y/N) `);
+        if (!apply) {
+          ctx.print('[kb learn] skipped — keeping the existing Holy entry (original wins).');
+          session.kbLearnHandledAt = Date.now();
+          return;
+        }
+        id = cand.entry.id;
+        record.id = cand.entry.id;
+        space = 'holy';
+        record.space = 'holy';
+        record.title = cand.entry.title || record.title;
+        record.createdAt = cand.entry.createdAt; // keep the original creation time
+        record.updatedByLearn = true;
+        validateInfo.conflictResolvedBy = 'user';
+        preApproved = true; // the user just approved this exact write
+      } else if (verdict.conflictWinner === 'existing') {
+        ctx.print('[kb learn] skipped — the existing entry wins the conflict (the new extraction looked stale or wrong).');
+        session.kbLearnHandledAt = Date.now();
+        return;
+      } else {
+        // Eden-vs-Eden, new wins: write the new entry and surface the old
+        // one for manual cleanup (no auto-supersede across eden entries).
+        ctx.print(`  The new entry is written; the contradicting eden entry "${verdict.targetId}" is kept — review it with /kb knowledge show and remove via /kb knowledge del if stale.`);
+      }
+    } else if (candidates.length > 0) {
+      // verdict new, but related entries exist — state why we are NOT
+      // updating them (required explanation for not updating in place).
+      ctx.print(style.dim(`[kb learn validate] creating a NEW entry — not updating the related entr${candidates.length === 1 ? 'y' : 'ies'} (${candidates.slice(0, 3).map(c => `${c.space}:${c.entry.id}`).join(', ')}).`));
+      ctx.print(style.dim(`  reason: ${verdict.reason || '(no reason provided)'}`));
+    }
+  }
+
   // Per-space policy
   let commit = false;
   if (space === 'holy') {
+    if (preApproved) {
+      // Conflict path: the user already approved this exact write above.
+      commit = true;
+    } else {
     // Holy ALWAYS prompts — even with HK2_ENABLE_AUTO_LEARN=1.
     // y/N/E tri-state (per the KB-priority rule): E saves this NEW entry to
     // Eden instead of Holy. Only offered when the id does NOT already exist
@@ -3531,6 +3635,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
     } else {
       commit = answer === true;
     }
+    } // end non-preApproved holy path
   } else {
     // Eden: auto-commit if autoLearn, else prompt
     if (autoLearn) {
@@ -3562,7 +3667,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
   ctx.print(`[kb learn] saved ${space} entry "${id}": ${record.title}`);
   ctx.print(`            path: ${p}`);
   session.kbLearnHandledAt = Date.now();
-  await session.transcript?.logMeta('learned_knowledge', { id, space, title: record.title });
+  await session.transcript?.logMeta('learned_knowledge', { id, space, title: record.title, ...(validateInfo || {}) });
 }
 
 

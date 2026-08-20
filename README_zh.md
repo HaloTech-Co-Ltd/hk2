@@ -467,6 +467,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index 空间）。 | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden 空间。无论此标志如何，Holy 空间始终提示 y/N。 | `0` |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 设为正整数分钟数时，若本会话任务的知识捕获在该时间窗口内已被处理（代理通过 `kb_save_knowledge` 保存/婉拒、已回答的轮末提案、或抽取模型的跳过），则跳过轮末的 `[kb learn]` 追问。该锚点通过会话记录在 `--resume` 后恢复。当代理本轮已通过 `kb_save_knowledge` 保存知识时，无论此变量如何都跳过 `[kb learn]`。 | `0`（关闭） |
+| `HK2_KB_LEARN_VALIDATE` | 为 1 时，轮末 `[kb learn]` 写盘前会先对照现有 KB 条目校验（id/标题/关键词预筛 + 一次语义 LLM 判定）：含义基本一致的内容直接跳过（避免重复学习）；相近条目通过合并 intro 原地更新；直接冲突时——与 Holy 冲突必须由用户裁决，与 Eden 冲突按校验器的胜负执行并打印理由；在相近条目旁边新建时也会打印不更新原条目的理由。校验是尽力而为：任何失败都降级为普通新条目流程。 | `1` |
 | `HK2_ENABLE_AUTOCOMPACT` | 为 1 时，当已使用的上下文长度达到模型上下文窗口的 `HK2_AUTOCOMPACT_PCTUSED`% 后，hk2 会在下一轮开始时自动压缩历史对话。压缩会原样保留最近 4 轮 user/assistant，并将其之前的对话（含工具结果）用 LLM 总结为一条 system 消息；LLM 失败时回退为朴素截断。仅在轮次边界触发，绝不中断正在进行的动作。 | `0` |
 | `HK2_AUTOCOMPACT_PCTUSED` | 1-100 的整数，上下文使用率触发阈值。仅当已使用的上下文长度 ≥ `模型上下文窗口 × HK2_AUTOCOMPACT_PCTUSED / 100` 时才触发自动压缩。 | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
