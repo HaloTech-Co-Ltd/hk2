@@ -569,7 +569,8 @@ async function knowledgeShowKb(rest, ctx) {
  * Usage:
  *   /kb knowledge learn [--space=eden|holy] [--file=<path>] [--base-dir=<dir>]
  *                       [--per-batch-chars=N] [--dry-run] [--no-survey]
- *                       [--plan-timeout-ms=N] [instructions...]
+ *                       [--model=<provider>/<model-id>] [--plan-timeout-ms=N]
+ *                       [instructions...]
  *
  *   --space           eden | holy (default eden). In CODE mode the target is
  *                     always Eden (stable Holy knowledge is curated by hand).
@@ -583,6 +584,11 @@ async function knowledgeShowKb(rest, ctx) {
  *   --per-batch-chars LLM context budget per execution batch (default 100000).
  *   --dry-run         show proposed entries but do NOT write.
  *   --no-survey       CODE mode: skip the Phase 0 project-wide survey entries.
+ *   --model           <provider>/<model-id> from the model registry
+ *                     (validated via resolveModelRef). Drives ALL learn LLM
+ *                     calls — Phase 0 survey, Phase 1 planning, Phase 2
+ *                     extraction and entry validation. Default: the current
+ *                     session model (ctx.llm). Invalid refs abort before work.
  *   --plan-timeout-ms Phase 1 planning call timeout in ms (default 300000; env
  *                     equivalent HK2_PLAN_TIMEOUT_MS). Slow providers (e.g.
  *                     reasoning models on large file maps) can exceed a fixed
@@ -603,11 +609,36 @@ async function knowledgeShowKb(rest, ctx) {
 async function knowledgeLearnKb(rest, ctx) {
   const p = await getProjectOrFail(ctx);
   if (!p) return;
-  if (!ctx.llm) {
-    ctx.print(`No LLM configured. Run /model add + /model set-default first.`);
+  const flags = parseFlags(rest);
+
+  // ---- Model resolution: --model=<provider/model-id> wins, else ctx.llm ----
+  // The override drives EVERY learn LLM call: Phase 0 survey, Phase 1
+  // planning, Phase 2 extraction and entry validation. ctx.streamLLM is
+  // bound to the session model (session.llm.stream with status-bar token
+  // tracking), so it is re-pointed at the resolved client's stream().
+  const wrapStream = (client) => async function* (messages, opts = {}) {
+    yield* client.stream(messages, opts);
+  };
+  const modelRef = typeof flags.model === 'string' ? flags.model : '';
+  let llm = ctx.llm || null;
+  let streamLLM = ctx.streamLLM || null;
+  if (modelRef) {
+    try {
+      const got = await resolveCodeGenLlm(ctx, modelRef);
+      llm = got.llm;
+      streamLLM = wrapStream(llm);
+      ctx.print(`[kb knowledge learn] model: ${modelRef}`);
+    } catch (err) {
+      ctx.print(`Error: ${err.message}`);
+      return;
+    }
+  }
+  if (!llm) {
+    ctx.print(`No LLM configured. Run /model add + /model set-default first, or pass --model=<provider>/<model-id>.`);
     return;
   }
-  const flags = parseFlags(rest);
+  // Defensive: a host ctx may carry llm without streamLLM (tests / embedders).
+  if (!streamLLM) streamLLM = wrapStream(llm);
   const space = flags.space === 'holy' ? 'holy' : flags.space === 'eden' ? 'eden' : '';
   const perBatchChars = parseInt(flags['per-batch-chars'], 10) || 100000;
   const dryRun = !!flags['dry-run'];
@@ -763,7 +794,7 @@ async function knowledgeLearnKb(rest, ctx) {
     const callExtract = async (enableReasoning) => {
       let raw = '';
       let rawReasoning = '';
-      for await (const evt of ctx.streamLLM(
+      for await (const evt of streamLLM(
         [
           { role: 'system', content: extractSysPrompt },
           { role: 'user', content: extractUserPrompt },
@@ -866,7 +897,7 @@ async function knowledgeLearnKb(rest, ctx) {
       }
 
       const candidates = findCandidateEntries(record, existingHoly.concat(pendingHoly), existingEden.concat(pendingEden));
-      const verdict = await validateLearnedEntry(ctx.llm, record, candidates, { timeoutMs: 60000 });
+      const verdict = await validateLearnedEntry(llm, record, candidates, { timeoutMs: 60000 });
       const cand = candidates.find(c => c.entry.id === verdict.targetId);
       if (cand && isSupremeCode(cand.entry.id)) {
         // The permanent Supreme Code entry can never be a merge/conflict
@@ -1116,7 +1147,7 @@ ${manifest}`;
     const planCall = async (enableReasoning) => {
       let raw = '';
       let reasoning = '';
-      for await (const evt of ctx.streamLLM(
+      for await (const evt of streamLLM(
         [
           { role: 'system', content: planSysPrompt },
           { role: 'user', content: `Plan the study of these ${fileCount} document(s).${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },
@@ -1286,8 +1317,8 @@ ${manifest}`;
         for (const sym of data.symbols || []) allSymbols.push(sym);
       }
       await generateSurveyEntries(p.id, {
-        llm: ctx.llm,
-        streamLLM: ctx.streamLLM,
+        llm,
+        streamLLM,
         allSymbols,
         meta,
         onProgress: (which) => ctx.print(`  [survey] generating ${which}...`),
@@ -1362,7 +1393,7 @@ ${existingEden.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n') || '(no
   const planCall = async (enableReasoning) => {
     let raw = '';
     let reasoning = '';
-    for await (const evt of ctx.streamLLM(
+    for await (const evt of streamLLM(
       [
         { role: 'system', content: planSysPrompt },
         { role: 'user', content: `Project: ${p.name}\n\nPlan the deep study of these ${fileCount} ${unitWord}.${userPrompt ? `\nUser instructions: ${userPrompt}` : ''}` },

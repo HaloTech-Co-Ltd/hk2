@@ -220,7 +220,7 @@ hk2
 | `/kb knowledge list [--space=holy\|eden]` | 列出知识条目 |
 | `/kb knowledge show <id>` | 显示条目全文（同时检索两个空间） |
 | `/kb knowledge add [--space=holy\|eden] [--id=...] --title="..." [--intro="..." \| --intro-file=PATH] [--key-files=...] [--key-symbols=...] [--keywords=...]` | 手动添加条目 |
-| `/kb knowledge learn [--space=eden\|holy] [--file=路径] [--base-dir=目录] [--per-batch-chars=N] [--dry-run] [--no-survey] [--plan-timeout-ms=N]` | 统一的深度研读命令。代码模式（裸调用，或 `--base-dir` 匹配已索引子目录）：两阶段研读已索引源码；阶段 0 写入三个项目级概览条目；阶段 1 规划主题批次（对 postgres 等大项目按规模自适应），阶段 2 逐批执行。LLM 计划不可用时回退到确定性目录分组——绝不中断。文档模式（`--file` 或未索引的 `--base-dir`）：深度研读 Markdown / PDF / Word / PowerPoint / 文本文档并写入 `--space`。旧别名 `init`/`bootstrap`/`scan` 路由到此处（全项目代码模式）。 |
+| `/kb knowledge learn [--space=eden\|holy] [--file=路径] [--base-dir=目录] [--per-batch-chars=N] [--dry-run] [--no-survey] [--model=<provider>/<model-id>] [--plan-timeout-ms=N]` | 统一的深度研读命令；`--model` 用给定注册表模型驱动全部学习 LLM 调用（阶段 0 概览 / 阶段 1 规划 / 阶段 2 抽取 / 校验），替代当前会话模型。代码模式（裸调用，或 `--base-dir` 匹配已索引子目录）：两阶段研读已索引源码；阶段 0 写入三个项目级概览条目；阶段 1 规划主题批次（对 postgres 等大项目按规模自适应），阶段 2 逐批执行。LLM 计划不可用时回退到确定性目录分组——绝不中断。文档模式（`--file` 或未索引的 `--base-dir`）：深度研读 Markdown / PDF / Word / PowerPoint / 文本文档并写入 `--space`。旧别名 `init`/`bootstrap`/`scan` 路由到此处（全项目代码模式）。 |
 | `/kb knowledge export <eden\|holy\|all> <path>` | 将条目导出为 JSON 文件（版本 2 格式，每个条目带 `space` 标签） |
 | `/kb knowledge import <path> [eden\|holy\|adaptive] [--overwrite]` | 从 JSON 导入条目。`adaptive`（自适应）会按条目原始空间路由。导入到 Holy 始终提示 y/N。 |
 | `/kb knowledge housekeep <eden\|holy\|all> [--model=<provider>/<model-id>]` | LLM 辅助：移除破损条目、合并重复/相近条目（y/N 确认）；`all` 模式下逐对裁决 Eden↔Holy 冲突。绝不改动 supreme-code；有写入则重建知识索引。 |

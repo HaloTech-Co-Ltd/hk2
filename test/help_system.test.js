@@ -58,7 +58,7 @@ test('/kb knowledge help learn documents every flag the implementation parses', 
   // implementation, not from the help text, so adding a parsed flag without
   // documenting it fails here.
   const learnFlags = ['space', 'file', 'base-dir', 'per-batch-chars', 'dry-run',
-    'no-survey', 'plan-timeout-ms'];
+    'no-survey', 'model', 'plan-timeout-ms'];
   const topic = subcommandHelp('knowledge', 'learn');
   assert.ok(topic, 'subcommandHelp(knowledge, learn) must resolve');
   const documented = flagsIn(topic);
@@ -79,7 +79,7 @@ test('learn flags documented in help are actually accepted by parseFlags', () =>
   const documented = flagsIn(lines.slice(start + 1, end));
   // `trailing tokens` documents free text, not a flag.
   for (const f of ['space', 'file', 'base-dir', 'per-batch-chars', 'dry-run',
-    'no-survey', 'plan-timeout-ms']) {
+    'no-survey', 'model', 'plan-timeout-ms']) {
     assert.ok(documented.has(f), `"learn flags:" block must list --${f}`);
     const parsed = parseFlags([`--${f}=x`, 'instruction words']);
     assert.ok(f in parsed, `parseFlags must accept --${f}`);

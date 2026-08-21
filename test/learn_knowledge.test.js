@@ -957,3 +957,111 @@ test('knowledgeLearnKb validation: update merge preserves spaceChangedAt on a sa
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+/* ------------------------- --model override support ---------------------
+ *
+ * /kb knowledge learn [--model=<provider>/<model-id>]: without the flag the
+ * current session model (ctx.llm / ctx.streamLLM) is used; with it, ALL
+ * learn LLM calls (Phase 1 planning, Phase 2 extraction, validation) go
+ * through a fresh LLMClient resolved from the model registry — so the
+ * command also works with ctx.llm = null. Invalid refs abort before study.
+ * ------------------------------------------------------------------------ */
+
+test('knowledgeLearnKb --model with unknown ref: friendly error, no study started', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-model-bad-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    await ensureProject(tmpDir);
+    const ctx = makeMockCtx({ planOutput: 'topic | batch | a.md\n', extractOutput: '[]' });
+    await cmdKb(['knowledge', 'learn', '--model=nope/missing-model', '--file=' + path.join(tmpDir, 'a.md'), '--dry-run'], ctx);
+    const out = ctx.prints.join('\n');
+    assert.ok(/model not found in registry: nope\/missing-model|invalid --model ref/i.test(out), 'model error surfaced');
+    assert.ok(!/Deep-studying/.test(out), 'study must not start on a bad --model ref');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb --model with malformed ref (no provider/model split) is rejected', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-model-fmt-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    await ensureProject(tmpDir);
+    const ctx = makeMockCtx({ planOutput: '', extractOutput: '[]' });
+    await cmdKb(['knowledge', 'learn', '--model=garbage', '--file=' + path.join(tmpDir, 'a.md'), '--dry-run'], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /invalid --model ref: garbage/);
+    assert.ok(!/Deep-studying/.test(out), 'study must not start on a malformed --model ref');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb --model happy path: drives plan+extract via the registry model, works with ctx.llm=null', async () => {
+  const { createServer } = await import('node:http');
+  // Local OpenAI-style SSE mock. Requests are captured so the test can prove
+  // the WIRE model code (the `name` field) was sent, not the registry id.
+  const requests = [];
+  let call = 0;
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      call++;
+      requests.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(body) });
+      const payload = call === 1
+        ? { choices: [{ delta: { content: 'topic | batch | a.md' } }] }   // Phase 1 plan
+        : { choices: [{ delta: { content: JSON.stringify([{
+            id: 'model-learned', title: 'Model Note', intro: 'Extracted via the override model.',
+            keyFiles: ['a.md'], keySymbols: [], keywords: ['override'],
+          }]) } }] };                                                       // Phase 2 extract
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-model-ok-'));
+  try {
+    const port = server.address().port;
+    await home.saveModels({
+      providers: {
+        testprov: {
+          api: 'openai',
+          baseUrl: `http://127.0.0.1:${port}`,
+          apiKey: 'test-key', // dummy credential for a loopback mock only
+          models: [{ id: 'learn-model', name: 'wire-learn-model', contextWindow: 128000 }],
+        },
+      },
+      default: null,
+    });
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    await ensureProject(tmpDir);
+    // ctx.llm/streamLLM absent on purpose: --model must be self-sufficient.
+    const prints = [];
+    const ctx = {
+      llm: null,
+      streamLLM: null,
+      print: (s) => { prints.push(String(s)); },
+      setPhase: () => {},
+      confirm: async () => true,
+      rt: null,
+    };
+    await cmdKb(['knowledge', 'learn', '--model=testprov/learn-model', '--file=' + path.join(tmpDir, 'a.md'), '--dry-run'], ctx);
+    const out = prints.join('\n');
+    assert.match(out, /\[kb knowledge learn\] model: testprov\/learn-model/);
+    assert.match(out, /Deep-studying 1 file/);
+    assert.match(out, /\[ACCEPT\] model-learned/);
+    // Both LLM calls hit the mock with the WIRE model code from `name`.
+    assert.equal(requests.length, 2, 'plan + extract calls expected');
+    for (const r of requests) {
+      assert.equal(r.url, '/v1/chat/completions');
+      assert.equal(r.body.model, 'wire-learn-model', 'wire model must be the registry name, not the id');
+      assert.equal(r.auth, 'Bearer test-key');
+    }
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+    server.close();
+  }
+});
