@@ -425,3 +425,24 @@ test('wiring: HK2_KB_LEARN_VALIDATE=0 disables validation entirely', async () =>
     delete process.env.HK2_KB_LEARN_VALIDATE;
   }
 });
+
+test('wiring: validator targeting hk2-supreme-code is refused (codes must survive)', async () => {
+  const project = await setupRealProject();
+  const { ensureSupremeCode, writeSupremeCode } = await import('../lib/store/supreme_code.js');
+  await ensureSupremeCode(project.id);
+  await writeSupremeCode(project.id, ['API密钥严禁出现在代码中'], { createdVia: 'test' });
+  const session = mockSession({ responses: [
+    // Extraction proposes an unrelated id — the redirect onto the supreme code
+    // would come from the validator verdict, not the proposal itself.
+    JSON.stringify({ space: 'holy', id: 'governance-notes', title: 'Project Supreme Code', intro: 'Learned governance notes.', keywords: ['supreme', 'code'] }),
+    JSON.stringify({ verdict: 'update', targetId: 'hk2-supreme-code', reason: 'same topic per title containment', conflictWinner: null, mergedIntro: 'Merged governance notes.' }),
+  ] });
+  session.project = project;
+  const ctx = mockCtx({ confirmAnswers: [true, true] }); // /kb update yes, holy merge yes — must STILL be refused
+  await driveLearn(session, ctx);
+  assert.ok(ctx.lines.some(l => l.includes('permanent Supreme Code entry')), 'refusal notice expected');
+  const raw = await readKnowledge(project.id, 'holy', 'hk2-supreme-code');
+  assert.ok(raw, 'supreme-code entry must still exist');
+  assert.deepEqual(raw.codes, ['API密钥严禁出现在代码中'], 'codes array must survive untouched');
+  assert.equal(raw.protected, true, 'protected flag must survive');
+});

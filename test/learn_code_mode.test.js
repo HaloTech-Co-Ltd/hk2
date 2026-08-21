@@ -110,7 +110,7 @@ test('merged learn CODE mode plans + executes batches over indexed files', async
     assert.match(out, /mode=code/);
     assert.match(out, /deep-read: 2 file/);
     assert.match(out, /\[ACCEPT\] lib-summary/);
-    assert.match(out, /\[dry-run\] 1 entries would have been saved to eden/);
+    assert.match(out, /\[dry-run\] 1 entries would have been validated & written/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

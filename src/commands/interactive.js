@@ -3676,6 +3676,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
   if (envFlag('HK2_KB_LEARN_VALIDATE', 1)) {
     const { listKnowledge } = await import('../../lib/store/kb_store.js');
     const { findCandidateEntries, validateLearnedEntry } = await import('../../lib/agent/kb_validate.js');
+    const { isSupremeCode } = await import('../../lib/store/supreme_code.js');
     const holyList = await listKnowledge(session.project.id, 'holy').catch(() => []);
     // Eden entries stamped supersededBy="holy:*" are RETIRED (Holy takes
     // precedence — the same exclusion buildRequestGraph applies). Never merge
@@ -3701,6 +3702,14 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
     }
 
     const cand = candidates.find(c => c.entry.id === verdict.targetId);
+    if (cand && isSupremeCode(cand.entry.id)) {
+      // The permanent Supreme Code entry can never be a merge/conflict
+      // target: a redirected write would drop its `codes` array and the
+      // protected flags. Managed ONLY via /kb code add | /kb code del.
+      ctx.print(`[kb learn] refused: the validator targeted "${cand.entry.id}" — that is the permanent Supreme Code entry, managed only via /kb code add | /kb code del.`);
+      session.kbLearnHandledAt = Date.now();
+      return;
+    }
 
     if (verdict.verdict === 'update' && cand) {
       // Related entry covers the same topic — merge onto it instead of
@@ -3716,6 +3725,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
       record.title = cand.entry.title || record.title;
       record.intro = verdict.mergedIntro;
       record.createdAt = cand.entry.createdAt; // keep the original creation time
+      record.spaceChangedAt = cand.entry.spaceChangedAt; // in-place merge must not reset the space-change time
       record.keywords = [...new Set([...(cand.entry.keywords || []), ...record.keywords])];
       record.keyFiles = [...new Set([...(cand.entry.keyFiles || []), ...record.keyFiles])];
       record.keySymbols = [...new Set([...(cand.entry.keySymbols || []), ...record.keySymbols])];
@@ -3741,6 +3751,7 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
         record.space = 'holy';
         record.title = cand.entry.title || record.title;
         record.createdAt = cand.entry.createdAt; // keep the original creation time
+        record.spaceChangedAt = cand.entry.spaceChangedAt; // in-place update: keep the original space-change time
         record.updatedByLearn = true;
         validateInfo.conflictResolvedBy = 'user';
         preApproved = true; // the user just approved this exact write

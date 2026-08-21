@@ -24,6 +24,8 @@ import os from 'node:os';
 import { parseDocument, isDocFile } from '../lib/parser/doc_parser.js';
 import { __learnTest, cmdKb } from '../src/slash/kb.js';
 import * as home from '../lib/config/home.js';
+import { setCurrentProject } from '../lib/config/home.js';
+import { writeKnowledge, readKnowledge, listKnowledge } from '../lib/store/kb_store.js';
 
 const { isLearnableExt, walkLearnFiles, reconcilePlan, parseFlags, LEARN_DOC_EXTS, chunkDocText, groupByBudget, labelMatches } = __learnTest;
 
@@ -292,6 +294,10 @@ async function ensureProject(sourceDir) {
   // project's sourcePath is informational here; the learn handler resolves
   // --file/--base-dir against the CWD, not sourcePath.
   __registeredProject = await home.registerProject({ sourcePath: sourceDir, name: 'learn-test-' + Date.now() });
+  // getProjectOrFail prefers ctx.getCurrentProject but falls back to the
+  // shared global "current" pointer — set it so KB writes (seeding + learn)
+  // land in THIS project, not whatever test ran before.
+  await setCurrentProject(__registeredProject.id);
   return __registeredProject;
 }
 
@@ -337,7 +343,7 @@ test('knowledgeLearnKb dry-run parses a markdown file and proposes an entry', as
     assert.match(out, /Deep-studying 1 file/);
     assert.match(out, /parsed: 1\/1 files/);
     assert.match(out, /\[ACCEPT\] learned-api/);
-    assert.match(out, /\[dry-run\] 1 entries would have been saved to eden/);
+    assert.match(out, /\[dry-run\] 1 entries would have been validated & written/);
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
@@ -543,7 +549,410 @@ test('knowledgeLearnKb splits a large file into parts and studies every part', a
     // Every part produced a proposal (no silent content loss).
     assert.match(out, /total proposed: 3/);
     assert.match(out, /total accepted: 3/);
-    assert.match(out, /\[dry-run\] 3 entries would have been saved to eden/);
+    assert.match(out, /\[dry-run\] 3 entries would have been validated & written/);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+/* ------- semantic validation wiring: duplicate / update / conflict / new -------
+ *
+ * The /kb knowledge learn flow now runs the same validation pipeline as the
+ * turn-end [kb learn] (lib/agent/kb_validate.js): every proposed entry is
+ * pre-filtered (findCandidateEntries) then judged (validateLearnedEntry).
+ * The mock LLM below plays BOTH roles: plan/extract via ctx.streamLLM, the
+ * validator verdict via ctx.llm.stream (distinguished by its system prompt).
+ * --------------------------------------------------------------------------- */
+
+function makeValidateMockCtx({ planOutput, extractOutput, verdicts = [], confirmAnswers = [] }) {
+  const prints = [];
+  let call = 0;
+  const vq = [...verdicts];
+  const cq = [...confirmAnswers];
+  return {
+    prints,
+    llm: {
+      stream: async function* (messages) {
+        const isValidator = messages?.[0]?.content?.includes('validating a newly-learned knowledge entry');
+        const raw = isValidator
+          ? (vq.length
+            ? vq.shift()
+            : JSON.stringify({ verdict: 'new', targetId: null, reason: 'default', conflictWinner: null, mergedIntro: null }))
+          : '';
+        yield { type: 'delta', text: raw };
+      },
+    },
+    streamLLM: async function* () {
+      call++;
+      if (call === 1) yield { type: 'delta', text: planOutput };
+      else yield { type: 'delta', text: extractOutput };
+    },
+    print: (s) => { prints.push(String(s)); },
+    setPhase: () => {},
+    confirm: async () => (cq.length ? cq.shift() : false),
+    rt: null,
+  };
+}
+
+async function seedEntry(projectId, space, entry) {
+  await writeKnowledge(projectId, space, entry);
+  return readKnowledge(projectId, space, entry.id);
+}
+
+test('knowledgeLearnKb validation: duplicate → skip write, keep original, print reason', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-dup-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    const seed = await seedEntry(p.id, 'eden', {
+      id: 'dup-target', space: 'eden', title: 'Existing API Note',
+      intro: 'Existing note about the API surface.', keywords: ['api', 'note'],
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'dup-prop', title: 'Another API Note', intro: 'Essentially the same API note.',
+        keywords: ['api', 'note'],
+      }]),
+      verdicts: [JSON.stringify({ verdict: 'duplicate', targetId: 'dup-target', reason: 'same meaning as the existing note', conflictWinner: null, mergedIntro: null })],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /\[SKIP\] dup-prop: duplicate of "dup-target"/);
+    assert.match(out, /same meaning as the existing note/);
+    const eden = await listKnowledge(p.id, 'eden');
+    assert.equal(eden.length, 1);
+    assert.equal(eden[0].id, 'dup-target');
+    assert.equal(eden[0].intro, 'Existing note about the API surface.');
+    assert.equal(eden[0].createdAt, seed.createdAt);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: update → merge in place, createdAt preserved', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-upd-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    const seed = await seedEntry(p.id, 'eden', {
+      id: 'up-target', space: 'eden', title: 'CLI Command Catalog',
+      intro: 'Old: lists a few commands.', keywords: ['cli', 'commands'],
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'cli-extra', title: 'CLI Command Catalog v2', intro: 'Freshly extracted command knowledge.',
+        keywords: ['cli', 'commands'], keyFiles: ['a.md'],
+      }]),
+      verdicts: [JSON.stringify({ verdict: 'update', targetId: 'up-target', reason: 'same topic, fresher content', conflictWinner: null, mergedIntro: 'Merged: lists all commands, old and new.' })],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /\[UPDATE\] cli-extra → eden:"up-target" \(merge in place\)/);
+    const merged = await readKnowledge(p.id, 'eden', 'up-target');
+    assert.ok(merged, 'merged entry exists');
+    assert.equal(merged.intro, 'Merged: lists all commands, old and new.');
+    assert.equal(merged.updatedByLearn, true);
+    assert.equal(merged.createdAt, seed.createdAt, 'createdAt must survive the in-place merge');
+    const eden = await listKnowledge(p.id, 'eden');
+    assert.equal(eden.filter(e => e.id === 'cli-extra').length, 0, 'no sibling entry created');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: holy conflict, user DECLINES → original kept', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-hc-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    const seed = await seedEntry(p.id, 'holy', {
+      id: 'h-conflict', space: 'holy', title: 'Deploy Policy',
+      intro: 'Deploy via k8s only.', keywords: ['deploy', 'policy'],
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'h-prop', title: 'Deploy Policy bare metal', intro: 'Deploy on bare metal instead.',
+        keywords: ['deploy', 'policy'],
+      }]),
+      verdicts: [JSON.stringify({ verdict: 'conflict', targetId: 'h-conflict', reason: 'fresh ground truth from docs', conflictWinner: 'new', mergedIntro: null })],
+      // [0] = run-level holy write gate, [1] = the per-entry conflict confirm (declined).
+      confirmAnswers: [true, false],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=holy', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /\[CONFLICT\] h-prop vs holy:"h-conflict"/);
+    assert.match(out, /\[SKIP\] h-prop: keeping the existing Holy entry/);
+    const holy = await readKnowledge(p.id, 'holy', 'h-conflict');
+    assert.equal(holy.intro, 'Deploy via k8s only.');
+    assert.equal(holy.createdAt, seed.createdAt);
+    const list = await listKnowledge(p.id, 'holy');
+    assert.equal(list.filter(e => e.id === 'h-prop').length, 0);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: holy conflict, user APPROVES → holy updated in place', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-hy-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    const seed = await seedEntry(p.id, 'holy', {
+      id: 'h-conflict2', space: 'holy', title: 'Deploy Policy Two',
+      intro: 'Old policy.', keywords: ['deploy', 'policy'],
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'h-prop2', title: 'Deploy Policy Two revised', intro: 'New winning policy.',
+        keywords: ['deploy', 'policy'],
+      }]),
+      verdicts: [JSON.stringify({ verdict: 'conflict', targetId: 'h-conflict2', reason: 'docs supersede the old policy', conflictWinner: 'new', mergedIntro: null })],
+      // [0] = run-level holy write gate, [1] = the per-entry conflict confirm (approved).
+      confirmAnswers: [true, true],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=holy', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const holy = await readKnowledge(p.id, 'holy', 'h-conflict2');
+    assert.equal(holy.intro, 'New winning policy.');
+    assert.equal(holy.updatedByLearn, true);
+    assert.equal(holy.createdAt, seed.createdAt, 'createdAt preserved on holy conflict update');
+    const list = await listKnowledge(p.id, 'holy');
+    assert.equal(list.filter(e => e.id === 'h-prop2').length, 0, 'no sibling created');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: eden conflict existing-wins → skip; new-wins → both kept', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-ec-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    // --- existing wins ---
+    {
+      const p = await ensureProject(tmpDir);
+      await seedEntry(p.id, 'eden', {
+        id: 'e-conflict', space: 'eden', title: 'Cache Strategy',
+        intro: 'Use LRU everywhere.', keywords: ['cache', 'strategy'],
+      });
+      const ctx = makeValidateMockCtx({
+        planOutput: 'topic | batch | a.md\n',
+        extractOutput: JSON.stringify([{
+          id: 'e-prop', title: 'Cache Strategy alt', intro: 'Use FIFO everywhere.',
+          keywords: ['cache', 'strategy'],
+        }]),
+        verdicts: [JSON.stringify({ verdict: 'conflict', targetId: 'e-conflict', reason: 'extraction looks stale', conflictWinner: 'existing', mergedIntro: null })],
+      });
+      await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+      const out = ctx.prints.join('\n');
+      assert.match(out, /\[SKIP\] e-prop: the existing entry wins/);
+      const eden = await listKnowledge(p.id, 'eden');
+      assert.equal(eden.length, 1);
+      assert.equal(eden[0].intro, 'Use LRU everywhere.');
+    }
+    // --- new wins ---
+    {
+      const p2 = await ensureProject(tmpDir);
+      await seedEntry(p2.id, 'eden', {
+        id: 'e-conflict', space: 'eden', title: 'Cache Strategy',
+        intro: 'Use LRU everywhere.', keywords: ['cache', 'strategy'],
+      });
+      const ctx = makeValidateMockCtx({
+        planOutput: 'topic | batch | a.md\n',
+        extractOutput: JSON.stringify([{
+          id: 'e-prop2', title: 'Cache Strategy alt2', intro: 'Use FIFO everywhere (fresh).',
+          keywords: ['cache', 'strategy'],
+        }]),
+        verdicts: [JSON.stringify({ verdict: 'conflict', targetId: 'e-conflict', reason: 'fresh ground truth', conflictWinner: 'new', mergedIntro: null })],
+      });
+      await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+      const out = ctx.prints.join('\n');
+      assert.match(out, /The contradicting eden entry "e-conflict" is kept/);
+      const eden = await listKnowledge(p2.id, 'eden');
+      assert.equal(eden.length, 2, 'both the new entry and the stale one exist for manual review');
+      assert.ok(eden.some(e => e.id === 'e-prop2'));
+    }
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: verdict new with related entries → reason printed for NOT updating', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-new-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    await seedEntry(p.id, 'eden', {
+      id: 'rel-entry', space: 'eden', title: 'API Overview',
+      intro: 'General API overview.', keywords: ['api'],
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'fresh-entry', title: 'API Auth Flow', intro: 'Covers the auth aspect only.',
+        keywords: ['api', 'auth'],
+      }]),
+      verdicts: [JSON.stringify({ verdict: 'new', targetId: null, reason: 'covers a different aspect: auth flow', conflictWinner: null, mergedIntro: null })],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /\[ACCEPT\] fresh-entry.*new, NOT updating eden:rel-entry/);
+    assert.match(out, /reason: covers a different aspect: auth flow/);
+    const eden = await listKnowledge(p.id, 'eden');
+    assert.equal(eden.filter(e => e.id === 'fresh-entry').length, 1);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: retired (supersededBy) eden entries are never merge targets', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-ret-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    // Retired entry: superseded by a holy entry — must be invisible to the
+    // validator (same exclusion buildRequestGraph applies).
+    await writeKnowledge(p.id, 'eden', {
+      id: 'retired-entry', space: 'eden', title: 'Retired Cache Strategy',
+      intro: '[Superseded by holy] stale content.', keywords: ['cache', 'strategy'],
+      supersededBy: 'holy:something', supersededAt: new Date().toISOString(),
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'cache-fresh', title: 'Cache Strategy fresh', intro: 'Brand-new cache knowledge.',
+        keywords: ['cache', 'strategy'],
+      }]),
+      verdicts: [], // no validator call should even happen (no candidates)
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.doesNotMatch(out, /\[UPDATE\]/);
+    assert.doesNotMatch(out, /retired-entry/);
+    const retired = await readKnowledge(p.id, 'eden', 'retired-entry');
+    assert.equal(retired.supersededBy, 'holy:something', 'retirement stamp must survive untouched');
+    const fresh = await readKnowledge(p.id, 'eden', 'cache-fresh');
+    assert.ok(fresh, 'the fresh entry is written as new');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: near-identical proposals in the SAME batch see each other', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-mirror-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([
+        { id: 'first-entry', title: 'Auth Flow', intro: 'Auth flow knowledge.', keywords: ['auth', 'flow'] },
+        { id: 'second-entry', title: 'Auth Flow again', intro: 'The same auth flow knowledge.', keywords: ['auth', 'flow'] },
+      ]),
+      verdicts: [
+        // first-entry has NO candidates (empty KB) → no validator call; the
+        // single queued verdict is consumed by second-entry, which sees the
+        // pending mirror of first-entry.
+        JSON.stringify({ verdict: 'duplicate', targetId: 'first-entry', reason: 'duplicate of the sibling proposed in this same batch', conflictWinner: null, mergedIntro: null }),
+      ],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /\[SKIP\] second-entry: duplicate of "first-entry"/);
+    const eden = await listKnowledge(p.id, 'eden');
+    assert.equal(eden.filter(e => e.id === 'first-entry').length, 1);
+    assert.equal(eden.filter(e => e.id === 'second-entry').length, 0);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb gate: HK2_KB_LEARN_VALIDATE=0 restores legacy deterministic discard', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-gate-'));
+  const prev = process.env.HK2_KB_LEARN_VALIDATE;
+  process.env.HK2_KB_LEARN_VALIDATE = '0';
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    await seedEntry(p.id, 'eden', {
+      id: 'legacy-hit', space: 'eden', title: 'Legacy Entry',
+      intro: 'Existing.', keywords: ['legacy', 'entry'],
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{
+        id: 'legacy-prop', title: 'Legacy Entry Again', intro: 'Would collide by keywords.',
+        keywords: ['legacy', 'entry'],
+      }]),
+      verdicts: [], // must not be consulted at all
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /skipped: 1/);
+    assert.match(out, /\[SKIP\] legacy-prop: conflicts with "legacy-hit"/);
+    const eden = await listKnowledge(p.id, 'eden');
+    assert.equal(eden.length, 1);
+  } finally {
+    if (prev === undefined) delete process.env.HK2_KB_LEARN_VALIDATE;
+    else process.env.HK2_KB_LEARN_VALIDATE = prev;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: validator targeting hk2-supreme-code is refused (codes must survive)', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-sc-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Governance\n\nThe project supreme code rules everything.');
+    const p = await ensureProject(tmpDir);
+    const { writeSupremeCode, ensureSupremeCode } = await import('../lib/store/supreme_code.js');
+    await ensureSupremeCode(p.id);
+    await writeSupremeCode(p.id, ['API密钥严禁出现在代码中'], { createdVia: 'test' });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      // Title "Project Supreme Code" hits the supreme-code entry by mutual
+      // title containment — the validator then (adversarially) targets it.
+      extractOutput: JSON.stringify([{
+        id: 'governance-notes', title: 'Project Supreme Code', intro: 'Learned governance notes.', keywords: ['governance'],
+      }]),
+      verdicts: [JSON.stringify({ verdict: 'update', targetId: 'hk2-supreme-code', reason: 'same topic per title containment', conflictWinner: null, mergedIntro: 'Merged governance notes.' })],
+      confirmAnswers: [true], // user approves the per-entry holy-merge prompt — must STILL be refused
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const out = ctx.prints.join('\n');
+    assert.match(out, /permanent Supreme Code entry/);
+    assert.match(out, /skipped: 1/);
+    const { readKnowledge } = await import('../lib/store/kb_store.js');
+    const raw = await readKnowledge(p.id, 'holy', 'hk2-supreme-code');
+    assert.ok(raw, 'supreme-code entry must still exist');
+    assert.deepEqual(raw.codes, ['API密钥严禁出现在代码中'], 'codes array must survive untouched');
+    assert.equal(raw.protected, true, 'protected flag must survive');
+    assert.equal(raw.updatedByLearn, undefined, 'no learn update may be applied onto the supreme code');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('knowledgeLearnKb validation: update merge preserves spaceChangedAt on a same-space entry', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'learn-val-sca-'));
+  try {
+    await fs.writeFile(path.join(tmpDir, 'a.md'), '# Doc\n\ncontent');
+    const p = await ensureProject(tmpDir);
+    await writeKnowledge(p.id, 'eden', {
+      id: 'sca-target', space: 'eden', title: 'CLI Catalog',
+      intro: 'Old.', keywords: ['cli'],
+      createdAt: '2020-01-01T00:00:00.000Z', spaceChangedAt: '2021-06-01T00:00:00.000Z',
+    });
+    const ctx = makeValidateMockCtx({
+      planOutput: 'topic | batch | a.md\n',
+      extractOutput: JSON.stringify([{ id: 'sca-prop', title: 'CLI Catalog v2', intro: 'Fresh.', keywords: ['cli'] }]),
+      verdicts: [JSON.stringify({ verdict: 'update', targetId: 'sca-target', reason: 'same topic', conflictWinner: null, mergedIntro: 'Merged.' })],
+    });
+    await cmdKb(['knowledge', 'learn', '--space=eden', '--file=' + path.join(tmpDir, 'a.md')], ctx);
+    const after = await readKnowledge(p.id, 'eden', 'sca-target');
+    assert.equal(after.createdAt, '2020-01-01T00:00:00.000Z', 'createdAt preserved');
+    assert.equal(after.spaceChangedAt, '2021-06-01T00:00:00.000Z', 'in-space merge must not reset spaceChangedAt');
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

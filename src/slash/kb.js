@@ -620,6 +620,17 @@ async function knowledgeLearnKb(rest, ctx) {
   const retryTimeoutMs = Math.min(planTimeoutMs, 180000);
   const userPrompt = flags.positionalText || '';
 
+  // Semantic validation gate (same env var as the turn-end [kb learn] pipeline
+  // in src/commands/interactive.js). Default ON: every proposed entry is
+  // checked against the existing KB for duplicate / update-in-place /
+  // conflict before any write. Set HK2_KB_LEARN_VALIDATE=0 to restore the
+  // legacy deterministic discard (crossCheckEntries, no LLM validation).
+  const validateGate = (() => {
+    const v = process.env.HK2_KB_LEARN_VALIDATE;
+    if (v === undefined || v === null || v === '') return true;
+    return !/^(0|no|false|off)$/i.test(v.trim());
+  })();
+
   // ---- Mode resolution ----
   // Either --file or --base-dir may be given, not both. `--file` is always DOC
   // mode. `--base-dir` is DOC mode when it resolves to a real directory that
@@ -700,11 +711,18 @@ async function knowledgeLearnKb(rest, ctx) {
   // ================= common state =================
   const { writeKnowledge, readKnowledge } = await import('../../lib/store/kb_store.js');
   const { getRuntime } = await import('../../lib/retrieval/kb_runtime.js');
+  // Semantic validation primitives shared with the turn-end [kb learn] flow.
+  const { findCandidateEntries, validateLearnedEntry } = await import('../../lib/agent/kb_validate.js');
   const rt = await getRuntime(p.id).catch(() => null);
   const projectId = p.id;
 
   const existingHoly = await listKnowledge(p.id, 'holy').catch(() => []);
-  let existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
+  // Eden entries stamped supersededBy="holy:*" are RETIRED (Holy takes
+  // precedence — the same exclusion buildRequestGraph applies). They must
+  // never be a merge/update/conflict target: writing one back would strip
+  // the stamp and resurrect the retired entry into retrieval.
+  let existingEden = (await listKnowledge(p.id, 'eden').catch(() => []))
+    .filter(e => !e.supersededBy);
   ctx.print(`  existing Holy: ${existingHoly.length}, Eden: ${existingEden.length}`);
 
   let totalSaved = 0;
@@ -712,6 +730,11 @@ async function knowledgeLearnKb(rest, ctx) {
   let totalDiscarded = 0;
   let totalProposed = 0;
   let studiedBatches = 0;
+  // Semantic validation can redirect a write onto the OTHER space (e.g. a
+  // doc-mode run targeting eden whose entry updates a holy entry), so track
+  // saves per space for the final summary instead of assuming targetSpace.
+  let savedHoly = 0;
+  let savedEden = 0;
 
   // Shared Phase 2 study routine: feed one group of sources to the model,
   // cross-check the proposed entries, and write accepted ones.
@@ -784,31 +807,189 @@ async function knowledgeLearnKb(rest, ctx) {
       return;
     }
 
-    const { accepted, discarded: disc } = crossCheckEntries(proposed, existingHoly, existingEden);
-    ctx.print(`  proposed: ${proposed.length}, accepted: ${accepted.length}, discarded: ${disc.length}`);
-    for (const e of accepted) {
-      ctx.print(`    [ACCEPT] ${e.id}: ${e.title || ''} (${(e.intro || '').length}c)`);
+    // ---- Validate every proposed entry against the existing KB ----
+    // Mirrors the turn-end [kb learn] pipeline (learnNewKnowledge in
+    // src/commands/interactive.js): deterministic pre-filter
+    // (findCandidateEntries) → semantic verdict (validateLearnedEntry) →
+    // four branches: duplicate (skip + reason), update (merge IN PLACE onto
+    // the existing entry), conflict (Holy → user decides; Eden → winner +
+    // reason), new (write fresh; when related entries exist, state why we are
+    // NOT updating them). Retired eden entries (supersededBy) were already
+    // filtered out of existingEden so they can never be a merge target.
+    const accepted = [];   // { record, effSpace, action }
+    const skipped = [];    // { id, reason }
+    // Pre-view of what this run will write, so two NEAR-IDENTICAL entries
+    // proposed in the SAME batch can still see each other (the write loop
+    // only runs after the whole batch is validated — without this mirror the
+    // second one would blindly duplicate the first).
+    const pendingHoly = [];
+    const pendingEden = [];
+    const viewOf = (arr, e) => {
+      const i = arr.findIndex(x => x.id === e.id);
+      if (i >= 0) arr[i] = e; else arr.push(e);
+    };
+    for (const entry of proposed) {
+      if (!entry.id || !entry.title || !entry.intro) {
+        skipped.push({ id: entry.id || '?', reason: 'missing required fields' });
+        continue;
+      }
+      const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
+      if (isSupremeCode(id)) {
+        // The supreme-code entry is permanent and managed ONLY via
+        // /kb code add|del — the learn flow must never overwrite it.
+        skipped.push({ id, reason: 'supreme-code entry is managed only via /kb code add | /kb code del' });
+        continue;
+      }
+      const record = {
+        id, space: targetSpace,
+        title: entry.title, intro: entry.intro,
+        keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
+        keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
+        keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
+        autoLearned: true, learned: true,
+        source: sourceKind === 'code' ? 'kb-knowledge-learn-code' : 'kb-knowledge-learn-doc',
+      };
+
+      if (!validateGate) {
+        // HK2_KB_LEARN_VALIDATE=0 → legacy deterministic gate: exact id or
+        // heuristic title/keyword collision → discard (no LLM validation).
+        const legacy = crossCheckEntries([entry], existingHoly, existingEden);
+        if (legacy.accepted.length > 0) {
+          accepted.push({ record, effSpace: targetSpace, action: 'new' });
+          viewOf(targetSpace === 'holy' ? pendingHoly : pendingEden, record);
+        } else {
+          const reason = legacy.discarded[0]?.reason || 'conflicts with an existing entry';
+          ctx.print(`    [SKIP] ${id}: ${reason} (legacy gate, HK2_KB_LEARN_VALIDATE=0)`);
+          skipped.push({ id, reason });
+        }
+        continue;
+      }
+
+      const candidates = findCandidateEntries(record, existingHoly.concat(pendingHoly), existingEden.concat(pendingEden));
+      const verdict = await validateLearnedEntry(ctx.llm, record, candidates, { timeoutMs: 60000 });
+      const cand = candidates.find(c => c.entry.id === verdict.targetId);
+      if (cand && isSupremeCode(cand.entry.id)) {
+        // The permanent Supreme Code entry can never be a merge/conflict
+        // target: a redirected write would drop its `codes` array and the
+        // protected flags. It is managed ONLY via /kb code add | /kb code del.
+        ctx.print(`    [SKIP] ${id}: validator target "${cand.entry.id}" is the permanent Supreme Code entry — managed only via /kb code add | /kb code del.`);
+        skipped.push({ id, reason: 'validator target is the permanent supreme-code entry' });
+        continue;
+      }
+
+      if (verdict.verdict === 'duplicate') {
+        // Same or essentially the same meaning already in the KB — skip the
+        // write entirely to avoid redundant re-learning.
+        ctx.print(`    [SKIP] ${id}: duplicate of "${verdict.targetId}" — ${verdict.reason || '(no reason)'}`);
+        skipped.push({ id, reason: `duplicate of "${verdict.targetId}"` });
+        continue;
+      }
+
+      if (verdict.verdict === 'update' && cand) {
+        // Related entry covers the same topic — merge onto it instead of
+        // creating a near-identical sibling. The write keeps the existing
+        // entry's id + space; createdAt is carried over explicitly
+        // (writeKnowledge only preserves it when the record already has one).
+        ctx.print(`    [UPDATE] ${id} → ${cand.space}:"${cand.entry.id}" (merge in place) — ${verdict.reason || '(no reason)'}`);
+        if (cand.space === 'holy' && !dryRun) {
+          // Rewriting an EXISTING Holy entry is more invasive than adding a
+          // new one — ask per entry even though the run-level holy gate
+          // (doc mode) already passed.
+          const ok = await ctx.confirm(`Merge new knowledge into HOLY entry "${cand.entry.id}"? (y/N) `);
+          if (!ok) {
+            ctx.print(`    [SKIP] ${id}: user declined the Holy merge — keeping "${cand.entry.id}" unchanged.`);
+            skipped.push({ id, reason: `holy merge into "${cand.entry.id}" declined by user` });
+            continue;
+          }
+        }
+        record.id = cand.entry.id;
+        record.space = cand.space;
+        record.title = cand.entry.title || record.title;
+        record.intro = verdict.mergedIntro;
+        record.createdAt = cand.entry.createdAt; // keep the original creation time
+        record.spaceChangedAt = cand.entry.spaceChangedAt; // in-place merge must not reset the space-change time
+        record.keywords = [...new Set([...(cand.entry.keywords || []), ...record.keywords])];
+        record.keyFiles = [...new Set([...(cand.entry.keyFiles || []), ...record.keyFiles])];
+        record.keySymbols = [...new Set([...(cand.entry.keySymbols || []), ...record.keySymbols])];
+        record.updatedByLearn = true;
+        accepted.push({ record, effSpace: cand.space, action: 'merged' });
+        viewOf(cand.space === 'holy' ? pendingHoly : pendingEden, record);
+        continue;
+      }
+
+      if (verdict.verdict === 'conflict' && cand) {        // Direct contradiction with an existing entry.
+        ctx.print(`    [CONFLICT] ${id} vs ${cand.space}:"${cand.entry.id}" — ${verdict.reason || '(no reason)'}`);
+        ctx.print(`      validator: the ${verdict.conflictWinner === 'new' ? 'NEW' : 'EXISTING'} entry wins.`);
+        if (cand.space === 'holy') {
+          // Holy conflicts are ALWAYS decided by the user — Holy Space is
+          // the source of truth and every write needs explicit approval.
+          if (dryRun) {
+            ctx.print(`      [dry-run] would ask: update holy "${cand.entry.id}" with the new knowledge (new wins)?`);
+            skipped.push({ id, reason: `holy conflict with "${cand.entry.id}" (dry-run, undecided)` });
+            continue;
+          }
+          const apply = await ctx.confirm(`The new entry CONFLICTS with holy entry "${cand.entry.id}". Update it with the new knowledge (new wins)? (y/N) `);
+          if (!apply) {
+            ctx.print(`    [SKIP] ${id}: keeping the existing Holy entry (original wins).`);
+            skipped.push({ id, reason: `holy conflict with "${cand.entry.id}" — user kept the original` });
+            continue;
+          }
+          record.id = cand.entry.id;
+          record.space = 'holy';
+          record.title = cand.entry.title || record.title;
+          record.createdAt = cand.entry.createdAt; // keep the original creation time
+          record.spaceChangedAt = cand.entry.spaceChangedAt; // in-place update: keep the original space-change time
+          record.updatedByLearn = true;
+          accepted.push({ record, effSpace: 'holy', action: 'merged' });
+          viewOf(pendingHoly, record);
+          continue;
+        }
+        if (verdict.conflictWinner === 'existing') {
+          ctx.print(`    [SKIP] ${id}: the existing entry wins (the new extraction looked stale or wrong).`);
+          skipped.push({ id, reason: `conflict with "${cand.entry.id}" — existing wins` });
+          continue;
+        }
+        // Eden-vs-Eden, new wins: write the new entry and surface the old one
+        // for manual cleanup (no auto-supersede across eden entries).
+        ctx.print(`      The contradicting eden entry "${cand.entry.id}" is kept — review with /kb knowledge show, remove via /kb knowledge del if stale.`);
+        accepted.push({ record, effSpace: targetSpace, action: 'new' });
+        viewOf(targetSpace === 'holy' ? pendingHoly : pendingEden, record);
+        continue;
+      }
+
+      // verdict 'new' — related entries may exist; state why we are NOT
+      // updating them (required explanation for not updating in place).
+      if (candidates.length > 0) {
+        ctx.print(`    [ACCEPT] ${id}: ${entry.title || ''} (${(entry.intro || '').length}c) — new, NOT updating ${candidates.slice(0, 3).map(c => `${c.space}:${c.entry.id}`).join(', ')}${candidates.length > 3 ? ' ...' : ''}`);
+        ctx.print(`      reason: ${verdict.reason || '(no reason provided)'}`);
+      } else {
+        ctx.print(`    [ACCEPT] ${id}: ${entry.title || ''} (${(entry.intro || '').length}c)`);
+      }
+      accepted.push({ record, effSpace: targetSpace, action: 'new' });
+      viewOf(targetSpace === 'holy' ? pendingHoly : pendingEden, record);
     }
+
+    ctx.print(`  proposed: ${proposed.length}, accepted: ${accepted.length}, skipped: ${skipped.length}`);
     totalAccepted += accepted.length;
-    totalDiscarded += disc.length;
+    totalDiscarded += skipped.length;
 
     if (!dryRun && accepted.length > 0) {
-      for (const entry of accepted) {
-        const id = String(entry.id).replace(/[^A-Za-z0-9_.-]/g, '_');
-        const record = {
-          id, space: targetSpace,
-          title: entry.title, intro: entry.intro,
-          keyFiles: Array.isArray(entry.keyFiles) ? entry.keyFiles : [],
-          keySymbols: Array.isArray(entry.keySymbols) ? entry.keySymbols : [],
-          keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
-          autoLearned: true, learned: true,
-          source: sourceKind === 'code' ? 'kb-knowledge-learn-code' : 'kb-knowledge-learn-doc',
-        };
-        await writeKnowledge(projectId, targetSpace, record);
-        const final = await readKnowledge(projectId, targetSpace, id);
-        if (final && rt) rt.reloadKnowledge?.(final, targetSpace);
-        if (targetSpace === 'holy') existingHoly.push(record);
-        else existingEden.push(record);
+      for (const { record, effSpace } of accepted) {
+        await writeKnowledge(projectId, effSpace, record);
+        const final = await readKnowledge(projectId, effSpace, record.id);
+        if (final && rt) rt.reloadKnowledge?.(final, effSpace);
+        // Keep the in-memory mirror fresh so entries proposed later in the
+        // SAME batch validate against what was just written (a merged entry
+        // replaces its target instead of piling up a duplicate).
+        if (effSpace === 'holy') {
+          const i = existingHoly.findIndex(e => e.id === record.id);
+          if (i >= 0) existingHoly[i] = final || record; else existingHoly.push(final || record);
+          savedHoly++;
+        } else {
+          const i = existingEden.findIndex(e => e.id === record.id);
+          if (i >= 0) existingEden[i] = final || record; else existingEden.push(final || record);
+          savedEden++;
+        }
         totalSaved++;
       }
     }
@@ -1054,9 +1235,12 @@ ${manifest}`;
     ctx.print(`  total accepted: ${totalAccepted}`);
     ctx.print(`  total discarded: ${totalDiscarded}`);
     if (dryRun) {
-      ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved to ${targetSpace}.`);
+      ctx.print(`  [dry-run] ${totalAccepted} entries would have been validated & written.`);
     } else if (totalSaved > 0) {
-      ctx.print(`  ${totalSaved} ${targetSpace} entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
+      const parts = [];
+      if (savedHoly > 0) parts.push(`${savedHoly} holy`);
+      if (savedEden > 0) parts.push(`${savedEden} eden`);
+      ctx.print(`  saved: ${parts.join(', ')} (${totalSaved} total, incl. in-place updates).`);
     } else {
       ctx.print('  (no entries saved)');
     }
@@ -1108,7 +1292,8 @@ ${manifest}`;
         meta,
         onProgress: (which) => ctx.print(`  [survey] generating ${which}...`),
       });
-      existingEden = await listKnowledge(p.id, 'eden').catch(() => []);
+      existingEden = (await listKnowledge(p.id, 'eden').catch(() => []))
+        .filter(e => !e.supersededBy);
     } catch (err) {
       ctx.print(`[Phase 0] survey generation failed: ${err.message}`);
     }
@@ -1317,9 +1502,12 @@ ${existingEden.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n') || '(no
   ctx.print(`  total accepted: ${totalAccepted}`);
   ctx.print(`  total discarded: ${totalDiscarded}`);
   if (dryRun) {
-    ctx.print(`  [dry-run] ${totalAccepted} entries would have been saved to eden.`);
+    ctx.print(`  [dry-run] ${totalAccepted} entries would have been validated & written.`);
   } else if (totalSaved > 0) {
-    ctx.print(`  ${totalSaved} eden entr${totalSaved === 1 ? 'y' : 'ies'} saved.`);
+    const parts = [];
+    if (savedHoly > 0) parts.push(`${savedHoly} holy`);
+    if (savedEden > 0) parts.push(`${savedEden} eden`);
+    ctx.print(`  saved: ${parts.join(', ')} (${totalSaved} total, incl. in-place updates).`);
   } else {
     ctx.print('  (no entries saved)');
   }
