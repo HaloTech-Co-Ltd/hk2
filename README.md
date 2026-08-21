@@ -2,7 +2,11 @@
 
 # hk2
 
-A knowledge-base (KB) driven coding agent. Combines an interactive REPL with tool use and a per-project KB as the central source of truth.
+A knowledge-base (KB) driven agent, purpose-built for coding.
+- **DESIGN PHILOSOPHY:** make the KB the central source of truth for every project.
+- **THE CORE GOAL:** an agent that gets smarter and more useful the more you use it.
+
+Every session's discoveries are distilled into durable knowledge, so it starts each new task already knowing what the last one learned.
 
 English | [简体中文](README_zh.md)
 
