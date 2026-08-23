@@ -279,6 +279,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/session list` | Recent sessions |
 | `/session new` | Start a new session |
 | `/session resume <id>` | Resume a previous session |
+| `/review code` | Manually regression-check the just-completed task (code phase; `plan` reserved) |
 | `/clear` | Clear conversation context |
 | `/compact` | Summarize earlier messages |
 | `/help` `/quit` `/exit` | Help / exit |

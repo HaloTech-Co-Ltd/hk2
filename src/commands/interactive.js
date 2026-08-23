@@ -910,6 +910,50 @@ export function buildCtx(session) {
       await session.transcript?.logMeta('compact', { dropped: out.dropped, kept: out.kept });
       console.error(`Compacted: dropped ${out.dropped} messages, kept ${out.kept}.`);
     },
+    /**
+     * Read-only view of the current conversation for the /review command:
+     * the latest user request (the "task requirement") and the assistant's
+     * final answer (the "claimed result"). Deliberately returns ONLY these
+     * two strings - /review's contract is to review the completed result in
+     * isolation, without any of the implementation-process context (tool
+     * calls, reasoning, intermediate turns) that could anchor the reviewer.
+     */
+    getConversation: async () => {
+      const msgs = Array.isArray(session.messages) ? session.messages : [];
+      let requestText = '';
+      let answerText = '';
+      // requestText = the LAST user message (the most recent task; earlier
+      // ones belong to previous tasks in the same conversation).
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m && m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
+          requestText = m.content;
+          break;
+        }
+      }
+      // answerText = the assistant's final answer: session.lastAnswer is the
+      // definitive end-of-turn answer (already excludes tool-call frames);
+      // fall back to the last plain-text assistant message when it is not set
+      // (e.g. a resumed session).
+      answerText = typeof session.lastAnswer === 'string' ? session.lastAnswer : '';
+      if (!answerText.trim()) {
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (m && m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) {
+            answerText = m.content;
+            break;
+          }
+        }
+      }
+      return { requestText, answerText };
+    },
+    /**
+     * Working-tree material (tracked diff + untracked file contents + changed
+     * file list) for the /review command. Same collector as the automatic
+     * end-of-turn Code Review; best-effort, returns empty fields when the
+     * project path isn't a git repo.
+     */
+    collectWorkingTreeDiff: async () => collectWorkingTreeDiff(session.project?.sourcePath),
     exit: () => { session.exiting = true; },
   };
 }
@@ -1294,12 +1338,13 @@ function printBanner(session, ctx) {
 }
 
 function makeCompleter() {
-  const cmds = ['/model', '/project', '/kb', '/session', '/help', '/quit', '/exit', '/clear', '/compact',
+  const cmds = ['/model', '/project', '/kb', '/session', '/review', '/help', '/quit', '/exit', '/clear', '/compact',
     '/model list', '/model add', '/model use', '/model set-default', '/model set', '/model set-phase', '/model add-mcpserver', '/model types', '/model del', '/model show', '/model help',
     '/project init', '/project list', '/project set', '/project show',
     '/kb init', '/kb update', '/kb status', '/kb search', '/kb symbol', '/kb neighbors', '/kb knowledge', '/kb help',
     '/kb knowledge list', '/kb knowledge show', '/kb knowledge add', '/kb knowledge learn', '/kb knowledge help',
-    '/session info', '/session list', '/session new', '/session resume'];
+    '/session info', '/session list', '/session new', '/session resume',
+    '/review code', '/review plan'];
   return function completer(line) {
     const hits = cmds.filter(c => c.startsWith(line));
     return [hits.length ? hits : cmds, line];

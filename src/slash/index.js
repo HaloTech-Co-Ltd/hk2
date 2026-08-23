@@ -62,6 +62,7 @@ import { cmdModel } from './model.js';
 import { cmdProject } from './project.js';
 import { cmdKb } from './kb.js';
 import { cmdSession } from './session.js';
+import { cmdReview } from './review.js';
 import { printCommandHelp } from './help.js';
 
 export const SLASH_COMMANDS = [
@@ -69,6 +70,7 @@ export const SLASH_COMMANDS = [
   { name: '/project', handler: cmdProject, description: 'Manage projects.json (init / list / set / show / drop)' },
   { name: '/kb',      handler: cmdKb,      description: 'Current project KB (init / update / status / search ...)' },
   { name: '/session', handler: cmdSession, description: 'Session management (info / new / clear / list / resume)' },
+  { name: '/review',  handler: cmdReview,  description: 'Manually review the completed task (code) — fresh-eyes regression check' },
   { name: '/clear',   handler: cmdClear,   description: 'Clear the current conversation context' },
   { name: '/compact', handler: cmdCompact, description: 'Summarize prior conversation into a short brief' },
   { name: '/help',    handler: cmdHelp,    description: 'Show this help' },

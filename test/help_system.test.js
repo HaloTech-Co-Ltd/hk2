@@ -33,7 +33,7 @@ const flagsIn = (lines) => {
 
 test('HELP_TEXT covers every registered slash command family', () => {
   // SLASH_COMMANDS names minus aliases that share help text with a family.
-  const registered = ['model', 'project', 'kb', 'session', 'clear', 'compact', 'quit'];
+  const registered = ['model', 'project', 'kb', 'session', 'review', 'clear', 'compact', 'quit'];
   for (const name of registered) {
     assert.ok(renderHelp(name), `missing HELP_TEXT entry for /${name}`);
   }

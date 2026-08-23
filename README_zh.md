@@ -273,6 +273,7 @@ hk2
 | `/session list` | 最近的会话 |
 | `/session new` | 开始新会话 |
 | `/session resume <id>` | 恢复之前的会话 |
+| `/review code` | 手动回归检查刚完成的任务（code 阶段；`plan` 预留） |
 | `/clear` | 清空对话上下文 |
 | `/compact` | 摘要压缩早期消息 |
 | `/help` `/quit` `/exit` | 帮助 / 退出 |
