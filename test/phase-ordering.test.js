@@ -488,9 +488,9 @@ test('ReasoningStream accumulates partial deltas into complete lines', () => {
     'exactly the header line plus one reasoning line');
 });
 
-test('ReasoningStream caps the thinking window at 5 lines by default (HK2_HIDE_THINKING)', () => {
+test('ReasoningStream caps the thinking window at 9 lines by default (HK2_HIDE_THINKING)', () => {
   // Default (HK2_HIDE_THINKING unset or 1): long reasoning streams must not
-  // flood the REPL — only the first 5 content lines render, and end() reports
+  // flood the REPL — only the first 9 content lines render, and end() reports
   // the hidden count. The header line does NOT count against the budget.
   const cases = [undefined, '1'];
   for (const v of cases) {
@@ -498,24 +498,24 @@ test('ReasoningStream caps the thinking window at 5 lines by default (HK2_HIDE_T
     else process.env.HK2_HIDE_THINKING = v;
     const rs = new ReasoningStream();
     let out = '';
-    for (let i = 1; i <= 12; i++) out += rs.feed(`line ${i}\n`);
+    for (let i = 1; i <= 14; i++) out += rs.feed(`line ${i}\n`);
     out += rs.end();
     const visible = stripAnsiForTest(out);
-    assert.ok(visible.includes('line 1') && visible.includes('line 5'),
-      'the first 5 reasoning lines render');
-    assert.ok(!visible.includes('line 6'),
-      `the 6th+ reasoning lines are hidden (HK2_HIDE_THINKING=${v})`);
-    assert.ok(visible.includes('7 more lines hidden'),
+    assert.ok(visible.includes('line 1') && visible.includes('line 9'),
+      'the first 9 reasoning lines render');
+    assert.ok(!visible.includes('line 10'),
+      `the 10th+ reasoning lines are hidden (HK2_HIDE_THINKING=${v})`);
+    assert.ok(visible.includes('5 more lines hidden'),
       'end() reports the number of hidden lines');
     assert.ok(visible.includes('HK2_HIDE_THINKING=0'),
       'the notice points at the escape hatch');
-    // header + 5 content lines + 1 notice = 7 rendered lines
-    assert.equal(visible.split('\n').filter((l) => l.length > 0).length, 7);
+    // header + 9 content lines + 1 notice = 11 rendered lines
+    assert.equal(visible.split('\n').filter((l) => l.length > 0).length, 11);
   }
   delete process.env.HK2_HIDE_THINKING;
 });
 
-test('ReasoningStream short windows are unaffected by the 5-line cap', () => {
+test('ReasoningStream short windows are unaffected by the 9-line cap', () => {
   // Windows within budget render exactly as before: no notice line, no change.
   delete process.env.HK2_HIDE_THINKING;
   const rs = new ReasoningStream();

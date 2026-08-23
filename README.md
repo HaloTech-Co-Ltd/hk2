@@ -396,7 +396,7 @@ an LLM re-analyzes the requirement, checks the plan for coverage (every needed
 part delivered), ordering, feasibility, risks, and unstated assumptions, and
 surfaces any issues one-by-one for confirmation before execution begins. The
 reviewer's thinking stream (reasoning_content) renders live as `✎ thinking`
-(dim italic, capped at 5 lines by default — set `HK2_HIDE_THINKING=0` for the
+(dim italic, capped at 9 lines by default — set `HK2_HIDE_THINKING=0` for the
 full stream), followed by its analysis, which also streams live; an
 unparseable verdict is reported as
 UNKNOWN, never as "no issues found"; see the env-var table. Reviews always
@@ -408,7 +408,7 @@ When `HK2_ENABLE_CODEREVIEW=1` (default off), after the entire plan finishes
 executing, hk2 runs a Code Review step that checks the completed result — the
 working-tree diff, the changed files, and the agent's final summary — for
 correctness, completeness, and quality. The reviewer's thinking stream
-(reasoning_content) renders live as `✎ thinking` (dim italic, capped at 5
+(reasoning_content) renders live as `✎ thinking` (dim italic, capped at 9
 lines by default — set `HK2_HIDE_THINKING=0` for the full stream), followed
 by its analysis (plan re-analysis, per-point coverage check, correctness
 check, conclusion), which streams
@@ -559,7 +559,7 @@ reject `glm-4.7[1m]`.
 | `HK2_DEBUG` | Print error stacks | - |
 | `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |
 | `HK2_ASCII` | When 1, force ASCII fallbacks for box-drawing / spinner / icons instead of UTF-8 glyphs (useful on non-UTF-8 terminals). | - |
-| `HK2_HIDE_THINKING` | When unset or `1` (default), the `✎ thinking` reasoning window renders at most 5 content lines, then a dim notice reports how many lines were hidden. When `0`, the full reasoning stream is rendered (previous behavior). | `1` |
+| `HK2_HIDE_THINKING` | When unset or `1` (default), the `✎ thinking` reasoning window renders at most 9 content lines, then a dim notice reports how many lines were hidden. When `0`, the full reasoning stream is rendered (previous behavior). | `1` |
 | `ANTHROPIC_API_KEY` | Auto-creates an `anthropic` provider on first init | - |
 | `OPENAI_API_KEY` | Auto-creates an `openai` provider on first init | - |
 
