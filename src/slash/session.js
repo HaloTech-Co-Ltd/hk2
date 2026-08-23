@@ -42,7 +42,9 @@
  * /session command family — session management.
  *
  * Usage:
- *   /session info                Show current session id, project, message count
+ *   /session info [<sessionId>]  Show session info — current session when no id,
+ *                                 or the stored transcript's stats for an id
+ *                                 (unique prefix match supported)
  *   /session list [--limit=N]    List recent sessions for the current project
  *   /session new                 Start a new session (fresh transcript)
  *   /session resume <id>         Resume a previous session by id
@@ -54,13 +56,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { SESSIONS_ROOT } from '../../lib/config/home.js';
+import { replayTranscript } from '../../lib/agent/transcript.js';
 import { printCommandHelp } from './help.js';
 
 export async function cmdSession(args, ctx) {
   const sub = args[0];
   const rest = args.slice(1);
   switch (sub) {
-    case 'info': case undefined: return sessionInfo(ctx);
+    case 'info': case undefined: return sessionInfo(rest, ctx);
     case 'list': case 'ls': return sessionList(rest, ctx);
     case 'new': return sessionNew(ctx);
     case 'resume': return sessionResume(rest, ctx);
@@ -74,18 +77,108 @@ export async function cmdSession(args, ctx) {
   }
 }
 
-async function sessionInfo(ctx) {
+/**
+ * /session info — with no argument, the CURRENT session's live counters; with
+ * a session id, the stats read back from that session's stored transcript.
+ */
+async function sessionInfo(rest, ctx) {
+  const wantId = rest?.[0];
   const info = ctx.getSessionInfo?.();
+
+  // /session info <id> → inspect a stored (or the current) session by id.
+  if (wantId) {
+    if (!info?.projectId) {
+      ctx.print(`No current project.`);
+      return;
+    }
+    // The id IS the current session → the in-memory counters are fresher
+    // than whatever has been flushed to the JSONL so far.
+    if (info.sessionId && info.sessionId === wantId) {
+      printCurrentSessionInfo(ctx, info);
+      return;
+    }
+    const found = await resolveSessionFile(info.projectId, wantId);
+    if (!found) {
+      ctx.print(`Session not found: ${wantId} (/session list to browse.)`);
+      return;
+    }
+    if (found.ambiguous) {
+      ctx.print(`Ambiguous session id '${wantId}', matches:`);
+      for (const id of found.ambiguous.slice(0, 10)) ctx.print(`  ${id}`);
+      return;
+    }
+    await printStoredSessionInfo(ctx, info, found);
+    return;
+  }
+
+  // /session info → the current session (original behavior).
   if (!info) {
     ctx.print(`No active session.`);
     return;
   }
+  printCurrentSessionInfo(ctx, info);
+}
+
+function printCurrentSessionInfo(ctx, info) {
   ctx.print(`Session:    ${info.sessionId}`);
   ctx.print(`Project:    ${info.projectName || '(none)'} (${info.projectId || '?'})`);
   ctx.print(`Started:    ${info.startedAt || '?'}`);
   ctx.print(`Messages:   ${info.messageCount}`);
   ctx.print(`Tools:      ${info.toolCalls} calls`);
   if (info.path) ctx.print(`Transcript: ${info.path}`);
+}
+
+/**
+ * Resolve a session id (exact match first, else UNIQUE prefix match) to its
+ * transcript file inside the project's sessions dir.
+ * @returns {Promise<{id:string,path:string}|{ambiguous:string[]}|null>}
+ */
+async function resolveSessionFile(projectId, id) {
+  // Session ids are flat UUIDs/words — reject anything that could traverse
+  // out of the project's sessions dir (../, /, backslashes).
+  if (!id || id.includes('/') || id.includes('\\') || id.includes('..')) return null;
+  const dir = path.join(SESSIONS_ROOT, projectId);
+  const exact = path.join(dir, `${id}.jsonl`);
+  if (await exists(exact)) return { id, path: exact };
+  let entries;
+  try { entries = await fs.readdir(dir); } catch { return null; }
+  const matches = entries
+    .filter(e => e.endsWith('.jsonl'))
+    .map(e => e.slice(0, -'.jsonl'.length))
+    .filter(sid => sid.startsWith(id))
+    .sort();
+  if (matches.length === 1) return { id: matches[0], path: path.join(dir, `${matches[0]}.jsonl`) };
+  if (matches.length > 1) return { ambiguous: matches };
+  return null;
+}
+
+/**
+ * Print stats for a session restored from its JSONL transcript. Counts use
+ * the SAME shape replayTranscript rebuilds (grouped assistant+tool messages),
+ * so the numbers match what /session resume reports for the same session.
+ */
+async function printStoredSessionInfo(ctx, cur, { id, path: p }) {
+  let text;
+  try { text = await fs.readFile(p, 'utf8'); }
+  catch {
+    ctx.print(`Session not found: ${id}`);
+    return;
+  }
+  const { messages, firstTs, lastTs } = replayTranscript(text);
+  let toolCalls = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try { if (JSON.parse(line).type === 'tool_call') toolCalls++; } catch { /* skip */ }
+  }
+  const msgCount = messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
+  const projectName = cur.projectName || '(unknown)';
+  ctx.print(`Session:    ${id}`);
+  ctx.print(`Project:    ${projectName} (${cur.projectId || '?'})`);
+  ctx.print(`Started:    ${firstTs || '?'}`);
+  ctx.print(`Updated:    ${lastTs || '?'}`);
+  ctx.print(`Messages:   ${msgCount}`);
+  ctx.print(`Tools:      ${toolCalls} calls`);
+  ctx.print(`Transcript: ${p}`);
 }
 
 async function sessionList(rest, ctx) {

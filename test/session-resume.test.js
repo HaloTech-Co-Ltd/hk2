@@ -23,6 +23,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from '../src/cli.js';
 import { createSession, buildCtx, reloadAll, splitOutputUnits, formatRecentOutputs } from '../src/commands/interactive.js';
+import { cmdSession } from '../src/slash/session.js';
 import { Transcript, replayTranscript, findLatestSessionId } from '../lib/agent/transcript.js';
 import { saveTaskState, clearTaskState } from '../lib/agent/task_state.js';
 import { ensureHome, registerProject, setCurrentProject } from '../lib/config/home.js';
@@ -395,6 +396,120 @@ test('parseArgs: --resume bare / =id / space-id forms', () => {
   assert.deepEqual(parseArgs(['--resume=abc123']).flags, { resume: 'abc123' });
   assert.deepEqual(parseArgs(['--resume', 'abc123']).flags, { resume: 'abc123' });
   assert.deepEqual(parseArgs(['--resume', '--project', 'foo']).flags, { resume: true, project: 'foo' });
+});
+
+/* ----- /session info (current + by-id) ----- */
+
+// Capture ctx.print output while the command runs.
+function capturePrint(ctx) {
+  const lines = [];
+  const orig = ctx.print;
+  ctx.print = (t) => lines.push(t);
+  return { lines, restore: () => { ctx.print = orig; } };
+}
+
+test('/session info (no id): current session info from live counters', async () => {
+  const { session, ctx } = await makeSessionWithProject();
+  session.messages.push({ role: 'user', content: 'q' });
+  session.messages.push({ role: 'assistant', content: 'a' });
+  session.toolCallCount = 3;
+
+  const { lines, restore } = capturePrint(ctx);
+  await cmdSession(['info'], ctx);
+  restore();
+  const text = lines.join('\n');
+  assert.ok(text.includes(`Session:    ${session.transcript.sessionId}`));
+  assert.ok(text.includes(`Project:    ${session.project.name} (${session.project.id})`));
+  assert.match(text, /Messages:   2/);
+  assert.match(text, /Tools:      3 calls/);
+  assert.ok(text.includes(`Transcript: ${session.transcript.path}`));
+});
+
+test('/session info <id>: stats read from the stored transcript', async () => {
+  const { session, ctx } = await makeSessionWithProject();
+  const prev = new Transcript(session.project.id, 'sess-info-target');
+  await prev.logUser('hello');
+  await prev.logToolCall(
+    { id: 'c1', name: 'read', arguments: '{"path":"a.js"}' },
+    { ok: true, result: { content: '...' } },
+  );
+  await prev.logAssistant('done');
+
+  const { lines, restore } = capturePrint(ctx);
+  await cmdSession(['info', 'sess-info-target'], ctx);
+  restore();
+  const text = lines.join('\n');
+  assert.ok(text.includes('Session:    sess-info-target'));
+  assert.ok(text.includes(`Project:    ${session.project.name} (${session.project.id})`));
+  // user + synthesized assistant-with-tool_calls + final assistant = 3
+  // messages — the SAME shape/counting as getSessionInfo's live counters
+  // for the identical conversation. One tool_call event = 1 call.
+  assert.match(text, /Messages:   3/);
+  assert.match(text, /Tools:      1 calls/);
+  assert.match(text, /Updated:/);
+  assert.ok(text.includes(`Transcript: ${prev.path}`));
+  // NOT the live session's counters.
+  assert.ok(!text.includes(session.transcript.sessionId));
+});
+
+test('/session info <current-id>: falls back to live in-memory counters', async () => {
+  const { session, ctx } = await makeSessionWithProject();
+  session.messages.push({ role: 'user', content: 'live q' });
+  session.toolCallCount = 7;
+
+  const { lines, restore } = capturePrint(ctx);
+  await cmdSession(['info', session.transcript.sessionId], ctx);
+  restore();
+  const text = lines.join('\n');
+  assert.match(text, /Tools:      7 calls/);
+  assert.match(text, /Messages:   1/);
+});
+
+test('/session info <prefix>: unique prefix matches, ambiguous prefix lists candidates', async () => {
+  const { session, ctx } = await makeSessionWithProject();
+  for (const id of ['alpha-1', 'alpha-2', 'beta-only']) {
+    const t = new Transcript(session.project.id, id);
+    await t.logUser(`msg for ${id}`);
+  }
+
+  // Unique prefix resolves to the full id.
+  {
+    const { lines, restore } = capturePrint(ctx);
+    await cmdSession(['info', 'beta'], ctx);
+    restore();
+    const text = lines.join('\n');
+    assert.ok(text.includes('Session:    beta-only'));
+    assert.match(text, /Messages:   1/);
+  }
+  // Ambiguous prefix lists the matching ids instead of picking one.
+  {
+    const { lines, restore } = capturePrint(ctx);
+    await cmdSession(['info', 'alpha'], ctx);
+    restore();
+    const text = lines.join('\n');
+    assert.match(text, /Ambiguous session id 'alpha'/);
+    assert.ok(text.includes('alpha-1'));
+    assert.ok(text.includes('alpha-2'));
+  }
+});
+
+test('/session info <unknown-id>: not found', async () => {
+  const { ctx } = await makeSessionWithProject();
+  const { lines, restore } = capturePrint(ctx);
+  await cmdSession(['info', 'no-such-session'], ctx);
+  restore();
+  const text = lines.join('\n');
+  assert.match(text, /Session not found: no-such-session/);
+});
+
+test('/session info <id>: path-traversal ids are rejected, not resolved', async () => {
+  const { ctx } = await makeSessionWithProject();
+  for (const bad of ['../evil', 'a/b', 'a\\b', '..']) {
+    const { lines, restore } = capturePrint(ctx);
+    await cmdSession(['info', bad], ctx);
+    restore();
+    assert.match(lines.join('\n'), /Session not found/, `id '${bad}' must not resolve`);
+  }
 });
 
 /* ----- Goodbye hint ----- */
