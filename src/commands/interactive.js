@@ -2513,8 +2513,8 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         : 'session model';
       ctx.print('');
       ctx.print(style.accent(style.bold('Plan Review')));
-      ctx.print(style.dim(`  Reviewing the confirmed plan for problems with ${reviewModelLabel}...`));
-      ctx.print(style.dim('  Checks: missing steps, wrong order, ambiguous goals, risky strategies, unstated assumptions.'));
+      ctx.print(style.dim(`  Reviewing the confirmed plan with ${reviewModelLabel}...`));
+      ctx.print(style.dim('  Checks: requirement coverage, missing steps, ordering, feasibility, risks, assumptions.'));
       progress.nextPhase('reviewing plan');
       setPhase('reviewing plan');
       try {
@@ -2523,21 +2523,41 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         // unplanned model would change what reviewed the plan. Warnings are
         // printed by the policy; skip -> the confirmed plan passes through
         // unchanged, with no "no issues found" message.
+        //
+        // The reviewer's analysis streams live (same UX as code review):
+        // progress.tick() clears the spinner on the first delta, MarkdownStream
+        // styles headings/lists as they arrive, and createVerdictFilter hides
+        // the machine-readable === VERDICT === JSON so the user never sees raw
+        // JSON scroll by. flushNow() writes any trailing partial line before
+        // warnings / menus / verdicts print.
+        const mdStream = new MarkdownStream();
+        const flushNow = () => {
+          const tail = mdStream.flush();
+          if (tail) process.stdout.write(tail);
+        };
+        const onDelta = createVerdictFilter((text) => {
+          progress.tick(text);
+          const rendered = mdStream.feed(text);
+          if (rendered) process.stdout.write(rendered);
+        });
         const reviewRun = await runPhaseWithSkipOnUnreachable({
           phase: 'plan-review',
           phaseLlm: usingPhaseModel ? reviewLlm : null,
           sessionLlm: session.llm,
-          warn: (m) => { progress.breakLine(); ctx.print(m); },
+          warn: (m) => { flushNow(); progress.breakLine(); ctx.print(m); },
           run: (llmForReview) => reviewPlan(llmForReview, confirmed, {
             signal: abortCtrl.signal,
+            onDelta,
           }),
         });
+        flushNow(); // write the renderer's trailing partial line before any menu/warning
         progress.pause(); // stop the spinner before printing the menu / result
         await session.transcript?.logMeta('planReview', {
           skipped: reviewRun.skipped,
           ...(reviewRun.skipped ? { error: reviewRun.error } : {}),
           ok: reviewRun.result ? reviewRun.result.ok : null,
           issueCount: reviewRun.result && reviewRun.result.issues ? reviewRun.result.issues.length : 0,
+          ...(reviewRun.result && reviewRun.result.parseError ? { parseError: reviewRun.result.parseError } : {}),
           phaseModelRef: usingPhaseModel && !reviewRun.skipped ? (getPhaseModelRef(session.project, 'plan-review') || null) : null,
         });
         if (reviewRun.skipped) {
@@ -2546,6 +2566,13 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
           return confirmed;
         }
         const result = reviewRun.result;
+        if (result.parseError) {
+          // No parseable JSON verdict: UNKNOWN outcome, never "no issues
+          // found". The report part already streamed above; warn and proceed
+          // with the confirmed plan (the gate is best-effort, never blocks).
+          ctx.print(style.warning(`  [warn] ${result.parseError} - the plan review outcome is UNKNOWN; proceeding with the confirmed plan.`));
+          return confirmed;
+        }
         if (result.ok || !result.issues || result.issues.length === 0) {
           ctx.print(style.dim('  Plan review complete - no issues found. Proceeding with the confirmed plan.'));
           return confirmed;

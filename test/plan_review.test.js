@@ -6,10 +6,13 @@
  *   1. Config: the `plan-review` phase is registered in PHASE_KEYS so the
  *      /model set-phase machinery (normalizePhaseName, supportedPhaseNames,
  *      get/set/clearPhaseModelRef) treats it exactly like `rewrite-query`.
- *   2. reviewPlan(): parses the reviewer's JSON into issues, coerces bad
- *      shapes safely, and degrades gracefully (returns {ok:true}) on any
- *      failure (empty plan, non-JSON output, LLM exception, ok without
- *      issues, not-ok with no usable issues) so the caller never blocks.
+ *   2. reviewPlan(): parses the reviewer's two-part reply (streaming report +
+ *      JSON verdict) into issues, coerces bad shapes safely, flags unparseable
+ *      verdicts as parseError (UNKNOWN - never "approved"), forwards deltas
+ *      to opts.onDelta, and degrades gracefully (returns {ok:true}) on any
+ *      transport failure (empty plan, LLM exception) so the caller never
+ *      blocks. Also covers sharing code_review.js's splitReviewReply /
+ *      parseVerdict / createVerdictFilter (now exported for reuse).
  *
  * The review LLM is faked with a tiny async generator that yields delta
  * events, matching the LLMClient.stream contract reviewPlan relies on.
@@ -34,6 +37,7 @@ import {
 import { createSession, buildCtx, reloadAll } from '../src/commands/interactive.js';
 import { dispatchSlash } from '../src/slash/index.js';
 import { reviewPlan } from '../lib/agent/plan_review.js';
+import { REPORT_MARKER, VERDICT_MARKER, createVerdictFilter } from '../lib/agent/code_review.js';
 
 let __seq = 0;
 async function makeSourceDir(name) {
@@ -182,10 +186,12 @@ test('/model set-phase rejects an unknown phase still', async () => {
 // ---------------------------------------------------------------------------
 
 test('reviewPlan returns ok with no issues when the reviewer approves', async () => {
-  const out = '{"ok": true, "issues": []}';
+  const out = `=== REVIEW REPORT ===\n1. requirement re-analysis\n2. coverage ok\nConclusion: sound.\n\n${VERDICT_MARKER}\n{"ok": true, "issues": []}`;
   const result = await reviewPlan(fakeLlm(out), 'Summary: do X\nStep 1: ...');
   assert.equal(result.ok, true);
   assert.deepEqual(result.issues, []);
+  assert.equal(result.parseError, undefined, 'a parseable verdict must not set parseError');
+  assert.ok(result.report && result.report.includes('requirement re-analysis'), 'report part is returned');
 });
 
 test('reviewPlan parses issues when the reviewer finds problems', async () => {
@@ -210,6 +216,26 @@ test('reviewPlan parses issues when the reviewer finds problems', async () => {
   assert.equal(result.issues[0].title, 'Step 2 depends on Step 4');
   assert.equal(result.issues[0].suggestion, 'Reorder so Step 4 runs before Step 2.');
   assert.equal(result.issues[1].detail.includes('not actionable'), true);
+});
+
+test('reviewPlan parses a two-part report+verdict reply and separates them', async () => {
+  const out = [
+    REPORT_MARKER,
+    '1. Requirement re-analysis: the plan must deliver X.',
+    '2. Coverage check: step 1 covers X fully.',
+    '5. Conclusion: one risky spot.',
+    '',
+    VERDICT_MARKER,
+    JSON.stringify({ ok: false, issues: [{ title: 't', detail: 'd', suggestion: 's' }] }),
+  ].join('\n');
+  const result = await reviewPlan(fakeLlm(out), 'Summary: ...');
+  assert.equal(result.ok, false);
+  assert.equal(result.issues.length, 1);
+  // The report part must NOT leak the verdict JSON, and the verdict part must
+  // not leak into the report.
+  assert.ok(result.report.includes('Requirement re-analysis'), 'report content kept');
+  assert.ok(!result.report.includes('"ok": false'), 'verdict JSON not in the report part');
+  assert.equal(result.parseError, undefined);
 });
 
 test('reviewPlan tolerates markdown-fenced JSON', async () => {
@@ -257,10 +283,15 @@ test('reviewPlan treats ok-without-issues and not-ok-with-no-issues as ok', asyn
   assert.deepEqual(result.issues, []);
 });
 
-test('reviewPlan returns ok on a non-JSON LLM output', async () => {
+test('reviewPlan returns ok on a non-JSON LLM output but flags the UNKNOWN verdict', async () => {
   const result = await reviewPlan(fakeLlm('sorry, I cannot review that'), 'Summary: ...');
+  // The gate stays non-blocking (ok:true so the confirmed plan proceeds), but
+  // the caller MUST be able to tell this apart from "reviewed and approved":
+  // an unparseable reply is UNKNOWN, never a pass.
   assert.equal(result.ok, true);
   assert.deepEqual(result.issues, []);
+  assert.match(result.parseError, /no JSON verdict/, 'parseError explains the unknown outcome');
+  assert.equal(result.report, 'sorry, I cannot review that', 'the raw reply is surfaced as the report');
 });
 
 test('reviewPlan returns ok when the LLM stream throws', async () => {
@@ -292,4 +323,63 @@ test('reviewPlan forwards the abort signal to the LLM stream', async () => {
   const ac = new AbortController();
   await reviewPlan(llm, 'Summary: ...', { signal: ac.signal });
   assert.equal(receivedSignal, ac.signal, 'signal was forwarded to the stream');
+});
+
+test('reviewPlan forwards deltas to opts.onDelta as they stream', async () => {
+  const chunks = [
+    `${REPORT_MARKER}\n1. re-`,
+    'analysis...\n',
+    `${VERDICT_MARKER}\n`,
+    '{"ok": true, "issues": []}',
+  ];
+  const llm = {
+    stream: async function* () {
+      for (const c of chunks) yield { type: 'delta', text: c };
+    },
+  };
+  const seen = [];
+  const result = await reviewPlan(llm, 'Summary: ...', { onDelta: (t) => seen.push(t) });
+  // Raw deltas are forwarded verbatim (verdict hiding is the caller's job via
+  // createVerdictFilter - shared with code review and already covered by its
+  // own tests).
+  assert.deepEqual(seen, chunks, 'every raw delta is forwarded untouched');
+  assert.equal(result.ok, true);
+  assert.equal(result.parseError, undefined);
+  assert.ok(result.report.includes('re-analysis'), 'report assembled from streamed parts');
+});
+
+test('reviewPlan verdict hidden by createVerdictFilter never reaches the sink', async () => {
+  const chunks = [
+    `${REPORT_MARKER}\nvisible analysis\n`,
+    `${VERDICT_MARKER}\n`,
+    '{"ok": false, "issues": [{"title": "hidden", "detail": "d", "suggestion": "s"}]}',
+  ];
+  const llm = {
+    stream: async function* () {
+      for (const c of chunks) yield { type: 'delta', text: c };
+    },
+  };
+  const seen = [];
+  const result = await reviewPlan(llm, 'Summary: ...', {
+    onDelta: createVerdictFilter((t) => seen.push(t)),
+  });
+  const shown = seen.join('');
+  assert.ok(shown.includes('visible analysis'), 'report text streams through');
+  assert.ok(!shown.includes('VERDICT'), 'verdict marker never reaches the sink');
+  assert.ok(!shown.includes('"ok": false'), 'verdict JSON never reaches the sink');
+  // End-to-end: issues still parsed even though the JSON never streamed out.
+  assert.equal(result.ok, false);
+  assert.equal(result.issues[0].title, 'hidden');
+});
+
+test('reviewPlan never passes maxChars (truncation caused the old silent fake-success)', async () => {
+  let receivedOpts = null;
+  const llm = {
+    stream: async function* (_messages, opts) {
+      receivedOpts = opts;
+      yield { type: 'delta', text: `${VERDICT_MARKER}\n{"ok": true, "issues": []}` };
+    },
+  };
+  await reviewPlan(llm, 'Summary: ...');
+  assert.equal('maxChars' in receivedOpts, false, 'maxChars must NOT be capped (see code_review.js note)');
 });
