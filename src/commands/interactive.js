@@ -521,9 +521,7 @@ export function formatRecentOutputs(messages, { outputs = 5 } = {}) {
     if (ev.kind === 'user') {
       for (const line of userMarkerLines(ev.text)) out.push(style.muted(line));
     } else if (ev.kind === 'tool') {
-      const token = ev.name === 'bash' ? 'bashMode'
-        : ev.name.startsWith('kb_') ? 'accent'
-        : 'border';
+      const token = toolCardToken(ev.name);
       out.push(`  ${toolHeader(ev.name, ev.args, token, { full: true })}`);
     } else {
       out.push(style.dim('  reply:'));
@@ -1241,6 +1239,18 @@ function cardWidthFor(lines, title) {
  * cards keep it because their bordered rows are width-constrained by
  * bodyLine(), while the resume preview prints unbounded full lines.
  */
+/**
+ * Color token for a tool-call card's border and title. bash gets the green
+ * bashMode token, kb_* tools the blue accent, and every other tool (read,
+ * edit, write, find, grep, …) the amber `warning` hue — the default frame
+ * color for tool cards.
+ */
+function toolCardToken(name) {
+  if (name === 'bash') return 'bashMode';
+  if (String(name || '').startsWith('kb_')) return 'accent';
+  return 'warning'; // amber frame for read/edit/write/find/grep/…
+}
+
 function toolHeader(name, args, token, { full = false } = {}) {
   const preview = (s) => (full ? (s || '')
     : (s && s.length > 110 ? s.slice(0, 110) + '…' : (s || '')));
@@ -2933,9 +2943,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       // onToolCallEnd may grow the card further if the body needs more room
       // (it redraws the top via ANSI cursor-up so the borders stay aligned).
       const args = typeof call.arguments === 'string' ? safeParseArgs(call.arguments) : (call.arguments || {});
-      const token = call.name === 'bash' ? 'bashMode'
-        : call.name.startsWith('kb_') ? 'accent'
-        : 'border';
+      const token = toolCardToken(call.name);
       const header = toolHeader(call.name, args, token);
       const w = cardWidthFor([header], call.name);
       process.stderr.write('\n');
@@ -2946,9 +2954,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
       setPhase('waiting for model');
       session.toolCallCount++;
       const args = typeof call.arguments === 'string' ? safeParseArgs(call.arguments) : (call.arguments || {});
-      const token = call.name === 'bash' ? 'bashMode'
-        : call.name.startsWith('kb_') ? 'accent'
-        : 'border';
+      const token = toolCardToken(call.name);
       const header = toolHeader(call.name, args, token);
       const previewText = JSON.stringify(result.ok ? result.result : { error: result.error });
       // Render up to 6 body lines so big tool results don't drown the turn.
