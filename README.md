@@ -279,7 +279,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/session list` | Recent sessions |
 | `/session new` | Start a new session |
 | `/session resume <id>` | Resume a previous session |
-| `/review code` | Manually regression-check the just-completed task (code phase; `plan` reserved) |
+| `/review code` | Manually regression-check the just-completed task (code phase; `plan` reserved). The reviewer's analysis — requirement re-analysis, per-point coverage check, correctness check, conclusion — streams live; an unparseable verdict is reported as UNKNOWN, never as "no issues found" |
 | `/clear` | Clear conversation context |
 | `/compact` | Summarize earlier messages |
 | `/help` `/quit` `/exit` | Help / exit |
@@ -398,10 +398,13 @@ execution begins; see the env-var table.
 When `HK2_ENABLE_CODEREVIEW=1` (default off), after the entire plan finishes
 executing, hk2 runs a Code Review step that checks the completed result — the
 working-tree diff, the changed files, and the agent's final summary — for
-correctness, completeness, and quality, and lists any issues it finds one-by-one
-with detail and a suggestion. The review model is configurable via
-`/model set-phase --phase=code-review <ref>` (same mechanism as `plan-review`);
-when unset it uses the session model. See the env-var table.
+correctness, completeness, and quality. The reviewer's analysis (plan
+re-analysis, per-point coverage check, correctness check, conclusion) streams
+live while it reviews; any issues it finds are then listed one-by-one with
+detail and a suggestion. A reply whose JSON verdict cannot be parsed is
+reported as UNKNOWN, never as "no issues found". The review model is
+configurable via `/model set-phase --phase=code-review <ref>` (same mechanism
+as `plan-review`); when unset it uses the session model. See the env-var table.
 
 ### Typing while a task runs
 
@@ -528,7 +531,7 @@ reject `glm-4.7[1m]`.
 | `HK2_ENABLE_REQUEST_ASSESS` | When 1 (and `HK2_ENABLE_QUERYREWRITE=1`), hk2 first asks the LLM whether a user request is clear. If not, it surfaces the unclear aspects plus candidate interpretations as a numbered menu (with a free-text "something else" option) and feeds the chosen clarification back into the query rewrite. The assessment model is configurable via `/model set-phase --phase=request-assess <ref>` (same mechanism as `rewrite-query`); when unset it uses the session model. Active only in interactive TTY mode; one bounded round. Best-effort: any failure falls through to the normal rewrite. | `1` |
 | `HK2_ENABLE_PHASEMODEL_FALLBACK` | What to do when a phase model configured via `/model set-phase` (e.g. `rewrite-query`, `request-assess`) is unreachable (connection refused / timeout / HTTP error). `1`: print a warning and re-run the phase on the current session (main) model so the phase still completes. `0`: print a warning and skip the phase entirely (the rewrite falls back to the raw query; the assessment round is skipped). Never silently succeeds: a dead phase model always produces a warning, and `phaseModelFallback` is recorded in the session transcript for auditing. Applies to `rewrite-query` and `request-assess` only — the review phases (`plan-review`, `code-review`) always skip on an unreachable model (warning printed, never a fallback), since silently substituting a model would change what reviewed the plan/code; `skipped` + `error` are recorded in the transcript. | `1` |
 | `HK2_ENABLE_PLANREVIEW` | When 1, after the user confirms a plan, hk2 asks an LLM to review the finalized plan for problems (missing steps, wrong order, ambiguous goals, risky strategies). If the reviewer finds issues, each is surfaced to the user one-by-one for confirmation (accept the reviewer's suggestion / dismiss / type your own); the confirmed resolutions are appended to the plan returned to the agent. The review model is configurable via `/model set-phase --phase=plan-review <ref>` (same mechanism as `rewrite-query`); when unset it uses the session model. Active only in interactive TTY mode. Best-effort: any failure returns the already-confirmed plan unchanged. | `0` |
-| `HK2_ENABLE_CODEREVIEW` | When 1, after the entire plan finishes executing, hk2 runs a Code Review step on the completed result (working-tree diff, changed files, and the agent's final summary) for correctness, completeness, and quality, and lists any issues one-by-one with detail and a suggestion. The review model is configurable via `/model set-phase --phase=code-review <ref>` (same mechanism as `plan-review`); when unset it uses the session model. Active only in interactive TTY mode. Best-effort: any failure is reported and the turn ends normally. | `0` |
+| `HK2_ENABLE_CODEREVIEW` | When 1, after the entire plan finishes executing, hk2 runs a Code Review step on the completed result (working-tree diff, changed files, and the agent's final summary) for correctness, completeness, and quality. The reviewer's analysis (plan re-analysis, per-point coverage check, correctness check, conclusion) streams live; issues are then listed one-by-one with detail and a suggestion. An unparseable JSON verdict is reported as UNKNOWN, never as "no issues found". The review model is configurable via `/model set-phase --phase=code-review <ref>` (same mechanism as `plan-review`); when unset it uses the session model. Active only in interactive TTY mode. Best-effort: any failure is reported and the turn ends normally. | `0` |
 | `HK2_ENABLE_AUTOUPDATEKB` | When 1, hk2 silently runs an incremental `/kb update` (Index Space) at end of any turn where the agent fell back to bash to search source files. | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | When 1, hk2 silently asks the model to extract a reusable knowledge entry from the just-finished conversation and saves it to Eden Space. Holy Space ALWAYS prompts y/N regardless of this flag. | `0` |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | When a positive number of minutes, the end-of-turn `[kb learn]` fallback is skipped while a knowledge capture for this session's task was handled within that window (an agent `kb_save_knowledge` save/decline, an answered end-of-turn proposal, or the extraction model's skip). The anchor is restored across `--resume` from the transcript. When the agent already saved knowledge via `kb_save_knowledge` this turn, `[kb learn]` is ALWAYS skipped regardless of this variable. | `0` (OFF) |

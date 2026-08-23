@@ -64,7 +64,7 @@ import { buildKbStats, fallbackKind, classifyRead } from '../../lib/agent/kb_sta
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
 import { reviewPlan } from '../../lib/agent/plan_review.js';
-import { reviewCode, buildCodeReviewContent } from '../../lib/agent/code_review.js';
+import { reviewCode, buildCodeReviewContent, createVerdictFilter } from '../../lib/agent/code_review.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
@@ -1963,6 +1963,23 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
       diffText,
       answerText: assistantText || '',
     });
+    // Stream the reviewer's analysis live, mirroring the agent loop's own
+    // streaming UX: progress.tick() clears the spinner on the first delta,
+    // MarkdownStream styles headings/lists/code as they arrive. The verdict
+    // filter hides the machine-readable JSON that follows the === VERDICT ===
+    // marker so the user never sees raw JSON scrolling by.
+    const mdStream = new MarkdownStream();
+    // Write any partial line the renderer is still holding so subsequent
+    // prints (warnings, verdict) always start on a fresh line.
+    const flushNow = () => {
+      const tail = mdStream.flush();
+      if (tail) process.stdout.write(tail);
+    };
+    const onDelta = createVerdictFilter((text) => {
+      progress.tick(text);
+      const rendered = mdStream.feed(text);
+      if (rendered) process.stdout.write(rendered);
+    });
     // Review phases use the "skip on unreachable" policy — NEVER a session-
     // model fallback (see runPhaseWithSkipOnUnreachable): substituting an
     // unplanned model would change what reviewed the code. Warnings are
@@ -1972,20 +1989,27 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
       phase: 'code-review',
       phaseLlm: usingPhaseModel ? reviewLlm : null,
       sessionLlm: session.llm,
-      warn: (m) => { progress.breakLine(); ctx.print(m); },
-      run: (llmForReview) => reviewCode(llmForReview, reviewText, { signal }),
+      warn: (m) => { flushNow(); progress.breakLine(); ctx.print(m); },
+      run: (llmForReview) => reviewCode(llmForReview, reviewText, { signal, onDelta }),
     });
+    // Flush the stream renderer's trailing partial line before the verdict.
+    flushNow();
     await session.transcript?.logMeta('codeReview', {
       skipped: reviewRun.skipped,
       ...(reviewRun.skipped ? { error: reviewRun.error } : {}),
       ok: reviewRun.result ? reviewRun.result.ok : null,
       issueCount: reviewRun.result && reviewRun.result.issues ? reviewRun.result.issues.length : 0,
+      ...(reviewRun.result && reviewRun.result.parseError ? { parseError: reviewRun.result.parseError } : {}),
       changedFileCount: changedFiles.length,
       phaseModelRef: usingPhaseModel && !reviewRun.skipped ? (getPhaseModelRef(session.project, 'code-review') || null) : null,
     });
 
     if (reviewRun.skipped) {
       // Model unreachable: warnings already printed; end without a review.
+    } else if (reviewRun.result.parseError) {
+      // The reply had no parseable JSON verdict: UNKNOWN outcome, never
+      // "no issues found". Whatever the reviewer said already streamed above.
+      ctx.print(style.warning(`  [warn] ${reviewRun.result.parseError} - the review outcome is UNKNOWN.`));
     } else if (reviewRun.result.ok || !reviewRun.result.issues || reviewRun.result.issues.length === 0) {
       ctx.print(style.dim('  Code review complete - no issues found.'));
     } else {

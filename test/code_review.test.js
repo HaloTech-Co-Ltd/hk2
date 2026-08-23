@@ -36,7 +36,7 @@ import {
 } from '../lib/config/home.js';
 import { createSession, buildCtx, reloadAll, collectWorkingTreeDiff } from '../src/commands/interactive.js';
 import { dispatchSlash } from '../src/slash/index.js';
-import { reviewCode, buildCodeReviewContent } from '../lib/agent/code_review.js';
+import { reviewCode, buildCodeReviewContent, createVerdictFilter, REPORT_MARKER, VERDICT_MARKER } from '../lib/agent/code_review.js';
 
 let __seq = 0;
 async function makeSourceDir(name) {
@@ -237,6 +237,98 @@ test('reviewCode returns ok on a non-JSON LLM output', async () => {
   const result = await reviewCode(fakeLlm('sorry, I cannot review that'), SAMPLE_REVIEW);
   assert.equal(result.ok, true);
   assert.deepEqual(result.issues, []);
+  // An unparseable reply is an UNKNOWN verdict, never a passing one: the
+  // parseError field lets the caller warn instead of "no issues found".
+  assert.ok(result.parseError, 'parseError is set when no JSON verdict exists');
+});
+
+test('reviewCode parses the two-part report+verdict reply format', async () => {
+  const out = [
+    REPORT_MARKER,
+    '## Requirement re-analysis',
+    '1. Implement X',
+    '## Coverage check',
+    '1. Implemented in lib/foo.js (+12-3).',
+    '## Conclusion',
+    'Sound overall.',
+    VERDICT_MARKER,
+    '{"ok": false, "issues": [{"title": "t", "detail": "d", "suggestion": "s"}]}',
+  ].join('\n');
+  const result = await reviewCode(fakeLlm(out), SAMPLE_REVIEW);
+  assert.equal(result.ok, false);
+  assert.equal(result.issues.length, 1);
+  assert.equal(result.issues[0].title, 't');
+  assert.ok(result.report && result.report.includes('Requirement re-analysis'), 'report part captured');
+  assert.ok(!result.report.includes(VERDICT_MARKER), 'report excludes the verdict');
+});
+
+test('reviewCode forwards deltas to onDelta as they stream', async () => {
+  const seen = [];
+  const out = REPORT_MARKER + '\nreport body\n' + VERDICT_MARKER + '\n{"ok": true, "issues": []}';
+  const result = await reviewCode(fakeLlm(out), SAMPLE_REVIEW, { onDelta: (t) => seen.push(t) });
+  assert.equal(result.ok, true);
+  assert.ok(seen.length >= 1, 'onDelta received the streamed deltas');
+  const joined = seen.join('');
+  assert.ok(joined.includes('report body'), 'report text forwarded');
+});
+
+test('reviewCode flags a report-only reply (VERDICT marker missing) as parseError', async () => {
+  const out = REPORT_MARKER + '\nOnly prose analysis, no verdict at all.';
+  const result = await reviewCode(fakeLlm(out), SAMPLE_REVIEW);
+  assert.equal(result.ok, true);
+  assert.ok(result.parseError, 'report-only reply is an unknown verdict');
+  assert.ok(result.report.includes('Only prose analysis'), 'report preserved for display');
+});
+
+test('createVerdictFilter streams the report but never the verdict JSON', () => {
+  const got = [];
+  const f = createVerdictFilter((t) => got.push(t));
+  // Report marker + body, split at awkward boundaries (marker split across deltas).
+  f(REPORT_MARKER.slice(0, 10));
+  f(REPORT_MARKER.slice(10) + '\n## Analysis\nchecked point 1.\n');
+  // Verdict marker split across two deltas.
+  f(VERDICT_MARKER.slice(0, 7));
+  f(VERDICT_MARKER.slice(7) + '\n{"ok": true, "issues": []}');
+  f('more after verdict - must be dropped');
+  const out = got.join('');
+  assert.ok(out.includes('## Analysis'), 'report body streamed');
+  assert.ok(!out.includes(REPORT_MARKER), 'leading report marker hidden');
+  assert.ok(!out.includes(VERDICT_MARKER), 'verdict marker never streamed');
+  assert.ok(!out.includes('"ok": true'), 'verdict JSON never streamed');
+  assert.ok(!out.includes('more after verdict'), 'post-verdict deltas dropped');
+});
+
+test('createVerdictFilter holds back a tail that may become the verdict marker', () => {
+  const got = [];
+  const f = createVerdictFilter((t) => got.push(t));
+  f('line one\n');
+  f('=== VERD'); // could be the start of === VERDICT ===
+  f('ICT ===\n{"ok": true}');
+  const out = got.join('');
+  assert.ok(out.includes('line one'), 'safe text streams through');
+  assert.ok(!out.includes('VERD'), 'potential marker tail is held back, never shown partially');
+});
+
+test('createVerdictFilter passes a plain-JSON reply through as-is (legacy)', () => {
+  const got = [];
+  const f = createVerdictFilter((t) => got.push(t));
+  f('{"ok": true, "issues": []}');
+  const out = got.join('');
+  assert.ok(out.includes('"ok": true'), 'legacy reply has nothing to hide');
+});
+
+test('createVerdictFilter releases a held-back tail when no marker follows', () => {
+  // Regression guard: a report whose text merely CONTAINS the characters of a
+  // potential marker tail (e.g. a line ending in "=== VERD") must not lose
+  // that text once the next deltas prove it is not the marker.
+  const got = [];
+  const f = createVerdictFilter((t) => got.push(t));
+  f(REPORT_MARKER + '\nbefore\n');
+  f('ends with === VERD');           // held back (could become the marker)
+  f('ICT continues here\n');         // diverges from the marker -> release
+  const out = got.join('');
+  assert.ok(out.includes('before'), 'safe text streamed');
+  assert.ok(out.includes('ends with === VERDICT continues here'), 'held tail released intact once it diverges');
 });
 
 test('reviewCode returns ok when the LLM stream throws', async () => {

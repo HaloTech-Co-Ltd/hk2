@@ -36,6 +36,7 @@ import { createSession, buildCtx, reloadAll } from '../src/commands/interactive.
 import { dispatchSlash } from '../src/slash/index.js';
 import {
   buildManualCodeReviewContent, MANUAL_REVIEW_SYSTEM_PROMPT, reviewCode,
+  createVerdictFilter, REPORT_MARKER, VERDICT_MARKER,
 } from '../lib/agent/code_review.js';
 
 let __seq = 0;
@@ -213,22 +214,27 @@ test('/review code prefers the project code-review phase model over the session 
   // printed (the phase ref) plus a dead session model - the review must NOT
   // run on the session model, so a dead session model with a successful
   // outcome proves the phase model path was taken.
-  const fakePhase = recordingLlm('{"ok": true, "issues": []}');
+  const fakePhase = recordingLlm(''); // capture-only; verdict comes from SSE below
   session.llm = deadLlm();
-  // Swap the LLMClient constructor output by resolving through ctx: simpler -
-  // patch the module-level LLMClient used by review.js via its instance:
-  // we instead verify the label + that the review completed successfully.
   // The real client would hit http://b.example - so run with a patched global
-  // fetch that answers for b.example only.
+  // fetch that answers for b.example only, in the SSE wire format the OpenAI
+  // adapter consumes (a plain-JSON body would parse to an EMPTY stream).
+  const reply = [
+    '=== REVIEW REPORT ===',
+    '## Requirement re-analysis',
+    '1. Implement the /review command.',
+    '## Conclusion',
+    'Sound.',
+    '=== VERDICT ===',
+    '{"ok": true, "issues": []}',
+  ].join('\n');
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init?.body ?? '{}');
     const msgs = body.messages || [];
     fakePhase.calls.push({ messages: msgs });
-    const content = (msgs.at(-1) || {}).content || '';
-    return new Response(JSON.stringify({
-      choices: [{ message: { content: '{"ok": true, "issues": []}' } }],
-    }), { status: 200 });
+    const sse = 'data: ' + JSON.stringify({ choices: [{ delta: { content: reply } }] }) + '\n\n' + 'data: [DONE]\n\n';
+    return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   try {
     await dispatchSlash('/review code', ctx);
@@ -317,6 +323,73 @@ test('/review code sends ONLY the request and result, never the conversation pro
 // ---------------------------------------------------------------------------
 // 4. Rendering + unreachable-model policy
 // ---------------------------------------------------------------------------
+
+test('/review code streams the reviewer report and never the verdict JSON', async () => {
+  await seedModels();
+  const p = await makeProject('stream');
+  await setCurrentProject(p.id);
+  const { session, ctx, prints } = await makeCtx(p);
+  const reply = [
+    REPORT_MARKER,
+    '## Requirement re-analysis',
+    '1. Implement the /review command.',
+    '## Coverage check',
+    '1. Covered: dispatch registered in src/slash/index.js.',
+    '## Conclusion',
+    'Sound overall.',
+    VERDICT_MARKER,
+    '{"ok": true, "issues": []}',
+  ].join('\n');
+  session.llm = recordingLlm(reply);
+
+  await dispatchSlash('/review code', ctx);
+  const all = prints.join('\n');
+  assert.ok(all.includes('Requirement re-analysis'), 'report analysis streams to the user');
+  assert.ok(all.includes('Covered: dispatch registered'), 'per-point coverage check streams');
+  assert.ok(all.includes('Sound overall.'), 'conclusion streams');
+  assert.ok(!all.includes(VERDICT_MARKER), 'the verdict marker never prints');
+  assert.ok(!all.includes('"ok": true'), 'the raw verdict JSON never prints');
+  assert.ok(all.includes('no issues found'), 'final verdict line still renders');
+});
+
+test('/review code warns UNKNOWN (never "no issues") when the reply has no verdict', async () => {
+  await seedModels();
+  const p = await makeProject('unknown');
+  await setCurrentProject(p.id);
+  const { session, ctx, prints } = await makeCtx(p);
+  session.llm = recordingLlm('I looked at it and it seems fine, no structured answer.');
+
+  await dispatchSlash('/review code', ctx);
+  const all = prints.join('\n');
+  assert.ok(all.includes('UNKNOWN'), 'unknown outcome is declared');
+  assert.ok(!all.includes('no issues found'), 'an unparseable reply must NOT read as a pass');
+});
+
+test('/review code does not lose the report tail (table + trailing partial line)', async () => {
+  await seedModels();
+  const p = await makeProject('tail');
+  await setCurrentProject(p.id);
+  const { session, ctx, prints } = await makeCtx(p);
+  // Regression guard: the report ends with a rendered TABLE followed by a
+  // partial line WITHOUT a trailing newline. The old flush logic printed the
+  // table (md.flush() non-empty) and silently dropped the partial tail.
+  const reply = [
+    REPORT_MARKER,
+    '## Coverage check',
+    '| point | status |',
+    '|---|---|',
+    '| 1. streaming | done |',
+    'final partial sentence without newline',
+    VERDICT_MARKER,
+    '{"ok": true, "issues": []}',
+  ].join('\n');
+  session.llm = recordingLlm(reply);
+
+  await dispatchSlash('/review code', ctx);
+  const all = prints.join('\n');
+  assert.ok(all.includes('streaming'), 'table row rendered');
+  assert.ok(all.includes('final partial sentence without newline'), 'trailing partial line must NOT be dropped');
+});
 
 test('/review code prints issues one-by-one', async () => {
   await seedModels();

@@ -273,7 +273,7 @@ hk2
 | `/session list` | 最近的会话 |
 | `/session new` | 开始新会话 |
 | `/session resume <id>` | 恢复之前的会话 |
-| `/review code` | 手动回归检查刚完成的任务（code 阶段；`plan` 预留） |
+| `/review code` | 手动回归检查刚完成的任务（code 阶段；`plan` 预留）。审查过程实时流式展示：需求重分析、逐项覆盖检查、正确性检查与结论；无法解析出判定 JSON 时显式报 UNKNOWN，绝不伪装成"未发现问题" |
 | `/clear` | 清空对话上下文 |
 | `/compact` | 摘要压缩早期消息 |
 | `/help` `/quit` `/exit` | 帮助 / 退出 |
@@ -382,7 +382,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 
 当 `HK2_ENABLE_PLANREVIEW=1`（默认关闭）时，用户确认计划后，LLM 会复审该计划，并在执行开始前将发现的问题逐一呈现给用户确认；详见环境变量表。
 
-当 `HK2_ENABLE_CODEREVIEW=1`（默认关闭）时，整个计划执行完成后，hk2 会执行一步 Code Review，检查完成结果（工作区 diff、变更文件、代理的最终总结）的正确性、完整性与质量，并将发现的问题逐一列出、给出详细说明与建议。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。详见环境变量表。
+当 `HK2_ENABLE_CODEREVIEW=1`（默认关闭）时，整个计划执行完成后，hk2 会执行一步 Code Review，检查完成结果（工作区 diff、变更文件、代理的最终总结）的正确性、完整性与质量。审查过程实时流式展示（计划重分析、逐项覆盖检查、正确性检查、结论），发现的问题会逐一列出并给出详细说明与建议；无法解析出判定 JSON 时显式报 UNKNOWN，绝不伪装成"未发现问题"。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。详见环境变量表。
 
 ### 任务运行中继续输入
 
@@ -492,7 +492,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_ENABLE_REQUEST_ASSESS` | 为 1 时（且 `HK2_ENABLE_QUERYREWRITE=1`），hk2 会先询问 LLM 用户请求是否清晰。若不清晰，则以编号菜单（含“其他（自定义）”自由文本选项）呈现不清晰的方面与候选解读，并将用户选定的澄清反馈回查询重写。评估模型可通过 `/model set-phase --phase=request-assess <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用；仅一轮有界交互。尽力而为：任何失败都回退到正常重写流程。 | `1` |
 | `HK2_ENABLE_PHASEMODEL_FALLBACK` | 当通过 `/model set-phase` 配置的阶段模型（如 `rewrite-query`、`request-assess`）不可达（连接拒绝 / 超时 / HTTP 错误）时的处理策略。为 1：输出告警，并改用当前会话主模型重跑该阶段，使阶段仍能完成；为 0：输出告警并跳过该阶段（重写退回原始查询；清晰度评估轮次被跳过）。绝不静默成功：阶段模型不可用时必输出告警，并在会话转录中记录 phaseModelFallback 供事后审计。仅适用于 `rewrite-query` 与 `request-assess`；审查阶段（`plan-review`、`code-review`）在模型不可达时始终直接跳过（输出告警，绝不回退到其他模型）——静默替换模型会使实际执行审查的模型发生变化，跳过时在转录中记录 skipped 与 error。 | `1` |
 | `HK2_ENABLE_PLANREVIEW` | 为 1 时，在用户确认计划后，hk2 会请求 LLM 复审已定稿的计划，查找问题（缺失步骤、顺序错误、目标模糊、策略有风险等）。若复审发现有问题，会将每个问题逐一呈现给用户确认（采纳复审建议 / 忽略该问题 / 自定义解决方案）；确认后的解决方案会附加到返回给代理的计划中。复审模型可通过 `/model set-phase --phase=plan-review <ref>` 配置（与 `rewrite-query` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都返回已确认的计划，不做更改。 | `0` |
-| `HK2_ENABLE_CODEREVIEW` | 为 1 时，整个计划执行完成后，hk2 会对完成结果（工作区 diff、变更文件、代理的最终总结）执行一步 Code Review，检查正确性、完整性与质量，并将发现的问题逐一列出，给出详细说明与建议。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都会被报告，本轮仍正常结束。 | `0` |
+| `HK2_ENABLE_CODEREVIEW` | 为 1 时，整个计划执行完成后，hk2 会对完成结果（工作区 diff、变更文件、代理的最终总结）执行一步 Code Review，检查正确性、完整性与质量。审查过程实时流式展示（计划重分析、逐项覆盖检查、正确性检查、结论），发现的问题逐一列出并给出详细说明与建议；无法解析出判定 JSON 时显式报 UNKNOWN，绝不伪装成"未发现问题"。审查模型可通过 `/model set-phase --phase=code-review <ref>` 配置（与 `plan-review` 机制相同）；未设置时使用会话模型。仅在交互式 TTY 模式下启用。尽力而为：任何失败都会被报告，本轮仍正常结束。 | `0` |
 | `HK2_ENABLE_AUTOUPDATEKB` | 为 1 时，若某轮代理回退到 bash 搜索源文件，hk2 会在该轮结束时静默执行一次增量 `/kb update`（Index 空间）。 | `0` |
 | `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden 空间。无论此标志如何，Holy 空间始终提示 y/N。 | `0` |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 设为正整数分钟数时，若本会话任务的知识捕获在该时间窗口内已被处理（代理通过 `kb_save_knowledge` 保存/拒绝、已回答的轮末提案、或抽取模型的跳过），则跳过轮末的 `[kb learn]` 追问。该锚点通过会话记录在 `--resume` 后恢复。当代理本轮已通过 `kb_save_knowledge` 保存知识时，无论此变量如何都跳过 `[kb learn]`。 | `0`（关闭） |

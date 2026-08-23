@@ -28,7 +28,10 @@
  * The review itself runs through reviewCode() with the manual
  * regression-check system prompt (see lib/agent/code_review.js), under the
  * same "skip on unreachable" policy as the automatic end-of-turn review
- * (never silently re-runs on another model).
+ * (never silently re-runs on another model). The reviewer's analysis
+ * (requirement re-analysis, coverage check, correctness check, conclusion)
+ * streams live to the terminal as it is produced; the machine-readable
+ * verdict JSON is never shown raw — only the parsed issues/verdict line.
  *
  * Context isolation: by design the review messages contain ONLY the request
  * and the result material. The reviewer never sees the implementation
@@ -40,7 +43,9 @@ import {
 import { LLMClient } from '../../lib/llm/client.js';
 import {
   reviewCode, buildManualCodeReviewContent, MANUAL_REVIEW_SYSTEM_PROMPT,
+  createVerdictFilter,
 } from '../../lib/agent/code_review.js';
+import { MarkdownStream } from '../../lib/agent/markdown.js';
 import { runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
 
 /** phase alias (as typed) -> canonical pipeline phase name */
@@ -84,6 +89,10 @@ function printUsage(ctx) {
   ctx.print(`result (final answer + changed files + working-tree diff) are sent`);
   ctx.print(`to the review model - the task's implementation context is ignored,`);
   ctx.print(`so it cannot influence or pollute the review.`);
+  ctx.print(``);
+  ctx.print(`The reviewer's analysis (requirement re-analysis, per-point coverage`);
+  ctx.print(`check, correctness check, conclusion) streams live while it reviews;`);
+  ctx.print(`only the final verdict is summarized after the analysis.`);
   ctx.print(``);
   ctx.print(`Examples:`);
   ctx.print(`  /review code`);
@@ -196,22 +205,72 @@ export async function cmdReview(args, ctx) {
 
   ctx.setPhase?.('reviewing code');
   try {
+    // Stream the reviewer's analysis live. MarkdownStream styles headings /
+    // lists / code as they arrive (same renderer as the agent loop); the
+    // verdict filter hides the machine-readable JSON that follows the
+    // === VERDICT === marker. ctx.print appends its own newline, so feed the
+    // renderer line-by-line (only lines ending in \n render fully; the tail
+    // is flushed after the call completes).
+    const md = new MarkdownStream();
+    let pendingLine = '';
+    // Print rendered lines, preserving inner blank lines (paragraph breaks)
+    // but dropping the trailing '' produced by the final newline (ctx.print
+    // supplies its own line break).
+    const printRendered = (rendered) => {
+      if (!rendered) return;
+      const lines = rendered.split('\n');
+      if (lines.length && lines[lines.length - 1] === '') lines.pop();
+      for (const line of lines) ctx.print(line);
+    };
+    const flushPending = () => {
+      // Feed the trailing partial line through the renderer WITH a newline so
+      // it renders fully, then flush whatever the renderer still holds (an
+      // open table, a pending table row). Both outputs must print — feeding
+      // only one of them used to drop the other.
+      let rendered = '';
+      if (pendingLine !== '') rendered += md.feed(pendingLine + '\n');
+      rendered += md.flush();
+      if (rendered) printRendered(rendered);
+      else if (pendingLine !== '') ctx.print(pendingLine);
+      pendingLine = '';
+    };
+    const emit = (chunk) => {
+      pendingLine += chunk;
+      // Emit every COMPLETE line (ends with \n) now; hold the partial tail.
+      let nl;
+      while ((nl = pendingLine.indexOf('\n')) !== -1) {
+        const line = pendingLine.slice(0, nl + 1);
+        pendingLine = pendingLine.slice(nl + 1);
+        printRendered(md.feed(line));
+      }
+    };
+    const onDelta = createVerdictFilter(emit);
     const reviewRun = await runPhaseWithSkipOnUnreachable({
       phase: 'code-review',
       phaseLlm: source === 'session' ? null : reviewLlm,
       sessionLlm: ctx.llm || reviewLlm,
-      warn: (m) => ctx.print(m),
+      warn: (m) => { flushPending(); ctx.print(m); },
       run: (llmForReview) => reviewCode(llmForReview, reviewText, {
         systemPrompt: MANUAL_REVIEW_SYSTEM_PROMPT,
+        onDelta,
       }),
     });
+    // Flush any trailing partial line the stream renderer is still holding.
+    flushPending();
 
     if (reviewRun.skipped) {
       // Model unreachable: warnings already printed; no review result.
       return;
     }
     const result = reviewRun.result;
-    if (result.ok || !result.issues || result.issues.length === 0) {
+    if (result.parseError) {
+      // The reply had no parseable JSON verdict: an UNKNOWN outcome, never
+      // "no issues found". The raw reply (or whatever streamed) is already
+      // visible above; say explicitly what happened.
+      ctx.print('');
+      ctx.print(`  [warn] ${result.parseError} - the review outcome is UNKNOWN.`);
+      ctx.print(`  The reviewer's reply is shown above as-is.`);
+    } else if (result.ok || !result.issues || result.issues.length === 0) {
       ctx.print(`  Code review complete - no issues found.`);
     } else {
       ctx.print(`  Code review found ${result.issues.length} issue(s):`);
