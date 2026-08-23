@@ -1,4 +1,5 @@
-<img width="679" height="231" alt="Screenshot 2026-08-15 at 17 52 46" src="https://github.com/user-attachments/assets/b43064fc-80d1-4000-b97b-efd0e6b32bb0" />
+<img width="886" height="223" alt="Screenshot 2026-08-23 at 09 02 34" src="https://github.com/user-attachments/assets/f64c2197-5301-46d2-8984-d659dac5e556" />
+
 
 # hk2
 
