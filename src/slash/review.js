@@ -46,6 +46,7 @@ import {
   createVerdictFilter,
 } from '../../lib/agent/code_review.js';
 import { MarkdownStream } from '../../lib/agent/markdown.js';
+import { ReasoningStream } from '../../lib/agent/reasoning_stream.js';
 import { runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
 
 /** phase alias (as typed) -> canonical pipeline phase name */
@@ -208,10 +209,14 @@ export async function cmdReview(args, ctx) {
     // Stream the reviewer's analysis live. MarkdownStream styles headings /
     // lists / code as they arrive (same renderer as the agent loop); the
     // verdict filter hides the machine-readable JSON that follows the
-    // === VERDICT === marker. ctx.print appends its own newline, so feed the
+    // === VERDICT === marker. The reviewer's THINKING stream renders live
+    // too (ReasoningStream, mirroring the main agent loop): reasoning deltas
+    // arrive before any body text, so without this the deep-reasoning window
+    // is a silent wait. ctx.print appends its own newline, so feed the
     // renderer line-by-line (only lines ending in \n render fully; the tail
     // is flushed after the call completes).
     const md = new MarkdownStream();
+    const reasoningStream = new ReasoningStream();
     let pendingLine = '';
     // Print rendered lines, preserving inner blank lines (paragraph breaks)
     // but dropping the trailing '' produced by the final newline (ctx.print
@@ -226,7 +231,10 @@ export async function cmdReview(args, ctx) {
       // Feed the trailing partial line through the renderer WITH a newline so
       // it renders fully, then flush whatever the renderer still holds (an
       // open table, a pending table row). Both outputs must print — feeding
-      // only one of them used to drop the other.
+      // only one of them used to drop the other. End the reasoning window
+      // first so its hidden-lines notice (if any) prints before the report.
+      const reasoningTail = reasoningStream.end();
+      if (reasoningTail) ctx.print(reasoningTail.replace(/\n$/, ''));
       let rendered = '';
       if (pendingLine !== '') rendered += md.feed(pendingLine + '\n');
       rendered += md.flush();
@@ -244,6 +252,10 @@ export async function cmdReview(args, ctx) {
         printRendered(md.feed(line));
       }
     };
+    const onReasoning = (text) => {
+      const rendered = reasoningStream.feed(text);
+      if (rendered) process.stdout.write(rendered);
+    };
     const onDelta = createVerdictFilter(emit);
     const reviewRun = await runPhaseWithSkipOnUnreachable({
       phase: 'code-review',
@@ -253,6 +265,7 @@ export async function cmdReview(args, ctx) {
       run: (llmForReview) => reviewCode(llmForReview, reviewText, {
         systemPrompt: MANUAL_REVIEW_SYSTEM_PROMPT,
         onDelta,
+        onReasoning,
       }),
     });
     // Flush any trailing partial line the stream renderer is still holding.

@@ -279,7 +279,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/session list` | Recent sessions |
 | `/session new` | Start a new session |
 | `/session resume <id>` | Resume a previous session |
-| `/review code` | Manually regression-check the just-completed task (code phase; `plan` reserved). The reviewer's analysis — requirement re-analysis, per-point coverage check, correctness check, conclusion — streams live; an unparseable verdict is reported as UNKNOWN, never as "no issues found" |
+| `/review code` | Manually regression-check the just-completed task (code phase; `plan` reserved). The reviewer's thinking stream (`✎ thinking`) and analysis — requirement re-analysis, per-point coverage check, correctness check, conclusion — stream live; an unparseable verdict is reported as UNKNOWN, never as "no issues found" |
 | `/clear` | Clear conversation context |
 | `/compact` | Summarize earlier messages |
 | `/help` `/quit` `/exit` | Help / exit |
@@ -395,7 +395,10 @@ When `HK2_ENABLE_PLANREVIEW=1` (default off), after the user confirms a plan,
 an LLM re-analyzes the requirement, checks the plan for coverage (every needed
 part delivered), ordering, feasibility, risks, and unstated assumptions, and
 surfaces any issues one-by-one for confirmation before execution begins. The
-reviewer's analysis streams live; an unparseable verdict is reported as
+reviewer's thinking stream (reasoning_content) renders live as `✎ thinking`
+(dim italic, capped at 5 lines by default — set `HK2_HIDE_THINKING=0` for the
+full stream), followed by its analysis, which also streams live; an
+unparseable verdict is reported as
 UNKNOWN, never as "no issues found"; see the env-var table. Reviews always
 run with reasoning enabled and no fixed timeout — the reviewer waits for the
 LLM to finish (the user can still abort), so a deep review is never cut off
@@ -404,8 +407,11 @@ mid-reply.
 When `HK2_ENABLE_CODEREVIEW=1` (default off), after the entire plan finishes
 executing, hk2 runs a Code Review step that checks the completed result — the
 working-tree diff, the changed files, and the agent's final summary — for
-correctness, completeness, and quality. The reviewer's analysis (plan
-re-analysis, per-point coverage check, correctness check, conclusion) streams
+correctness, completeness, and quality. The reviewer's thinking stream
+(reasoning_content) renders live as `✎ thinking` (dim italic, capped at 5
+lines by default — set `HK2_HIDE_THINKING=0` for the full stream), followed
+by its analysis (plan re-analysis, per-point coverage check, correctness
+check, conclusion), which streams
 live while it reviews; any issues it finds are then listed one-by-one with
 detail and a suggestion. A reply whose JSON verdict cannot be parsed is
 reported as UNKNOWN, never as "no issues found". The review model is

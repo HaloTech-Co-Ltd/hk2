@@ -376,6 +376,45 @@ test('reviewCode always enables reasoning and never sets a timeout', async () =>
   assert.equal(receivedOpts.timeoutMs, 0, 'timeoutMs must be 0 (no timeout — wait for the LLM to finish)');
 });
 
+test('reviewCode forwards reasoning deltas to onReasoning and body deltas to onDelta', async () => {
+  const reasoningChunks = [];
+  const bodyChunks = [];
+  const llm = {
+    stream: async function* () {
+      yield { type: 'reasoning', text: 'Let me check the diff against the plan.\n' };
+      yield { type: 'reasoning', text: 'Coverage looks complete.\n' };
+      yield { type: 'delta', text: `${REPORT_MARKER}\nAll good.\n` };
+      yield { type: 'delta', text: `${VERDICT_MARKER}\n{"ok": true, "issues": []}` };
+      // An empty reasoning delta must not reach the callback.
+      yield { type: 'reasoning', text: '' };
+    },
+  };
+  const result = await reviewCode(llm, SAMPLE_REVIEW, {
+    onDelta: (t) => bodyChunks.push(t),
+    onReasoning: (t) => reasoningChunks.push(t),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(reasoningChunks, [
+    'Let me check the diff against the plan.\n',
+    'Coverage looks complete.\n',
+  ], 'every non-empty reasoning delta is forwarded, in order');
+  assert.equal(bodyChunks.length, 2, 'body deltas still stream via onDelta');
+  assert.ok(bodyChunks.join('').includes('All good.'), 'report body streamed');
+});
+
+test('reviewCode drops reasoning deltas when no onReasoning is given', async () => {
+  const bodyChunks = [];
+  const llm = {
+    stream: async function* () {
+      yield { type: 'reasoning', text: 'thinking...\n' };
+      yield { type: 'delta', text: `${VERDICT_MARKER}\n{"ok": true, "issues": []}` };
+    },
+  };
+  const result = await reviewCode(llm, SAMPLE_REVIEW, { onDelta: (t) => bodyChunks.push(t) });
+  assert.equal(result.ok, true);
+  assert.equal(bodyChunks.length, 1, 'only the body delta arrives');
+});
+
 // ---------------------------------------------------------------------------
 // 3. buildCodeReviewContent(): section framing + diff truncation
 // ---------------------------------------------------------------------------

@@ -1967,13 +1967,24 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
     // streaming UX: progress.tick() clears the spinner on the first delta,
     // MarkdownStream styles headings/lists/code as they arrive. The verdict
     // filter hides the machine-readable JSON that follows the === VERDICT ===
-    // marker so the user never sees raw JSON scrolling by.
+    // marker so the user never sees raw JSON scrolling by. The reviewer's
+    // THINKING stream renders live too (ReasoningStream + progress.reason(),
+    // mirroring the main agent loop): reasoning deltas arrive before any body
+    // text, so without this the whole deep-reasoning window is a silent
+    // spinner.
     const mdStream = new MarkdownStream();
+    const reasoningStream = new ReasoningStream();
     // Write any partial line the renderer is still holding so subsequent
     // prints (warnings, verdict) always start on a fresh line.
     const flushNow = () => {
-      const tail = mdStream.flush();
+      const tail = reasoningStream.end() + mdStream.flush();
       if (tail) process.stdout.write(tail);
+    };
+    const onReasoning = (text) => {
+      progress.reason();
+      if (reasoningStream.headerShown) progress.pause();
+      const rendered = reasoningStream.feed(text);
+      if (rendered) process.stdout.write(rendered);
     };
     const onDelta = createVerdictFilter((text) => {
       progress.tick(text);
@@ -1990,7 +2001,7 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
       phaseLlm: usingPhaseModel ? reviewLlm : null,
       sessionLlm: session.llm,
       warn: (m) => { flushNow(); progress.breakLine(); ctx.print(m); },
-      run: (llmForReview) => reviewCode(llmForReview, reviewText, { signal, onDelta }),
+      run: (llmForReview) => reviewCode(llmForReview, reviewText, { signal, onDelta, onReasoning }),
     });
     // Flush the stream renderer's trailing partial line before the verdict.
     flushNow();
@@ -2531,11 +2542,21 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         // styles headings/lists as they arrive, and createVerdictFilter hides
         // the machine-readable === VERDICT === JSON so the user never sees raw
         // JSON scroll by. flushNow() writes any trailing partial line before
-        // warnings / menus / verdicts print.
+        // warnings / menus / verdicts print. The reviewer's THINKING stream
+        // renders live too (ReasoningStream + progress.reason(), mirroring the
+        // main agent loop): reasoning deltas arrive before any body text, so
+        // without this the whole deep-reasoning window is a silent spinner.
         const mdStream = new MarkdownStream();
+        const reasoningStream = new ReasoningStream();
         const flushNow = () => {
-          const tail = mdStream.flush();
+          const tail = reasoningStream.end() + mdStream.flush();
           if (tail) process.stdout.write(tail);
+        };
+        const onReasoning = (text) => {
+          progress.reason();
+          if (reasoningStream.headerShown) progress.pause();
+          const rendered = reasoningStream.feed(text);
+          if (rendered) process.stdout.write(rendered);
         };
         const onDelta = createVerdictFilter((text) => {
           progress.tick(text);
@@ -2550,6 +2571,7 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
           run: (llmForReview) => reviewPlan(llmForReview, confirmed, {
             signal: abortCtrl.signal,
             onDelta,
+            onReasoning,
           }),
         });
         flushNow(); // write the renderer's trailing partial line before any menu/warning

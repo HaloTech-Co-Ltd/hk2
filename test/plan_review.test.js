@@ -385,3 +385,23 @@ test('reviewPlan always enables reasoning and never sets a timeout', async () =>
   assert.equal(receivedOpts.enableReasoning, true, 'reasoning is always on for plan review');
   assert.equal(receivedOpts.timeoutMs, 0, 'timeoutMs must be 0 (no timeout — wait for the LLM to finish)');
 });
+
+test('reviewPlan forwards reasoning deltas to onReasoning and body deltas to onDelta', async () => {
+  const reasoningChunks = [];
+  const bodyChunks = [];
+  const llm = {
+    stream: async function* () {
+      yield { type: 'reasoning', text: 'Decomposing the plan into checklist points.\n' };
+      yield { type: 'delta', text: `${REPORT_MARKER}\nPlan looks sound.\n` };
+      yield { type: 'delta', text: `${VERDICT_MARKER}\n{"ok": true, "issues": []}` };
+      yield { type: 'reasoning', text: '' }; // empty: must not reach the callback
+    },
+  };
+  const result = await reviewPlan(llm, 'Summary: ...', {
+    onDelta: (t) => bodyChunks.push(t),
+    onReasoning: (t) => reasoningChunks.push(t),
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(reasoningChunks, ['Decomposing the plan into checklist points.\n'], 'reasoning deltas forwarded');
+  assert.ok(bodyChunks.join('').includes('Plan looks sound.'), 'report body streamed via onDelta');
+});
