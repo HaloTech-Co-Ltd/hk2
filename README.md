@@ -396,7 +396,10 @@ an LLM re-analyzes the requirement, checks the plan for coverage (every needed
 part delivered), ordering, feasibility, risks, and unstated assumptions, and
 surfaces any issues one-by-one for confirmation before execution begins. The
 reviewer's analysis streams live; an unparseable verdict is reported as
-UNKNOWN, never as "no issues found"; see the env-var table.
+UNKNOWN, never as "no issues found"; see the env-var table. Reviews always
+run with reasoning enabled and no fixed timeout — the reviewer waits for the
+LLM to finish (the user can still abort), so a deep review is never cut off
+mid-reply.
 
 When `HK2_ENABLE_CODEREVIEW=1` (default off), after the entire plan finishes
 executing, hk2 runs a Code Review step that checks the completed result — the
@@ -407,7 +410,10 @@ live while it reviews; any issues it finds are then listed one-by-one with
 detail and a suggestion. A reply whose JSON verdict cannot be parsed is
 reported as UNKNOWN, never as "no issues found". The review model is
 configurable via `/model set-phase --phase=code-review <ref>` (same mechanism
-as `plan-review`); when unset it uses the session model. See the env-var table.
+as `plan-review`); when unset it uses the session model. See the env-var
+table. Like plan review, it always runs with reasoning enabled and no fixed
+timeout — the reviewer waits for the LLM to finish (the user can still
+abort).
 
 ### Typing while a task runs
 

@@ -2505,9 +2505,11 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         ctx.print(`[warn] could not resolve phase model for plan-review, using session model: ${err.message}`);
       }
       // Surface the Plan Review so the user knows it is running AND what it
-      // is checking. The review is a best-effort LLM call (up to ~20s); show
-      // an animated spinner phase (mirroring rewrite-query / KB retrieval)
-      // so the wait is never silent, then pause it before any output / menu.
+      // is checking. The review is a best-effort LLM call with no fixed
+      // timeout — it waits for the LLM to finish (the user can still abort);
+      // show an animated spinner phase (mirroring rewrite-query / KB
+      // retrieval) so the wait is never silent, then pause it before any
+      // output / menu.
       const reviewModelLabel = usingPhaseModel
         ? (getPhaseModelRef(session.project, 'plan-review') || 'plan-review phase model')
         : 'session model';

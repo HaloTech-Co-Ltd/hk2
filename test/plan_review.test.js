@@ -372,7 +372,7 @@ test('reviewPlan verdict hidden by createVerdictFilter never reaches the sink', 
   assert.equal(result.issues[0].title, 'hidden');
 });
 
-test('reviewPlan never passes maxChars (truncation caused the old silent fake-success)', async () => {
+test('reviewPlan always enables reasoning and never sets a timeout', async () => {
   let receivedOpts = null;
   const llm = {
     stream: async function* (_messages, opts) {
@@ -382,4 +382,6 @@ test('reviewPlan never passes maxChars (truncation caused the old silent fake-su
   };
   await reviewPlan(llm, 'Summary: ...');
   assert.equal('maxChars' in receivedOpts, false, 'maxChars must NOT be capped (see code_review.js note)');
+  assert.equal(receivedOpts.enableReasoning, true, 'reasoning is always on for plan review');
+  assert.equal(receivedOpts.timeoutMs, 0, 'timeoutMs must be 0 (no timeout — wait for the LLM to finish)');
 });

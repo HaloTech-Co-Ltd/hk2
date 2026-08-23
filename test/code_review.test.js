@@ -362,6 +362,20 @@ test('reviewCode forwards the abort signal to the LLM stream', async () => {
   assert.equal(receivedSignal, ac.signal, 'signal was forwarded to the stream');
 });
 
+test('reviewCode always enables reasoning and never sets a timeout', async () => {
+  let receivedOpts = null;
+  const llm = {
+    stream: async function* (_messages, opts) {
+      receivedOpts = opts;
+      yield { type: 'delta', text: `${VERDICT_MARKER}\n{"ok": true, "issues": []}` };
+    },
+  };
+  await reviewCode(llm, SAMPLE_REVIEW);
+  assert.equal('maxChars' in receivedOpts, false, 'maxChars must NOT be capped');
+  assert.equal(receivedOpts.enableReasoning, true, 'reasoning is always on for code review');
+  assert.equal(receivedOpts.timeoutMs, 0, 'timeoutMs must be 0 (no timeout — wait for the LLM to finish)');
+});
+
 // ---------------------------------------------------------------------------
 // 3. buildCodeReviewContent(): section framing + diff truncation
 // ---------------------------------------------------------------------------
