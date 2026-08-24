@@ -83,6 +83,7 @@ import { execFile } from 'node:child_process';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 import { replayTranscript, findLatestSessionId } from '../../lib/agent/transcript.js';
+import { toolCardToken, loadTheme } from '../../lib/agent/tool_theme.js';
 import { VERSION } from '../version.js';
 
 /**
@@ -293,6 +294,10 @@ export async function interactive(opts = {}) {
     process.once('SIGINT', () => { restoreOnce(); process.exit(130); });
     process.once('SIGTERM', () => { restoreOnce(); process.exit(143); });
   }
+
+  // Install user theme overrides (tool-card frame colors) before any card
+  // renders. Missing/invalid theme.json silently keeps built-in colors.
+  await loadTheme().catch(() => {});
 
   printBanner(session, ctx);
 
@@ -1239,18 +1244,6 @@ function cardWidthFor(lines, title) {
  * cards keep it because their bordered rows are width-constrained by
  * bodyLine(), while the resume preview prints unbounded full lines.
  */
-/**
- * Color token for a tool-call card's border and title. bash gets the green
- * bashMode token, kb_* tools the blue accent, and every other tool (read,
- * edit, write, find, grep, …) the amber `warning` hue — the default frame
- * color for tool cards.
- */
-function toolCardToken(name) {
-  if (name === 'bash') return 'bashMode';
-  if (String(name || '').startsWith('kb_')) return 'accent';
-  return 'warning'; // amber frame for read/edit/write/find/grep/…
-}
-
 function toolHeader(name, args, token, { full = false } = {}) {
   const preview = (s) => (full ? (s || '')
     : (s && s.length > 110 ? s.slice(0, 110) + '…' : (s || '')));

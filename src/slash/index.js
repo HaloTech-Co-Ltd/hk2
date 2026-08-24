@@ -63,6 +63,7 @@ import { cmdProject } from './project.js';
 import { cmdKb } from './kb.js';
 import { cmdSession } from './session.js';
 import { cmdReview } from './review.js';
+import { cmdTheme } from './theme.js';
 import { printCommandHelp } from './help.js';
 
 export const SLASH_COMMANDS = [
@@ -71,6 +72,7 @@ export const SLASH_COMMANDS = [
   { name: '/kb',      handler: cmdKb,      description: 'Current project KB (init / update / status / search ...)' },
   { name: '/session', handler: cmdSession, description: 'Session management (info / new / clear / list / resume)' },
   { name: '/review',  handler: cmdReview,  description: 'Manually review the completed task (code) — fresh-eyes regression check' },
+  { name: '/theme',   handler: cmdTheme,   description: 'Customize tool-card border colors (list / set / reset / preview / title-follow)' },
   { name: '/clear',   handler: cmdClear,   description: 'Clear the current conversation context' },
   { name: '/compact', handler: cmdCompact, description: 'Summarize prior conversation into a short brief' },
   { name: '/help',    handler: cmdHelp,    description: 'Show this help' },

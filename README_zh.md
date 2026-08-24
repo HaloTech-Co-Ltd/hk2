@@ -274,6 +274,11 @@ hk2
 | `/session new` | 开始新会话 |
 | `/session resume <id>` | 恢复之前的会话 |
 | `/review code` | 手动回归检查刚完成的任务（code 阶段；`plan` 预留）。复审者的思考流（`✎ thinking`）与审查过程实时流式展示：需求重分析、逐项覆盖检查、正确性检查与结论；无法解析出判定 JSON 时显式报 UNKNOWN，绝不伪装成"未发现问题" |
+| `/theme` | 列出当前工具卡片边框颜色与内置默认值 |
+| `/theme set <key> <color>` | 自定义工具卡片边框/标题颜色并持久化（`key`：`bash`、`kb_*`、`*`，或精确工具名如 `read`；`color`：`#rrggbb`、`ansi:0-255`，或内置 token `accent`/`muted`/`dim`/`success`/`error`/`warning`/`border`/`bashMode`/`pythonMode`；解析优先级：精确工具名 > 分组 key > `*` 通配 > 内置默认） |
+| `/theme reset [key]` | 重置单个自定义颜色，无参数则重置整个自定义主题 |
+| `/theme preview` | 以当前颜色打印三组内置分组的示例工具卡片 |
+| `/theme title-follow [on\|off]` | 切换顶边标题跟随边框颜色（而非固定 muted 色调） |
 | `/clear` | 清空对话上下文 |
 | `/compact` | 摘要压缩早期消息 |
 | `/help` `/quit` `/exit` | 帮助 / 退出 |

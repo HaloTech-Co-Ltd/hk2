@@ -280,6 +280,11 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/session new` | Start a new session |
 | `/session resume <id>` | Resume a previous session |
 | `/review code` | Manually regression-check the just-completed task (code phase; `plan` reserved). The reviewer's thinking stream (`✎ thinking`) and analysis — requirement re-analysis, per-point coverage check, correctness check, conclusion — stream live; an unparseable verdict is reported as UNKNOWN, never as "no issues found" |
+| `/theme` | List current tool-card frame colors vs built-in defaults |
+| `/theme set <key> <color>` | Customize tool-card border/title colors, persisted (`key`: `bash`, `kb_*`, `*`, or an exact tool name like `read`; `color`: `#rrggbb`, `ansi:0-255`, or a built-in token `accent`/`muted`/`dim`/`success`/`error`/`warning`/`border`/`bashMode`/`pythonMode`; resolution priority: exact tool name > group key > `*` wildcard > built-in default) |
+| `/theme reset [key]` | Drop one custom color, or the whole custom theme with no arg |
+| `/theme preview` | Print sample tool cards for the three built-in groups with current colors |
+| `/theme title-follow [on\|off]` | Toggle the top-border title following the frame color instead of the fixed muted hue |
 | `/clear` | Clear conversation context |
 | `/compact` | Summarize earlier messages |
 | `/help` `/quit` `/exit` | Help / exit |
