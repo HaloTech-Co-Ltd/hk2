@@ -1251,25 +1251,25 @@ function toolHeader(name, args, token, { full = false } = {}) {
     case 'bash':
       return `${style.success('$')} ${style.muted(preview(args.command))}`;
     case 'read':
-      return `${style.cardHeader('read', token)} ${style.accent(preview(args.path))}`;
+      return `${style.cardHeader('read', token)} ${style.muted(preview(args.path))}`;
     case 'write':
-      return `${style.cardHeader('write', token)} ${style.accent(preview(args.path))} ${style.dim('(' + (args.content?.length || 0) + ' bytes)')}`;
+      return `${style.cardHeader('write', token)} ${style.muted(preview(args.path))} ${style.dim('(' + (args.content?.length || 0) + ' bytes)')}`;
     case 'edit':
-      return `${style.cardHeader('edit', token)} ${style.accent(preview(args.path))}`;
+      return `${style.cardHeader('edit', token)} ${style.muted(preview(args.path))}`;
     case 'find':
-      return `${style.cardHeader('find', token)} ${style.accent(preview(args.pattern))}`;
+      return `${style.cardHeader('find', token)} ${style.muted(preview(args.pattern))}`;
     case 'grep':
-      return `${style.cardHeader('grep', token)} ${style.accent(preview(args.pattern))}`;
+      return `${style.cardHeader('grep', token)} ${style.muted(preview(args.pattern))}`;
     case 'kb_search':
       return `${style.cardHeader('kb_search', token)} ${style.muted(preview(args.query))}`;
     case 'kb_symbol':
-      return `${style.cardHeader('kb_symbol', token)} ${style.accent(preview(args.name))}`;
+      return `${style.cardHeader('kb_symbol', token)} ${style.muted(preview(args.name))}`;
     case 'kb_neighbors':
     case 'kb_callchain':
     case 'kb_refs':
       return `${style.cardHeader(name, token)} ${style.muted(preview(args.symbol_id))}`;
     case 'kb_class':
-      return `${style.cardHeader('kb_class', token)} ${style.accent(preview(args.name || args.qual_name))}`;
+      return `${style.cardHeader('kb_class', token)} ${style.muted(preview(args.name || args.qual_name))}`;
     case 'kb_knowledge':
     case 'kb_search_knowledge':
       return `${style.cardHeader(name, token)} ${style.muted(preview(args.id || args.query))}`;
