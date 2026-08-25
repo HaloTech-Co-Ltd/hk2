@@ -62,8 +62,30 @@ export async function updateKb() {
   console.error(`[update-kb] source: ${meta.sourcePath}`);
   console.error(`[update-kb] sourceRoot: ${meta.sourceRoot || '(none)'}`);
 
+  // Legacy-KB upgrade check: fix stale layout signals losslessly before the
+  // incremental re-index (same flow as the interactive /kb update command).
+  let full = false;
+  try {
+    const { migrateKb } = await import('../../lib/store/kb_migrate.js');
+    const migration = await migrateKb(kbName);
+    if (migration.error) {
+      console.error(`[update-kb] upgrade aborted: ${migration.error}`);
+      process.exit(2);
+    }
+    if (migration.needed) {
+      console.error(`[update-kb] legacy KB detected — upgrading to the current layout:`);
+      for (const it of migration.items) console.error(`  - ${it.id}: ${it.reason}`);
+      for (const line of migration.performed || []) console.error(`  + ${line}`);
+      if (migration.backupDir) console.error(`  + knowledge snapshot: ${migration.backupDir}`);
+      full = !!migration.fullRebuild;
+      if (full) console.error(`  + parser format changed — full re-index will follow`);
+    }
+  } catch (err) {
+    console.error(`[update-kb] upgrade check failed (continuing with normal update): ${err.message}`);
+  }
+
   const stats = await buildIndex(kbName, {
-    full: false,
+    full,
     onProgress: ({ done, total, file }) => {
       if (done % 25 === 0 || done === total) {
         console.error(`[${done}/${total}] ${file || ''}`);

@@ -259,7 +259,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/project show` | Current project details |
 | `/project drop <id\|name>` | Remove a project (KB preserved) |
 | `/kb init [--full] [--checkpoint-interval=N] [--no-resume] [--no-checkpoint] [--skip-summary]` | Build KB for current project (resumable, auto-generated summaries) |
-| `/kb update` | Incremental update (Index Space) |
+| `/kb update` | Incremental update (Index Space); auto-detects a legacy KB and upgrades it to the current layout losslessly (knowledge snapshot to `backup/pre-upgrade-<ts>/` first, then includeGlobs / supreme-code / doc-graph / parser-version fixes; a parser-version change triggers a full re-index) |
 | `/kb status` | KB statistics (per-space counts) |
 | `/kb search <query> [--top-k=N]` | BM25 + reranking symbol search |
 | `/kb symbol <name>` | Look up symbol by exact name |

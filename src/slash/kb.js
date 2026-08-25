@@ -190,8 +190,31 @@ async function updateKb(rest, ctx) {
   }
   ctx.print(`[kb update] source: ${meta.sourcePath}`);
   if (meta.sourceRoot) ctx.print(`           sourceRoot: ${meta.sourceRoot}`);
+
+  // Legacy-KB upgrade check: detect stale layout signals and fix them
+  // losslessly (knowledge snapshot first) before the incremental re-index.
+  let full = false;
+  try {
+    const { migrateKb } = await import('../../lib/store/kb_migrate.js');
+    const migration = await migrateKb(p.id);
+    if (migration.error) {
+      ctx.print(`[kb update] upgrade aborted: ${migration.error}`);
+      return;
+    }
+    if (migration.needed) {
+      ctx.print(`[kb update] legacy KB detected — upgrading to the current layout:`);
+      for (const it of migration.items) ctx.print(`  - ${it.id}: ${it.reason}`);
+      for (const line of migration.performed || []) ctx.print(`  + ${line}`);
+      if (migration.backupDir) ctx.print(`  + knowledge snapshot: ${migration.backupDir}`);
+      full = !!migration.fullRebuild;
+      if (full) ctx.print(`  + parser format changed — full re-index will follow`);
+    }
+  } catch (err) {
+    ctx.print(`[kb update] upgrade check failed (continuing with normal update): ${err.message}`);
+  }
+
   const stats = await buildIndex(p.id, {
-    full: false,
+    full,
     skipSummary: true,
     onProgress: ({ done, total, file }) => {
       if (done % 25 === 0 || done === total) {
@@ -240,6 +263,9 @@ async function statusKb(ctx) {
     ctx.print(`    totalFiles:   ${stats.totalFiles}`);
     ctx.print(`    totalSymbols: ${stats.totalSymbols}`);
     if (stats.totalDocs) ctx.print(`    totalDocs:    ${stats.totalDocs}`);
+    if (stats.docLinks || stats.docTables || stats.docSymbolMentions) {
+      ctx.print(`    docGraph:     docs=${stats.totalDocs || 0} links=${stats.docLinks || 0} tables=${stats.docTables || 0} symbolMentions=${stats.docSymbolMentions || 0}`);
+    }
     ctx.print(`    uniqueTokens: ${stats.uniqueTokens}`);
     ctx.print(`    avgdl:        ${(stats.avgdl || 0).toFixed(1)}`);
     if (stats.graphNodes) {

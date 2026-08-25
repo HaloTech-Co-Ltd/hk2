@@ -253,7 +253,7 @@ hk2
 | `/project show` | 当前项目详情 |
 | `/project drop <id\|name>` | 移除项目（保留知识库） |
 | `/kb init [--full] [--checkpoint-interval=N] [--no-resume] [--no-checkpoint] [--skip-summary]` | 为当前项目构建知识库（可恢复，自动生成摘要） |
-| `/kb update` | 增量更新（Index Space） |
+| `/kb update` | 增量更新（Index Space）；自动检测旧版 KB 并无损升级到当前布局（先将知识内容快照到 `backup/pre-upgrade-<ts>/`，再修复 includeGlobs / supreme-code / doc 引用图 / parser 版本；parser 版本变化会触发全量重建） |
 | `/kb status` | 知识库统计（各空间计数） |
 | `/kb search <query> [--top-k=N]` | BM25 + 重排序的符号搜索 |
 | `/kb symbol <name>` | 按精确名称查找符号 |

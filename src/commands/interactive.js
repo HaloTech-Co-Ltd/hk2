@@ -3667,7 +3667,28 @@ async function runKbUpdate(session, ctx) {
     const { buildIndex } = await import('../../lib/index/indexer.js');
     const { markKbBuilt } = await import('../../lib/config/home.js');
     const { dropRuntime } = await import('../../lib/retrieval/kb_runtime.js');
-    const stats = await buildIndex(session.project.id, { full: false });
+    // Legacy-KB upgrade check: fix stale layout signals losslessly before the
+    // incremental re-index (same flow as /kb update and --mode=update-kb).
+    let full = false;
+    try {
+      const { migrateKb } = await import('../../lib/store/kb_migrate.js');
+      const migration = await migrateKb(session.project.id);
+      if (migration.error) {
+        ctx.print(`[kb update] upgrade aborted: ${migration.error}`);
+        return false;
+      }
+      if (migration.needed) {
+        ctx.print('[kb update] legacy KB detected — upgrading to the current layout:');
+        for (const it of migration.items) ctx.print(`  - ${it.id}: ${it.reason}`);
+        for (const line of migration.performed || []) ctx.print(`  + ${line}`);
+        if (migration.backupDir) ctx.print(`  + knowledge snapshot: ${migration.backupDir}`);
+        full = !!migration.fullRebuild;
+        if (full) ctx.print('  + parser format changed — full re-index will follow');
+      }
+    } catch (err) {
+      ctx.print(`[kb update] upgrade check failed (continuing with normal update): ${err.message}`);
+    }
+    const stats = await buildIndex(session.project.id, { full });
     await markKbBuilt(session.project.id);
     dropRuntime(session.project.id);
     ctx.print(`[kb update] done: ${stats.totalFiles} files, ${stats.totalSymbols} symbols, ${stats.uniqueTokens} tokens, ${(stats.buildDurationMs / 1000).toFixed(1)}s`);
