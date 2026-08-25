@@ -1341,12 +1341,13 @@ function printBanner(session, ctx) {
 }
 
 function makeCompleter() {
-  const cmds = ['/model', '/project', '/kb', '/session', '/review', '/help', '/quit', '/exit', '/clear', '/compact',
+  const cmds = ['/model', '/project', '/kb', '/session', '/review', '/help', '/quit', '/exit', '/clear', '/compact', '/theme',
     '/model list', '/model add', '/model use', '/model set-default', '/model set', '/model set-phase', '/model add-mcpserver', '/model types', '/model del', '/model show', '/model help',
     '/project init', '/project list', '/project set', '/project show',
     '/kb init', '/kb update', '/kb status', '/kb search', '/kb symbol', '/kb neighbors', '/kb knowledge', '/kb help',
     '/kb knowledge list', '/kb knowledge show', '/kb knowledge add', '/kb knowledge learn', '/kb knowledge help',
     '/session info', '/session list', '/session new', '/session resume',
+    '/theme list', '/theme set', '/theme reset', '/theme preview', '/theme title-follow', '/theme help',
     '/review code', '/review plan'];
   return function completer(line) {
     const hits = cmds.filter(c => c.startsWith(line));

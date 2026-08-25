@@ -286,3 +286,32 @@ test('/theme is registered in SLASH_COMMANDS and shows in help', async () => {
   assert.ok(cmd, '/theme registered');
   assert.match(cmd.description, /border colors/i);
 });
+
+test('/theme help and ? print the family help from HELP_TEXT', async () => {
+  const { cmdTheme } = await import('../src/slash/theme.js');
+  const { HELP_TEXT } = await import('../src/slash/help.js');
+  for (const alias of ['help', '?']) {
+    const lines = [];
+    const ctx = { print: (t) => lines.push(t) };
+    await cmdTheme([alias], ctx);
+    const text = lines.join('\n');
+    assert.ok(text.includes('Usage: /theme'), `/theme ${alias} prints usage`);
+    assert.ok(text.includes('title-follow'), `/theme ${alias} lists subcommands`);
+    assert.ok(!text.includes('Unknown subcommand'), `/theme ${alias} is not rejected`);
+  }
+  // HELP_TEXT is the single source of truth — every routed subcommand is listed.
+  const text = HELP_TEXT.theme.join('\n');
+  for (const sub of ['list', 'set', 'reset', 'preview', 'title-follow']) {
+    assert.ok(text.includes(sub), `/help theme must mention subcommand "${sub}"`);
+  }
+});
+
+test('/theme <unknown> falls back to family help, not a bare usage line', async () => {
+  const { cmdTheme } = await import('../src/slash/theme.js');
+  const lines = [];
+  const ctx = { print: (t) => lines.push(t) };
+  await cmdTheme(['bogus'], ctx);
+  const text = lines.join('\n');
+  assert.ok(text.includes('Unknown subcommand: bogus'));
+  assert.ok(text.includes('Usage: /theme'), 'default branch prints full family help');
+});

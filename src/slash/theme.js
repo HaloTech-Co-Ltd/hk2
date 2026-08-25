@@ -18,6 +18,7 @@ import {
 } from '../../lib/agent/tool_theme.js';
 import fs from 'node:fs/promises';
 import { exists } from '../../lib/util/fs_atomic.js';
+import { printCommandHelp } from './help.js';
 
 const COLOR_HELP = `Color values: #rrggbb | ansi:0-255 | token (accent muted dim success error warning border bashMode pythonMode)`;
 
@@ -29,9 +30,12 @@ export async function cmdTheme(args, ctx) {
     case 'reset': return themeReset(args.slice(1), ctx);
     case 'preview': return themePreview(ctx);
     case 'title-follow': return themeTitleFollow(args.slice(1), ctx);
+    case 'help': case '?':
+      printCommandHelp(ctx, 'theme');
+      return;
     default:
       ctx.print(`Unknown subcommand: ${sub}`);
-      ctx.print(`Usage: /theme [list | set <key> <color> | reset [key] | preview | title-follow [on|off]]`);
+      printCommandHelp(ctx, 'theme');
       return;
   }
 }
