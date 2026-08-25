@@ -162,6 +162,8 @@ Environment variables:
   HK2_PROJECT_SOURCE    Project source root for tool sandbox
   HK2_PLAN_TIMEOUT_MS   /kb knowledge learn Phase 1 planning timeout (ms;
                         default 300000; overridable per-run by --plan-timeout-ms)
+  HK2_LLMAPI_TIMEOUT_MS  Default LLM API request timeout in ms (default
+                        3600000 = 3600s; 0 = no timeout)
   HK2_KB_CHECKPOINT_INTERVAL  /kb init checkpoint cadence in files (default 100)
   HK2_DEBUG=1           Print error stacks
 `);

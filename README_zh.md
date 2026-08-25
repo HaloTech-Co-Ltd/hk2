@@ -506,6 +506,7 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 | `HK2_AUTOCOMPACT_PCTUSED` | 1-100 的整数，上下文使用率触发阈值。仅当已使用的上下文长度 ≥ `模型上下文窗口 × HK2_AUTOCOMPACT_PCTUSED / 100` 时才触发自动压缩。 | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划调用超时（毫秒）。慢速供应商（大文件映射上的推理模型）可能超过默认 300 秒。单次运行可用 `--plan-timeout-ms=N` 覆盖。 | `300000` |
+| `HK2_LLMAPI_TIMEOUT_MS` | 所有 LLM API 请求（chat completions / messages，流式与非流式）的默认超时（毫秒）。解析优先级：单次调用 `opts.timeoutMs` > 每模型 `config.timeout`（解析时始终从同一变量盖戳）> 本环境变量默认值。显式 `0` 表示无超时（不启动中止定时器——plan-review / code-review 阶段依赖此行为）。未设置 / 非法 / 负数回退到默认值。 | `3600000`（3600 秒） |
 | `HK2_INDEX_PARALLEL` | KB 索引解析池的并行度（`/kb init` / `/kb update`）。`0` 或未设置 = 自动（取当前系统 CPU 数）；正整数 N 则固定为 N。 | `0` |
 | `HK2_DEBUG` | 打印错误堆栈 | - |
 | `HK2_NO_COLOR` | 为 1 时禁用 ANSI 颜色（亦遵从标准 `NO_COLOR` 环境变量）。 | - |

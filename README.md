@@ -560,6 +560,7 @@ reject `glm-4.7[1m]`.
 | `HK2_AUTOCOMPACT_PCTUSED` | Integer 1-100 context-usage threshold percentage. Auto-compaction only triggers when the measured context length ≥ `model context window × HK2_AUTOCOMPACT_PCTUSED / 100`. | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | Save `/kb init` checkpoint every N files | `100` |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning call timeout in ms. Slow providers (reasoning models on large file maps) can exceed the default 300s. Per-run override: `--plan-timeout-ms=N`. | `300000` |
+| `HK2_LLMAPI_TIMEOUT_MS` | Default timeout (ms) for every LLM API request (chat completions / messages, streaming and non-streaming). Resolution precedence: per-call `opts.timeoutMs` > per-model `config.timeout` (always stamped at resolve time from this same variable) > this env default. Explicit `0` means NO timeout (no abort timer armed — the plan-review / code-review phases rely on this). Unset / invalid / negative values fall back to the default. | `3600000` (3600s) |
 | `HK2_INDEX_PARALLEL` | Parallelism of the KB index parse pool (`/kb init` / `/kb update`). `0` or unset = auto (host CPU count); a positive integer pins the width. | `0` |
 | `HK2_DEBUG` | Print error stacks | - |
 | `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |
