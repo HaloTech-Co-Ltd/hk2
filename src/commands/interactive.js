@@ -247,7 +247,7 @@ export async function interactive(opts = {}) {
     // them right after the banner instead.
     session.resumeNotice =
       `Resumed session ${session.transcript.sessionId}: ${msgCount} message(s) restored into context`
-      + (session.lastTask ? '; interrupted task state recovered (type 请继续/continue to go on)' : '');
+      + (session.lastTask ? '; interrupted task state recovered (type "continue" to go on)' : '');
     session.resumeOutputsPreview = formatRecentOutputs(session.messages);
   }
 
