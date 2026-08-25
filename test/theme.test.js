@@ -32,6 +32,17 @@ test.after(async () => {
   await fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {});
 });
 
+// style.js picks its color MODE once per process from HK2_NO_COLOR /
+// NO_COLOR / TERM=dumb / COLORTERM / WT_SESSION and does not export it.
+// Probe the real mode empirically instead of guessing from env vars — a plain
+// env check misses NO_COLOR, TERM=dumb, and the 256-color fallback that
+// detectColorMode() uses when TERM is unset.
+function probeColorMode(style) {
+  const out = style.paint('accent', 'X'); // builtin token, never overridden in this file
+  if (!out.includes('\x1b[38;')) return 'none';
+  return out.startsWith('\x1b[38;2;') ? 'truecolor' : '256';
+}
+
 // ---------------------------------------------------------------- style.js
 
 test('rgbToAnsi256 quantizes known colors', async () => {
@@ -72,15 +83,15 @@ test('applyTheme installs overrides consulted by paint, then clears', async () =
   assert.strictEqual(res.warnings.length, 1);
   assert.strictEqual(res.warnings[0].token, 'bad');
 
-  // paint uses the override in this process's color mode
-  const mode = process.env.HK2_NO_COLOR ? 'none' : 'color';
+  // paint uses the override in this process's (probed) color mode
+  const mode = probeColorMode(style);
   const painted = style.paint('tool:bash', 'X');
-  if (mode === 'color') {
+  if (mode === 'none') {
+    assert.strictEqual(painted, 'X');
+  } else {
     assert.ok(painted.includes('X'));
     // truecolor uses 255;136;0; 256-mode uses 38;5;214 — both non-default
     assert.ok(/\x1b\[38;(2;255;136;0|5;214)m/.test(painted));
-  } else {
-    assert.strictEqual(painted, 'X');
   }
 
   // invalid token untouched by override still paints (fallback path)
@@ -107,10 +118,11 @@ test('topBorder title follows the border token when titleFollowsBorder is on', a
   const before = style.topBorder('read', w);
   style.applyTheme({ titleFollowsBorder: true });
   const after = style.topBorder('read', w);
-  // Visual difference only exists when colors are emitted; under
-  // HK2_NO_COLOR paint()/muted() both return plain text so the strings are
-  // identical by design.
-  if (!process.env.HK2_NO_COLOR && !process.env.NO_COLOR) {
+  // Visual difference only exists when colors are emitted (muted vs warning
+  // differ in BOTH truecolor and 256 modes). Under MODE=none (HK2_NO_COLOR /
+  // NO_COLOR / TERM=dumb) paint()/muted() both return plain text so the
+  // strings are identical by design.
+  if (probeColorMode(style) !== 'none') {
     assert.notStrictEqual(before, after);
   }
   assert.strictEqual(style.isTitleFollowsBorder(), true);
@@ -258,9 +270,13 @@ test('/theme preview renders sample cards with current tokens', async () => {
   assert.ok(all.includes('bash'));
   assert.ok(all.includes('kb_search'));
   assert.ok(all.includes('read'));
-  // the bash card carries the custom truecolor escape (when colors enabled)
-  if (!process.env.HK2_NO_COLOR) {
+  // the bash card carries the custom color escape when colors are enabled —
+  // truecolor emits the exact RGB triple, 256-mode the quantized index 214
+  const mode = probeColorMode(await import('../lib/agent/style.js'));
+  if (mode === 'truecolor') {
     assert.ok(all.includes('\x1b[38;2;255;136;0m'));
+  } else if (mode === '256') {
+    assert.ok(all.includes('\x1b[38;5;214m'));
   }
   await cmdTheme(['reset'], ctx);
 });
