@@ -446,6 +446,7 @@ mid-run, it is handed to a fresh turn right after — nothing you type is lost.
 ~/.hk2/
 ├── models.json                       # Multi-provider model registry
 ├── projects.json                     # Project registry + current pointer
+├── setting.json                      # Global filesystem-permission baseline (optional)
 ├── kb/
 │   └── <projectId>/                  # Per-project KB
 │       ├── meta.json                 # KB metadata
@@ -474,6 +475,43 @@ mid-run, it is handed to a fresh turn right after — nothing you type is lost.
 │       └── <sessionId>.jsonl         # session transcript (JSONL)
 └── logs/
 ```
+
+### setting.json — filesystem permissions
+
+hk2 restricts every path-touching agent tool (`read`/`write`/`edit`/`find`/`grep`/`ast_grep`/`ast_edit`/`resolve`, plus best-effort scanning of `bash` commands) with a Unix-style **r / w / x** permission model:
+
+- **Default deny outside the project.** Paths inside the current project root(s) (`cwd` + `HK2_PROJECT_SOURCE`) are fully operable — `rwx` for both files and directories (the inside-project default is deliberately permissive: your own project is trusted). Any path **outside** those roots is **absolutely denied** unless a rule below grants it.
+- Permission modes mirror the filesystem: `r` = read file / list dir, `w` = create/modify/delete, `x` = execute (bash commands referencing the path).
+- A rule on a directory covers **everything inside it** (like dir permission bits); a rule on a file covers just that file.
+
+Two layers, merged (see `setting.example.json` at the repo root):
+
+- `~/.hk2/setting.json` — global baseline
+- `<project-root>/setting.json` — per-project override; **wins** over global on the same target
+
+```json
+{
+  "permissions": [
+    { "path": "/tmp/scratch",     "allow": "rw"  },
+    { "path": "~/Documents/notes", "allow": "r"   },
+    { "path": "secrets",           "deny":  "rwx" },
+    { "path": "node_modules",      "deny":  "w"   }
+  ]
+}
+```
+
+Rule resolution: **longest matching prefix wins**; on equal prefixes the project layer beats the global layer, and `deny` beats `allow` within a layer. An `allow` rule listing only `r` means **read-only** — it does not fall back to the permissive inside-project default, so explicit rules fully determine the mode set for their target.
+Relative paths resolve against the project root. `~` expands to the user home. A trailing `/**` is accepted and equivalent to the bare directory (rules are always recursive).
+
+`bash` enforcement is **best-effort**: the command is scanned for explicit absolute / `../`-style paths, slash-bearing relative operands (resolved against the command's effective base directory, tracked through `cd` sequences), and executed targets (interpreter operands like `bash script.sh` / `node x.js`, or a directly invoked absolute binary). Executed targets require `x`; data operands require `r` (read-only commands) or `w` (mutating commands like `rm`/`mv`/redirects). A shell is Turing-complete, so this is a guardrail against accidental damage rather than a hard sandbox; the dedicated file tools above are the hardened path.
+
+Recursive tools (`find`/`grep`/`ast_grep`/`ast_edit` directory expansion) re-check `r` on every directory they descend into and every file they emit — a `deny` rule on a subdirectory holds even when the walk started at an ancestor (project root). Writes staged by `ast_edit` are re-verified per file (lexical + symlink-resolved) at `resolve` time.
+
+**The project KB is treated as equivalent to the project's files.** KB surfaces that mirror real file content follow the same `r` permission as a `read()`: `kb_search` snippets/slices, `kb_symbol`, `kb_outline` and `kb_class` doc strings, the per-turn auto-injected context (symbol snippets, `docs/` texts, structured doc tables), and slice loading all suppress content whose source file is denied by setting.json — while pure metadata (names, kinds, signatures, line ranges, knowledge entries) stays visible so navigation keeps working.
+
+Symlink indirection is covered: a path that is lexically inside the project but resolves (via symlink) to an outside location is denied — the real path is re-checked with the same rules (and an `allow` rule written against either spelling matches both).
+
+Invalid config (e.g. `"allow": "q"`, a missing `allow`/`deny` field, or an entry carrying both) is reported as a load-time warning naming the dropped entry — only the offending rule is dropped, the system degrades to deny-by-default rather than crashing, and every other rule keeps working. An empty `permissions: []` array is a valid "no rules" config and produces no warning.
 
 ### models.json schema
 

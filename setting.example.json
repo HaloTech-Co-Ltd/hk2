@@ -1,0 +1,10 @@
+{
+  "$comment": "Example hk2 filesystem-permission config. Copy to ~/.hk2/setting.json (global baseline) and/or <project-root>/setting.json (per-project override; wins on conflict). ALL paths are DENIED unless (a) inside the current project root(s), or (b) explicitly allowed here. Every rule covers its target path AND everything below it (directory semantics, like filesystem permission bits).",
+  "permissions": [
+    { "path": "/tmp/scratch", "allow": "rw" },
+    { "path": "~/Documents/notes/**", "allow": "r" },
+    { "path": "/etc", "allow": "r" },
+    { "path": "secrets", "deny": "rwx" },
+    { "path": "node_modules", "deny": "w" }
+  ]
+}

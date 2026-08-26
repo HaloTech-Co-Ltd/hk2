@@ -68,6 +68,7 @@ import { reviewCode, buildCodeReviewContent, createVerdictFilter } from '../../l
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
 import { dispatchSlash } from '../slash/index.js';
 import { getKbMeta } from '../../lib/index/registry.js';
+import { resetPermissionService } from '../../lib/config/setting.js';
 import { ProgressIndicator } from '../progress.js';
 import Transcript from '../../lib/agent/transcript.js';
 import { StatusBar } from '../../lib/agent/statusbar.js';
@@ -978,6 +979,19 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
     session.project = p;
     if (session.project && session.project.sourcePath) {
       process.env.HK2_PROJECT_SOURCE = session.project.sourcePath;
+      // The permission singleton captured the PREVIOUS project root (and its
+      // setting.json rules) at first use; drop it so the next check re-reads
+      // the new project's rules and defaults. Without this, a /project switch
+      // keeps enforcing the OLD project's permissions for the rest of the
+      // session.
+      resetPermissionService();
+    } else if (process.env.HK2_PROJECT_SOURCE) {
+      // No project resolved: drop any HK2_PROJECT_SOURCE inherited from the
+      // launching shell so the permission roots shrink back to cwd only.
+      // (Deliberate user override stays possible: HK2_PROJECT_SOURCE is a
+      // documented env knob, but only while a project session is active.)
+      delete process.env.HK2_PROJECT_SOURCE;
+      resetPermissionService();
     }
     if (session.project && !session.transcript) {
       session.transcript = new Transcript(session.project.id);
