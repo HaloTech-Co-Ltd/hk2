@@ -573,6 +573,15 @@ export async function runTui(opts = {}) {
   };
 
   // ---- boot (mirrors interactive()) ------------------------------------
+  // Ergonomic first run: no default model configured but Claude Code's
+  // ~/.claude/settings.json has an Anthropic-compatible endpoint → import
+  // it so `hk2 --tui` works on first launch with zero setup. Fill-only
+  // (never overwrites), idempotent, HK2_AUTOIMPORT_CLAUDE=0 disables.
+  let claudeImport = null;
+  try {
+    const { autoImportClaudeModel } = await import('../claude_import.js');
+    claudeImport = await autoImportClaudeModel();
+  } catch { /* best-effort; boot continues unconfigured */ }
   await reloadAll(session, ctx);
 
   if (opts.resume) {
@@ -643,6 +652,11 @@ export async function runTui(opts = {}) {
   }
   frame.writeLine('');
   frame.writeLine(''); // Claude Code's two blank rows between the card and the input area
+  if (claudeImport?.imported) {
+    frame.writeLine(style.success(`Auto-configured model ${style.bold(claudeImport.ref)} from ~/.claude/settings.json`));
+    frame.writeLine(style.dim(`  (Claude Code endpoint imported as provider \"claude\"; models: ${claudeImport.models.join(', ')})`));
+    frame.writeLine('');
+  }
   if (session.resumeNotice) {
     frame.writeLine(session.resumeNotice);
     session.resumeNotice = null;

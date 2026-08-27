@@ -71,6 +71,9 @@ export class History {
     try {
       raw = await fs.readFile(this.file, 'utf8');
     } catch { return this; }
+    // Migration: a history written by an older version under a permissive
+    // umask may be group/world-readable — tighten it on every load.
+    await fs.chmod(this.file, 0o600).catch(() => {});
     const items = [];
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
@@ -93,6 +96,12 @@ export class History {
   add(text) {
     const t = String(text ?? '');
     if (!t.trim()) return false;
+    // Credential-bearing commands are NEVER persisted — history.jsonl is a
+    // convenience feature and must not become a plaintext key store. The
+    // documented flows (/model add ... --api-key=..., tokens, Authorization
+    // headers pasted from curl) are dropped, not redacted: a partial redaction
+    // regex that misses one shape would still leak the key.
+    if (isSensitiveInput(t)) return false;
     if (this.items.length > 0 && this.items[this.items.length - 1] === t) return false;
     this.items.push(t);
     if (this.items.length > this.max) this.items.splice(0, this.items.length - this.max);
@@ -101,7 +110,8 @@ export class History {
       // (concurrent appendFile calls have no defined order) and flush() can
       // await everything before exit. Failures stay best-effort.
       this._pending = (this._pending || Promise.resolve())
-        .then(() => fs.appendFile(this.file, JSON.stringify({ ts: new Date().toISOString(), text: t }) + '\n', 'utf8'))
+        .then(() => fs.appendFile(this.file, JSON.stringify({ ts: new Date().toISOString(), text: t }) + '\n', { encoding: 'utf8', mode: 0o600 }))
+        .then(() => fs.chmod(this.file, 0o600).catch(() => {})) // tighten pre-existing files
         .catch(() => { /* best-effort persistence */ });
     }
     return true;
@@ -111,6 +121,19 @@ export class History {
   flush() {
     return this._pending || Promise.resolve();
   }
+}
+
+/**
+ * True for inputs that carry a secret and must never reach history.jsonl.
+ * Matches the documented credential flags plus pasted Authorization headers
+ * and key=value secret/password assignments.
+ */
+export function isSensitiveInput(text) {
+  const t = String(text ?? '');
+  return /--api-?key(\s*=|\s+\S)/i.test(t)
+    || /--token(\s*=|\s+\S)/i.test(t)
+    || /authorization\s*:/i.test(t)
+    || /(^|[^a-z])(password|passwd|secret|api[_-]?key)\s*=\s*\S/i.test(t);
 }
 
 function dedupeConsecutive(items) {
