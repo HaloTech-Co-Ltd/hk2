@@ -827,8 +827,16 @@ async function knowledgeLearnKb(rest, ctx) {
         ],
         { temperature: 0.1, maxChars: 65536, enableReasoning, timeoutMs: enableReasoning ? 300000 : retryTimeoutMs },
       )) {
-        if (evt.type === 'delta') raw += evt.text;
-        else if (evt.type === 'reasoning') rawReasoning += evt.text;
+        if (evt.type === 'retry') {
+          // Transient failure — the call restarts from scratch; the failed
+          // attempt's partial output is void (see lib/llm/retries.js).
+          raw = '';
+          rawReasoning = '';
+        } else if (evt.type === 'delta') {
+          raw += evt.text;
+        } else if (evt.type === 'reasoning') {
+          rawReasoning += evt.text;
+        }
       }
       return { raw, rawReasoning };
     };
@@ -1180,8 +1188,16 @@ ${manifest}`;
         ],
         { temperature: 0.1, maxChars: planningBudgetFor(fileCount), enableReasoning, timeoutMs: enableReasoning ? planTimeoutMs : retryTimeoutMs },
       )) {
-        if (evt.type === 'delta') raw += evt.text;
-        else if (evt.type === 'reasoning') reasoning += evt.text;
+        if (evt.type === 'retry') {
+          // Transient failure — the call restarts from scratch; the failed
+          // attempt's partial plan text is void (see lib/llm/retries.js).
+          raw = '';
+          reasoning = '';
+        } else if (evt.type === 'delta') {
+          raw += evt.text;
+        } else if (evt.type === 'reasoning') {
+          reasoning += evt.text;
+        }
       }
       return { raw, reasoning };
     };
@@ -1426,8 +1442,16 @@ ${existingEden.slice(0, 30).map(e => `- ${e.id}: ${e.title}`).join('\n') || '(no
       ],
       { temperature: 0.1, maxChars: planningBudgetFor(hierarchical ? dirMap.dirCount : fileCount), enableReasoning, timeoutMs: enableReasoning ? planTimeoutMs : retryTimeoutMs },
     )) {
-      if (evt.type === 'delta') raw += evt.text;
-      else if (evt.type === 'reasoning') reasoning += evt.text;
+      if (evt.type === 'retry') {
+        // Transient failure — the call restarts from scratch; the failed
+        // attempt's partial plan text is void (see lib/llm/retries.js).
+        raw = '';
+        reasoning = '';
+      } else if (evt.type === 'delta') {
+        raw += evt.text;
+      } else if (evt.type === 'reasoning') {
+        reasoning += evt.text;
+      }
     }
     return { raw, reasoning };
   };
@@ -2931,7 +2955,13 @@ async function streamToText(llm, sys, user) {
       { role: 'system', content: sys },
       { role: 'user', content: user },
     ], { temperature: 0.1, maxChars: 16384, enableReasoning: false, timeoutMs: 180000 })) {
-      if (evt.type === 'delta') raw += evt.text;
+      if (evt.type === 'retry') {
+        // Transient failure — the call restarts from scratch; the failed
+        // attempt's partial text is void (see lib/llm/retries.js).
+        raw = '';
+      } else if (evt.type === 'delta') {
+        raw += evt.text;
+      }
     }
   } catch {
     return null;

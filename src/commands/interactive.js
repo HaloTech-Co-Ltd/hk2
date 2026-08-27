@@ -2899,6 +2899,28 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
         if (rendered) process.stdout.write(rendered);
       }
     },
+    onRetry: (evt) => {
+      // Transient LLM failure — the client restarts the call from scratch
+      // (see lib/llm/retries.js). The failed attempt's partial answer was
+      // already streamed to stdout and cannot be un-printed; mark the break so
+      // the transcript keeps just the retried output, and tell the user why
+      // the stream visibly restarts. The assistant message itself is built
+      // from runLoop's reset textBuf, so only the successful attempt lands in
+      // session.messages.
+      assistantText = '';
+      const rTail = flushReasoning();
+      if (rTail) process.stdout.write(rTail);
+      const mTail = flushMarkdown();
+      if (mTail) process.stdout.write(mTail);
+      process.stdout.write('\n' + style.muted(
+        `[llm retry ${evt.attempt}/${evt.maxRetries} in ${Math.round((evt.delayMs || 0) / 1000)}s: ${evt.error}]`
+      ) + '\n');
+      // Fresh renderers: the retried attempt re-generates the whole reply.
+      mdStream = new MarkdownStream();
+      reasoningStream = new ReasoningStream();
+      progress.resume('waiting for model');
+      session.statusBar?.update();
+    },
     onUsage: (u) => {
       // Usage events from the LLM client are cumulative-within-call snapshots
       // (the client wrapper emits progressive estimates + real provider values
@@ -3775,7 +3797,13 @@ ${(typeof lastAssistant.content === 'string' ? lastAssistant.content : '').slice
     ],
     { temperature: 0.1, maxChars: 8192, enableReasoning: false, timeoutMs: 60000 },
   )) {
-    if (evt.type === 'delta') raw += evt.text;
+    if (evt.type === 'retry') {
+      // Transient failure — the call restarts from scratch; the failed
+      // attempt's partial JSON is void (see lib/llm/retries.js).
+      raw = '';
+    } else if (evt.type === 'delta') {
+      raw += evt.text;
+    }
   }
 
   let parsed = null;

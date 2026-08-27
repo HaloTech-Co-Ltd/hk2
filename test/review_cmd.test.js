@@ -414,6 +414,11 @@ test('/review code skips (no fallback) when the model is unreachable', async () 
   await setPhaseModelRef(p.id, 'code-review', 'provB/model-b');
   const { ctx, prints } = await makeCtx(p);
 
+  // The client now RETRIES transient failures (lib/llm/retries.js) — a
+  // connection-refused would otherwise burn ~3min of exponential backoff
+  // before this skip-fallback path is reached. This test is about the
+  // skip declaration, not the retry schedule, so retries are disabled.
+  process.env.HK2_LLMAPI_NUMOFRETRIES = '0';
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error('connect ECONNREFUSED'); };
   try {
@@ -432,6 +437,7 @@ test('/review code skips (no fallback) when the model is unreachable', async () 
     );
   } finally {
     globalThis.fetch = origFetch;
+    delete process.env.HK2_LLMAPI_NUMOFRETRIES;
   }
 });
 

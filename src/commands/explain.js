@@ -153,6 +153,15 @@ export async function explain(query, { mode, enableRewrite, force, verbose, rt: 
       acc.symbols = evt.symbols || [];
       if (verbose) printSymbols(evt.symbols);
     }
+    if (evt.type === 'retry') {
+      // Transient failure — the LLM call restarts from scratch and the model
+      // re-generates the whole answer. The partial text already written to
+      // stdout can't be un-printed, but the accumulated result must not keep
+      // it: drop it so acc.text (and any downstream transcript) reflects only
+      // the successful attempt.
+      acc.text = '';
+      continue;
+    }
     if (evt.type === 'delta') {
       // Body text begins: finalize any open reasoning window first.
       const reasoningTail = reasoningStream.end();

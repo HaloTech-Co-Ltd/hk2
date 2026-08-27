@@ -268,11 +268,15 @@ async function captureRequestBody(messages) {
     return {
       ok: true, status: 200,
       text: async () => '',
-      body: {
-        [Symbol.asyncIterator]: async function* () {
-          yield new TextEncoder().encode(sseBody());
+      // Real ReadableStream: consumeSSE reads via getReader(), and a body
+      // read failure is now SURFACED (and retried) instead of silently
+      // ending the stream — a mock without getReader would throw.
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(sseBody()));
+          controller.close();
         },
-      },
+      }),
     };
   };
   try {
@@ -340,11 +344,15 @@ async function captureOpenAIBody(messages, tools) {
     return {
       ok: true, status: 200,
       text: async () => '',
-      body: {
-        [Symbol.asyncIterator]: async function* () {
-          yield new TextEncoder().encode('data: [DONE]\n\n');
+      // Real ReadableStream: consumeSSE reads via getReader(), and a body
+      // read failure is now SURFACED (and retried) instead of silently
+      // ending the stream — a mock without getReader would throw.
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+          controller.close();
         },
-      },
+      }),
     };
   };
   try {
