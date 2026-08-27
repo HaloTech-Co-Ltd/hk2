@@ -234,6 +234,76 @@ Retrieve any of them via `kb_knowledge("<id>")` or `kb_search_knowledge("overvie
 | `/kb knowledge del <id>` | Delete an entry (requires confirmation) |
 | `/kb transform <id> <from> <to>` | Move an entry between Holy and Eden (requires confirmation) |
 
+## Interactive front-ends: REPL and TUI (`--tui`)
+
+hk2 ships two interactive front-ends over the same session, slash commands,
+and agent-turn pipeline:
+
+- **Line REPL (default)** — `hk2`. The classic readline prompt
+  (`hk2(project|Eden/N Holy/N|model)>`), status bar, and tool cards.
+- **Inline TUI** — `hk2 --tui` (or `HK2_UI=tui`). A Claude Code-style
+  interface: a bordered multi-line input box pinned at the bottom, streaming
+  markdown answers and tool-call cards in the terminal's native scrollback,
+  a live status line, slash-command completion, and arrow-key confirmation
+  modals. Needs a TTY terminal; anything less (piped stdin, `TERM=dumb`)
+  falls back to the REPL automatically. `--repl` / `HK2_UI=repl` force the
+  classic REPL.
+
+TUI keys:
+
+| Key | Action |
+|---|---|
+| enter | Send the message (empty input is a no-op) |
+| `\` + enter | Continue on a new line instead of sending (slash commands submit anyway) |
+| alt+enter / ctrl+j | Insert a real newline |
+| ↑ / ↓ | History (single line) or move one wrapped row |
+| ← / →, home / end, ctrl+a / ctrl+e | Cursor movement |
+| ctrl+k / ctrl+u / ctrl+w / alt+backspace | Kill to line end / line start / word before cursor |
+| Tab | Accept the highlighted slash completion |
+| `/` + prefix | Completion menu (derived from the registered commands; ↑↓ select, pageup/pagedown jump 5) |
+| ctrl+r | Incremental history search: type a substring, ↑↓ (or repeat ctrl+r) cycle matches, enter picks one INTO the box, esc closes |
+| esc / ctrl+g | While a turn runs: interrupt it. Otherwise: close the completion menu / cancel the open modal |
+| ctrl+l | Clear the screen (transcript stays in the scrollback) |
+| ctrl+o | Expand the most recent tool result into the transcript (the compact line shows one line + "+N lines") |
+| ctrl+c | Clear the input; if empty and a turn is running, abort it; if empty and idle, press twice consecutively to exit (any other key re-arms the window) |
+| ctrl+d | Exit on an empty buffer (forward-delete otherwise) |
+
+The interface is responsive: wide terminals (≥ 88 cols) get the full welcome
+card with the tips panel, 60–87 cols a compact single-column card, and
+narrower ones a two-line summary — nothing ever wraps past the terminal edge.
+Returning users (and screens shorter than 30 rows) always get the compact
+form; `/clear` prints a one-line session summary instead of redrawing the
+whole card. Selection in menus and modals is always marked by the `❯` glyph,
+never by color alone. Modal prompts wrap their question text and show a
+key-hint row (`↑↓ select · enter confirm · esc cancel · y/n/e`).
+
+Thinking output is collapsed by default in the TUI (`Thought for Ns` after
+the window closes); set `HK2_HIDE_THINKING=0` to stream the reasoning live,
+exactly like the REPL.
+
+**Zero-setup first run**: when no model is configured, `hk2 --tui`
+automatically imports one from Claude Code's `~/.claude/settings.json`
+(the `env` block: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` /
+`ANTHROPIC_API_KEY`, with `ANTHROPIC_DEFAULT_*_MODEL` as the model list).
+A notice line under the welcome card reports the import. Fill-only — an
+existing default is never overwritten; set `HK2_AUTOIMPORT_CLAUDE=0` to
+disable.
+
+Everything else — `/model`, `/kb`, plan confirmation menus, knowledge-save
+y/N/E prompts, session resume (`hk2 --tui --resume`), mid-task input
+queuing — is the same code as the REPL. Input history persists at
+`~/.hk2/history.jsonl` (capped at 1000 entries).
+
+Two safety properties of that history and config storage: inputs carrying
+credentials (`--api-key=…`, `--token=…`, `Authorization` headers,
+`password=`/`secret=` values) are never persisted at all, and
+`~/.hk2/history.jsonl` / `models.json` are kept owner-only (0600, migrated
+on boot; `~/.hk2` itself is 0700).
+
+Chat still requires an initialized project: hk2 is KB-driven, so until
+`/project init` + `/kb init` have run, messages are refused with a setup
+pointer — even when the first-run import already configured a model.
+
 ## REPL command reference
 
 Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help knowledge`) for detailed usage and parameters of a single command. Every family also supports `<command> help` (e.g. `/model help set`, `/kb knowledge help learn`). Common commands:
@@ -580,6 +650,9 @@ reject `glm-4.7[1m]`.
 | Variable | Description | Default |
 |---|---|---|
 | `HK2_HOME` | Override `~/.hk2` location | `~/.hk2` |
+| `HK2_AUTOIMPORT_CLAUDE` | When 0, disables the first-run model import from Claude Code's `~/.claude/settings.json` (TUI only) | on |
+| `HK2_LLM_RETRY_UNKNOWN_POST` | LLM requests that failed with an UNKNOWN outcome (connection reset / timeout mid-flight — the server may have executed the POST) are NOT retried by default, to avoid duplicate requests and duplicate billing. Set `1` to opt in; connection-establishment failures and HTTP 429/502/503/504 (with Retry-After) are always safe to retry. | `0` |
+| `HK2_UI` | Interactive front-end: `tui` selects the Claude Code-style inline TUI, `repl` (default) the classic line REPL. The `--tui` / `--repl` flags take precedence. | `repl` |
 | `HK2_KB_DIR` | Override KB root | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |
 | `HK2_PROJECT_SOURCE` | Project source root for tool sandbox (set automatically in interactive mode) | - |
@@ -603,7 +676,7 @@ reject `glm-4.7[1m]`.
 | `HK2_DEBUG` | Print error stacks | - |
 | `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |
 | `HK2_ASCII` | When 1, force ASCII fallbacks for box-drawing / spinner / icons instead of UTF-8 glyphs (useful on non-UTF-8 terminals). | - |
-| `HK2_HIDE_THINKING` | When unset or `1` (default), the `✎ thinking` reasoning window renders at most 9 content lines, then a dim notice reports how many lines were hidden. When `0`, the full reasoning stream is rendered (previous behavior). | `1` |
+| `HK2_HIDE_THINKING` | When unset or `1` (default), the `✎ thinking` reasoning window renders at most 9 content lines, then a dim notice reports how many lines were hidden (in the TUI, thinking is collapsed to one `Thought for Ns` line while it runs). When `0`, the full reasoning stream is rendered (previous behavior; in the TUI, live). | `1` |
 | `ANTHROPIC_API_KEY` | Auto-creates an `anthropic` provider on first init | - |
 | `OPENAI_API_KEY` | Auto-creates an `openai` provider on first init | - |
 
