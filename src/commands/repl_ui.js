@@ -296,12 +296,20 @@ export function makeReplUi(session) {
     onInterrupt(cb) {
       const rlInput = session.rl?.input;
       if (!(rlInput && session.rl?.terminal)) return () => {};
+      // Publish the trigger on the session so the SIGINT handler can route a
+      // mid-turn Ctrl+C through the SAME abort path as ESC (parity with the
+      // TUI's Ctrl+C-during-turn = interrupt, not hard exit). Cleared when
+      // the turn unsubscribes.
+      session._turnInterrupt = cb;
       const onKeypress = (_str, key) => {
         if (key && key.name === 'escape') cb();
       };
       readline.emitKeypressEvents(rlInput); // idempotent; readline already set this up
       rlInput.on('keypress', onKeypress);
-      return () => rlInput.off('keypress', onKeypress);
+      return () => {
+        if (session._turnInterrupt === cb) session._turnInterrupt = null;
+        rlInput.off('keypress', onKeypress);
+      };
     },
   };
 }

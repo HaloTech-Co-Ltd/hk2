@@ -125,7 +125,67 @@ test('pty: mid-task instruction box appears during a turn; queued receipt prints
     assert.ok(/» add instruction mid/.test(plainOut()), 'keystrokes echoed into the box row');
   } finally {
     mock.server.close();
-    fsSync.rmSync(HOME, { recursive: true, force: true });
     fsSync.rmSync(src, { recursive: true, force: true });
   }
 });
+
+test('pty parity: the SAME scenario on the TUI front-end (message → mid-task queue → answer → clean exit)', { skip: !hasScript }, async () => {
+  // The project + KB from the first test still stand (HOME is shared and
+  // cleaned up once at the end of the file). Fresh mock + model pointing at
+  // it, then drive the inline TUI through the identical interaction.
+  const mock = await mockLlmServer();
+  await saveModels({
+    providers: {
+      mock: {
+        api: 'openai', apiKey: 'sk-test', baseUrl: `http://127.0.0.1:${mock.port}`,
+        models: [{ id: 'm1', name: 'm1', contextWindow: 8192, temperature: 0.2 }],
+      },
+    },
+    default: 'mock/m1',
+  });
+
+  try {
+    const out = await new Promise((resolve, reject) => {
+      const child = spawn('script', [
+        '-qec',
+        `stty rows 30 cols 100 2>/dev/null; exec node ${JSON.stringify(CLI)} --tui`,
+        '/dev/null',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          TERM: 'xterm-256color',
+          HK2_ENABLE_QUERYREWRITE: '0',
+          HK2_ENABLE_REQUEST_ASSESS: '0',
+          HK2_AUTOIMPORT_CLAUDE: '0',
+          HK2_HOME: HOME,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let buf = '';
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`pty timed out; tail: ${buf.slice(-400)}`)); }, 30000);
+      child.stdout.on('data', (b) => { buf += b.toString(); });
+      child.stderr.on('data', (b) => { buf += b.toString(); });
+      child.on('error', (err) => { clearTimeout(timer); reject(err); });
+      child.on('close', (code) => { clearTimeout(timer); resolve({ buf, code }); });
+
+      const send = (s) => child.stdin.write(s);
+      setTimeout(() => send('hello there\r'), 2500);
+      setTimeout(() => send('mid-task note\r'), 5500);  // inside the stall window
+      setTimeout(() => send('/quit\r'), 10000);
+      setTimeout(() => send('/quit\r'), 13000);
+    });
+
+    const plain = out.buf.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+    assert.equal(out.code, 0, `clean exit; tail: ${plain.slice(-300)}`);
+    assert.ok(plain.includes('❯ hello there'), 'the TUI echoes the submitted prompt into the scrollback');
+    assert.ok(plain.includes('queued #1'), 'PARITY: the mid-task line produced the same queued receipt as the REPL');
+    assert.ok(plain.includes('working on it'), 'the stalled stream delivered its answer');
+  } finally {
+    mock.server.close();
+  }
+});
+
+// The shared HOME outlives both tests by design; nothing else to do here
+// (rmSync of HOME is intentionally NOT run so the file stays single-purpose
+// — the temp dir is under os.tmpdir() and the OS reaps it).

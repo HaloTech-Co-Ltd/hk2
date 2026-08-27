@@ -213,7 +213,23 @@ export async function interactive(opts = {}) {
     // Restore terminal if Node crashes or user kills the process
     const restoreOnce = () => { session.statusBar?.stop(); };
     process.once('exit', restoreOnce);
-    process.once('SIGINT', () => { restoreOnce(); process.exit(130); });
+    // Ctrl+C follows the SAME contract as the TUI's Ctrl+C:
+    //   - mid-turn → INTERRUPT the turn (never a hard exit — process.exit()
+    //     would bypass runTurn's catch/finally: interrupted-task state never
+    //     reaches task_state.js, mid-task input stays un-redirected, and the
+    //     transcript shows an unfinished session). The turn unwinds, the
+    //     prompt returns; a second Ctrl+C once idle exits.
+    //   - idle → restore the terminal and exit 130 (the classic REPL
+    //     contract). `process.on` (not `once`): a mid-turn press must not
+    //     consume the handler.
+    process.on('SIGINT', () => {
+      if ((session.agentTurnActive || session.processing) && session._turnInterrupt) {
+        session._turnInterrupt();
+        return;
+      }
+      restoreOnce();
+      process.exit(130);
+    });
     process.once('SIGTERM', () => { restoreOnce(); process.exit(143); });
   }
 
@@ -397,6 +413,12 @@ export async function interactive(opts = {}) {
   // idempotent) and cheap when the box is off.
   readline.emitKeypressEvents(session.rl.input);
   session.rl.input.on('keypress', () => { refreshInputEcho(); });
+
+  // Keep readline from auto-closing on Ctrl+C: with no rl-level 'SIGINT'
+  // listener, readline closes the interface itself — the mid-turn interrupt
+  // path above must leave it alive. The no-op makes the process-level
+  // handler the sole authority (idle Ctrl+C still exits there).
+  session.rl.on('SIGINT', () => {});
 
   if (isInteractive) session.rl.prompt();
   session.rl.on('line', (line) => {
