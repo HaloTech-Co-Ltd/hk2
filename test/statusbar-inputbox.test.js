@@ -95,6 +95,31 @@ test('box disappearing (shrink 1->0) reflows and releases the row', () => {
   assert.equal(bar._inputLineCount, 0);
 });
 
+test('turn boundary: grow 0->1 after a submitted prompt scrolls the prompt line out of the park row', () => {
+  // Regression (reported v1.1.97): task ends -> shrink parks the cursor at the
+  // workspace bottom (row 23), rl.prompt() draws "hk2(...)>" there, the user
+  // types a new instruction and presses Enter -> the \r\n at the region bottom
+  // scrolls up one row, moving the prompt line to row 22 (the row the NEXT
+  // grow 0->1 parks on). The first spinner frame then overwrote the prompt
+  // echo ("✓ rewriting query" on top of "hk2(...)> new instruction"). The
+  // grow transition must SU-reflow the OLD region first, same as shrink.
+  let inputOn = false;
+  const { bar, writes, all } = makeBar({ input: () => (inputOn ? ['» ▏'] : []) });
+  bar.update(); // no box
+  writes.length = 0;
+  inputOn = true; // new turn arms the box: grow 0 -> 1
+  bar.update();
+  const w = all();
+  // OLD region (1..23) SU by 1 BEFORE switching to the new region (1..22).
+  const suIdx = w.indexOf('\x1b[1S');
+  assert.ok(suIdx >= 0, 'grow emits a scroll-up reflow of the OLD region');
+  assert.ok(w.includes('\x1b[1;22r'), 'new (smaller) region established');
+  assert.ok(w.indexOf('\x1b[1;22r') > suIdx, 'SU happens BEFORE the new region is set');
+  assert.ok(w.includes('\x1b[1;23r'), 'OLD region explicitly re-established first');
+  assert.ok(w.indexOf('\x1b[1;23r') < suIdx, 'old region set before the SU');
+  assert.ok(w.includes('\x1b[22;1H'), 'cursor parked at the new workspace bottom');
+});
+
 test('refreshInputLine rewrites ONLY the input row and restores the cursor', () => {
   let draft = 'hello';
   const { bar, writes, all } = makeBar({ input: () => [`» ${draft}▏`] });
