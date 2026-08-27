@@ -69,6 +69,29 @@ export function claudeSettingsPath(homeDir) {
  * @returns {Promise<{imported:boolean, reason?:string, ref?:string, models?:string[]}>}
  *   imported:true — a provider was registered and set as the default.
  */
+/**
+ * Context window per known model id. Claude Code's settings.json carries NO
+ * context-size information, so an import has to assume — and a wrong
+ * assumption skews two user-visible things: the footer's context % and the
+ * auto-compact threshold (both key off contextWindow). Ids we recognize get
+ * their real window; unknown ids keep the conservative 200k default
+ * (correct for the claude-* family the endpoint usually fronts). Fix a
+ * mis-guessed entry with: /model set claude/<id> --context-window=<N>.
+ */
+const DEFAULT_CONTEXT_WINDOW = 200000;
+const KNOWN_CONTEXT_WINDOWS = [
+  // BigModel GLM 5.x: 1M context (user-confirmed on the anthropic-
+  // compatible endpoint).
+  { match: /glm-5/i, window: 1000000 },
+];
+
+function importedContextWindow(id) {
+  for (const k of KNOWN_CONTEXT_WINDOWS) {
+    if (k.match.test(id)) return k.window;
+  }
+  return DEFAULT_CONTEXT_WINDOW;
+}
+
 export async function autoImportClaudeModel({ homeDir } = {}) {
   if (ENV_OFF.test(String(process.env.HK2_AUTOIMPORT_CLAUDE ?? ''))) {
     return { imported: false, reason: 'disabled' };
@@ -126,7 +149,7 @@ export async function autoImportClaudeModel({ homeDir } = {}) {
     models: ids.map(id => ({
       id,
       name: id,
-      contextWindow: 200000,
+      contextWindow: importedContextWindow(id),
       maxTokens: 16384,
       reasoning: true,
       temperature: 0.2,
