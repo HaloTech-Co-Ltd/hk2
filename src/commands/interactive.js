@@ -70,7 +70,7 @@ import {
 import { handleUserLine } from './turn.js';
 import {
   modelTagFor, promptFor, kbBrief, formatStatusLine, formatPlanProgressLines,
-  formatInputBoxLine,
+  formatInputBoxLine, inputBoxDockColumn,
 } from './status_format.js';
 import { runTurn } from './turn.js';
 import { makeReplUi } from './repl_ui.js';
@@ -88,7 +88,7 @@ export {
 export {
   modelTagFor, promptFor, kbBrief, formatPlanProgressLines, finalizePlanProgress,
   formatStatusLine, formatUsage, fmtTok, safeParseArgs, cardWidthFor, toolHeader,
-  digestLine, plainPlanLines, formatInputBoxLine,
+  digestLine, plainPlanLines, formatInputBoxLine, inputBoxDockColumn,
 } from './status_format.js';
 export {
   envFlag, envPercent, estimateMessagesTokens, applyCompactTokenEstimate, execFileAsync,
@@ -192,6 +192,12 @@ export async function interactive(opts = {}) {
     // matching the legacy layout exactly.
     inputRenderer: () => formatInputBoxLine(session),
   });
+  // Real-cursor docking: the StatusBar asks this fn where the real cursor
+  // should sit on the input row (null = don't dock). It reads the LIVE
+  // readline state, so the dock follows the cursor through edits.
+  if (session.statusBar.setInputCursorFn) {
+    session.statusBar.setInputCursorFn(() => inputBoxDockColumn(session));
+  }
   if (session.statusBar.isEnabled()) {
     // Clear the visible screen so the previous session's last lines don't
     // bleed in around the welcome card on re-entry. Scrollback is preserved
@@ -276,6 +282,38 @@ export async function interactive(opts = {}) {
   paste.onFlush = (text) => { void enqueue(text); };
   paste.start();
 
+  // ── Mid-task instruction input box: write router (docking protocol) ──
+  // While the box is armed and no menu owns the input, every workspace write
+  // is re-issued as DECRC (jump to the workspace continuation saved in the
+  // DECSC slot) + payload + DECSC (save the advanced continuation) + park
+  // (put the visible cursor back inside the box), so streaming output lands
+  // in order while the blinking caret stays in the box. The DECSC slot is
+  // owned exclusively by this protocol while armed: StatusBar repaints go
+  // through their captured RAW write (never re-routed) and emit their own
+  // park. Fully transparent when the box is off or a menu is active.
+  const stdoutOrig = process.stdout.write.bind(process.stdout);
+  const stderrOrig = process.stderr.write.bind(process.stderr);
+  const routedWrite = (orig, chunk, ...rest) => {
+    if (!session.statusBar?.isEnabled() || !session.inputEchoOn || session.consumeNext) {
+      return orig(chunk, ...rest);
+    }
+    const park = session.statusBar.parkSeq();
+    if (!park) return orig(chunk, ...rest);
+    // Nested writes (issued while another routed write is mid-flight) must
+    // not double the escapes; the inner park is identical, passthrough fine.
+    if (routedWrite.depth) return orig(chunk, ...rest);
+    // Caller-supplied drain callbacks must fire when the write drains.
+    routedWrite.depth = 1;
+    try {
+      return orig(`\x1b8${String(chunk)}\x1b7${park}`, ...rest);
+    } finally {
+      routedWrite.depth = 0;
+    }
+  };
+  routedWrite.depth = 0;
+  process.stdout.write = routedWrite.bind(null, stdoutOrig);
+  process.stderr.write = routedWrite.bind(null, stderrOrig);
+
   // ── Mid-task instruction input box: echo redirection ──────────────
   // While an agent turn runs, the input box is the FIRST reserved StatusBar
   // row. readline's native echo writes at the terminal cursor, where
@@ -316,7 +354,12 @@ export async function interactive(opts = {}) {
     // suppression would silently eat all readline output with no box shown.
     if (!session.statusBar?.isEnabled()) return;
     session.inputEchoOn = true;
+    // Docking protocol: save the workspace continuation into the DECSC slot
+    // FIRST (continued output must resume there), then draw the box and park
+    // the real cursor inside it.
+    session.statusBar?.rawWrite('\x1b7');
     session.statusBar?.update(); // grow: input row appears above plan/status
+    session.statusBar?.parkInputCursor();
     refreshInputEcho();
   };
   const disarmInputBox = () => {
@@ -329,6 +372,10 @@ export async function interactive(opts = {}) {
       session.rl.line = '';
       session.rl.cursor = 0;
     }
+    // Undock FIRST (restore the workspace continuation from the DECSC slot)
+    // so the shrink repaint's legacy save/restore tail lands the cursor at
+    // the workspace position — ready for the next rl.prompt().
+    session.statusBar?.undockInputCursor();
     session.statusBar?.update(); // shrink: input row released back to workspace
   };
   session.armInputBox = armInputBox;
@@ -358,6 +405,13 @@ export async function interactive(opts = {}) {
     // before the normal capture path takes over.
     if (session.inputEchoOn) {
       if (session.rl) { session.rl.line = ''; session.rl.cursor = 0; }
+      // The real cursor is docked and readline's \r\n echo was suppressed,
+      // so the workspace continuation slot has NOT advanced. The queued
+      // receipt must start on a fresh row: restore the slot, emit an explicit
+      // CRLF there (CRLF, not bare LF — the tty may be raw with OPOST off),
+      // save the advanced slot, and re-dock — mirroring the write router.
+      const park = session.statusBar?.parkSeq?.();
+      if (park) session.statusBar?.rawWrite(`\x1b8\r\n\x1b7${park}`);
     }
     // If we're mid-paste, buffer the line and wait for paste-end. Pasted
     // content otherwise arrives as one 'line' event per line and each would

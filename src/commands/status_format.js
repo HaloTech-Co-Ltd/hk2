@@ -167,9 +167,29 @@ export function finalizePlanProgress(session) {
 export function formatInputBoxLine(session) {
   if (!session || !session.agentTurnActive) return [];
   const label = style.accent('»') + style.dim(' add instruction ');
-  const draft = String(session.rl?.line ?? '');
-  const caret = style.accent('▏'); // caret marking the in-progress draft
-  return [label + draft + caret];
+  const line = String(session.rl?.line ?? '');
+  const cur = Math.max(0, Math.min(session.rl?.cursor ?? line.length, line.length));
+  const caret = style.accent('▏');
+  // The caret glyph sits AT the readline cursor position (not always at the
+  // end), so mid-draft edits render where they will land. While an in-run
+  // menu owns the input (consumeNext), keep the legacy tail-caret so the box
+  // reads as inert while the menu is on screen.
+  if (session.consumeNext) return [label + line + caret];
+  return [label + line.slice(0, cur) + caret + line.slice(cur)];
+}
+
+/**
+ * The REAL-cursor dock column for the input box: 1-based VISIBLE column just
+ * after the label + the draft left of readline's cursor. Null when the
+ * cursor must NOT dock (no turn, or a menu owns the input). Exported for
+ * unit tests.
+ */
+export function inputBoxDockColumn(session) {
+  if (!session || !session.agentTurnActive || session.consumeNext) return null;
+  const label = '» add instruction ';
+  const line = String(session.rl?.line ?? '');
+  const cur = Math.max(0, Math.min(session.rl?.cursor ?? line.length, line.length));
+  return style.visibleWidth(label) + style.visibleWidth(line.slice(0, cur)) + 1;
 }
 
 export function formatStatusLine(session) {

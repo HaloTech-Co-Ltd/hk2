@@ -216,7 +216,23 @@ export function createSession(pinnedProjectId = null) {
         base.rl.line = '';
         base.rl.cursor = 0;
       }
-      consumeNextCb = cb;
+      // Real-cursor docking handoff (ported from main 7b7bb97/7ea3d2d):
+      // arming a menu while the cursor is docked in the mid-task input box
+      // hands the cursor back to the workspace (8 restore) so the menu's
+      // prompt + native echo land at the workspace continuation —
+      // byte-identical to pre-docking behaviour. Releasing after the menu's
+      // final Enter adopts the cursor's current position as the NEW
+      // continuation slot and re-docks. ORDER MATTERS: undock runs BEFORE
+      // the flip (gated on the docked flag only), but reanchor MUST run
+      // AFTER consumeNextCb is cleared — parkSeq() consults the dock column
+      // fn, which reads session.consumeNext through this very getter; called
+      // pre-flip it still saw the armed menu and silently no-opped, leaving
+      // the DECSC slot stale until the next poll (the glued follow-up
+      // prompt bug).
+      const releasing = !cb && !!consumeNextCb;
+      if (cb && !consumeNextCb) base.statusBar?.undockInputCursor?.();
+      consumeNextCb = cb || null;
+      if (releasing) base.statusBar?.reanchorAfterMenu?.();
     },
   });
   return base;
