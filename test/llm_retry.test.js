@@ -146,6 +146,11 @@ test('isRetryableLlmError: outcome-safe always; unknown-outcome opt-in; client e
   // Outcome-safe: the request never left, or was refused before execution.
   assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ECONNREFUSED)')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI request failed: getaddrinfo ENOTFOUND (ENOTFOUND)')), true);
+  // Connect-phase failures: the TCP handshake never completed, so the
+  // request never left the client — outcome-safe even with the unknown-post
+  // opt-in off (OS-level connect timeout / host-unreachable).
+  assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ETIMEDOUT/connect)')), true);
+  assert.equal(isRetryableLlmError(new Error('OpenAI request failed: fetch failed (EHOSTUNREACH/connect)')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI 429: rate limited')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI 408: request timeout')), true);
   // Unknown outcome: mid-flight transport failures and 5xx (the gateway may
@@ -156,6 +161,8 @@ test('isRetryableLlmError: outcome-safe always; unknown-outcome opt-in; client e
   delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   try {
     assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), false, 'bare fetch failed = unknown');
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ETIMEDOUT)')), false, 'legacy bare ETIMEDOUT (no syscall) = unknown');
+    assert.equal(isRetryableLlmError(new Error('OpenAI request failed: fetch failed (ETIMEDOUT/read)')), false, 'read-phase ETIMEDOUT = unknown');
     assert.equal(isRetryableLlmError(new Error('OpenAI request failed: read ECONNRESET (ECONNRESET)')), false, 'mid-flight reset = unknown');
     assert.equal(isRetryableLlmError(new Error('Anthropic request failed: timeout')), false, 'timeout after send = unknown');
     assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), false, '5xx = unknown');
@@ -512,4 +519,80 @@ test('adapters: retried calls reusing one signal do not accumulate abort listene
     mock.restoreAll();
   }
   assert.ok(maxListeners === 0);
+});
+
+// ---------- connect-phase ETIMEDOUT regression (Anthropic adapter) ----------
+
+/**
+ * Reproduces the reported issue: "Error: Anthropic request failed: fetch
+ * failed (ETIMEDOUT)" aborted the call without ANY retry. A connect-phase
+ * ETIMEDOUT means the TCP handshake itself timed out — the request never
+ * left the client — so it is outcome-safe and MUST be retried with the
+ * default policy (HK2_LLM_RETRY_UNKNOWN_POST unset).
+ */
+test('stream: anthropic connect ETIMEDOUT is retried under the DEFAULT policy', async () => {
+  const restoreT = fastTimers();
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      // Shape produced by undici when the OS-level TCP connect times out.
+      const e = new TypeError('fetch failed');
+      e.cause = { name: 'Error', code: 'ETIMEDOUT', errno: -60, syscall: 'connect' };
+      throw e;
+    }
+    return anthropicStreamResponse('recovered-after-connect-timeout');
+  };
+  // Default policy: unknown-outcome NOT retried. The connect-phase
+  // classification must be 'safe', not 'unknown' — this is the regression.
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
+  process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  try {
+    const out = await makeAnthropicClient().complete(MSGS, { timeoutMs: 0 });
+    assert.equal(out, 'recovered-after-connect-timeout');
+    assert.equal(calls, 2, 'exactly one retry after the connect timeout');
+  } finally {
+    globalThis.fetch = original;
+    restoreT();
+    delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  }
+});
+
+// ---------- completeOpenAI transport-error wrapping ----------
+
+/**
+ * completeOpenAI used to let fetch transport failures escape UNWRAPPED (a
+ * bare TypeError('fetch failed')), which classifyLlmError cannot recognize
+ * as a transport failure — so the openai non-streaming path never retried
+ * ANY network error. The catch now wraps them like streamOpenAI does.
+ */
+test('complete: openai transport failures are wrapped + retried under the DEFAULT policy', async () => {
+  const restoreT = fastTimers();
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      const e = new TypeError('fetch failed');
+      e.cause = { code: 'ETIMEDOUT', syscall: 'connect' };
+      throw e;
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: 'wrapped-and-retried' } }] }),
+    };
+  };
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
+  process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  try {
+    const out = await makeClient().complete(MSGS, { timeoutMs: 0 });
+    assert.equal(out, 'wrapped-and-retried');
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = original;
+    restoreT();
+    delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  }
 });
