@@ -229,7 +229,7 @@ test('KB gate: without a project the turn is REFUSED with a setup pointer', asyn
   const ui = { statusRefresh() {} };
   await handleUserLine('你是谁', session, ctx, ui);
   assert.equal(llmCalls, 0, 'the model is NEVER called without a KB');
-  assert.ok(printed.some((p) => /No project registered/.test(p)), 'state-specific gate message');
+  assert.ok(printed.some((p) => /No project attached to this session/.test(p)), 'state-specific gate message');
   assert.ok(printed.some((p) => p.includes('/project init')), 'points at project init');
 });
 
@@ -346,4 +346,48 @@ test('Ctrl+O wiring: the ui stash carries display lines, not one JSON line', () 
   const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'tui_ui.js'), 'utf8');
   assert.ok(src.includes('fullResultLines(result'), 'toolEnd stashes fullResultLines');
   assert.ok(!src.includes('lastTool.text.split'), 'no raw one-line JSON split');
+});
+
+
+test('KB gate RECOVERY: a projectless session re-attaches the registered current project', async () => {
+  const home = await import('../lib/config/home.js');
+  const { addKbForProject } = await import('../lib/index/registry.js');
+  const { buildIndex } = await import('../lib/index/indexer.js');
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'hk2-gate-noproj-'));
+  await fsp.writeFile(pathMod.join(dir, 'one.js'), 'export function alpha() { return 1; }\n');
+  const p = await home.registerProject({ sourcePath: dir, name: 'gate-noproj' });
+  try {
+    await addKbForProject(p);
+    await buildIndex(p.id, { skipSummary: true });
+    await home.setCurrentProject(p.id);
+    // The user's exact state: session.project/rt/kbMeta all null (stale boot
+    // snapshot or a pin to a since-dropped project) while the registry has
+    // a healthy current project.
+    const session = createSession(null);
+    session.project = null;
+    session.rt = null;
+    session.kbMeta = null;
+    session.llm = { async *stream() { yield { type: 'delta', text: 'x' }; } };
+    session.modelCfg = { ref: 'p/m', maxChars: 65536, enableReasoning: false, temperature: 0.2 };
+    const printed = [];
+    const ctx = buildBaseCtx(session, { print: (t) => printed.push(t) });
+    process.env.HK2_ENABLE_QUERYREWRITE = '0';
+    process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+    try {
+      await handleUserLine('你是谁', session, ctx, fullFakeUi());
+    } finally {
+      delete process.env.HK2_ENABLE_QUERYREWRITE;
+      delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+    }
+    assert.equal(session.project?.name, 'gate-noproj', 'the current project was re-attached');
+    assert.ok(session.rt, 'its KB loaded');
+    assert.equal(session.lastAnswer, 'x', 'the turn actually ran');
+    assert.ok(!printed.some((x) => /No project attached|KB not built|failed to load/.test(x)),
+      'no gate refusal after recovery');
+  } finally {
+    await home.removeProject(p.id).catch(() => {});
+  }
 });

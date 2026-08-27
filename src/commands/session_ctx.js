@@ -846,6 +846,16 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
     let p = null;
     if (session.pinnedProjectId) {
       p = await getProject(session.pinnedProjectId);
+      if (!p) {
+        // Dead pin: the pinned project was dropped (another session ran
+        // /project drop). Without this fallback the session stays
+        // projectless FOREVER — the pin is re-checked on every reload and
+        // never recovers, so the KB gate keeps refusing with 'No project
+        // registered' while /project list shows a healthy current project.
+        // Fall back like a bare launch: resolve the global current and re-pin.
+        p = await getCurrentProject();
+        if (p) session.pinnedProjectId = p.id;
+      }
     } else {
       p = await getCurrentProject();
       if (p) session.pinnedProjectId = p.id;

@@ -47,7 +47,7 @@
  * clarification, plan confirm + plan review, mid-task input injection,
  * interrupt recovery, KB conflict sync, and the end-of-turn KB flows.
  */
-import { resolveModelRef, getPhaseModelRef } from '../../lib/config/home.js';
+import { resolveModelRef, getPhaseModelRef, getCurrentProject } from '../../lib/config/home.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { runPhaseWithFallback, runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
@@ -106,13 +106,19 @@ export async function handleUserLine(line, session, ctx, ui) {
   // the user must initialize the project (/project init + /kb init) before
   // conversing.
   if (!session.rt) {
-    // RECOVERY before refusing: session.rt is a BOOT-time snapshot. A KB
-    // that finished building in ANOTHER process after this session booted
-    // (or a transient load failure at boot) leaves rt null forever, while
-    // /project list honestly reports "built" — the user is then locked out
-    // by a stale negative. If the registry now has a KB for the project,
-    // load it before saying no.
-    if (session.project && !session.kbMeta) {
+    // RECOVERY before refusing: session.project / session.rt are BOOT-time
+    // snapshots. A KB that finished building in ANOTHER process after this
+    // session booted, a dead project pin, or a transient load failure at
+    // boot all leave the session projectless/KB-less forever, while
+    // /project list honestly reports a healthy current project — the user
+    // is then locked out by a stale negative. Re-resolve from the registry
+    // before saying no. The one exception: a session RESUMED from a dropped
+    // project must not silently adopt the global current project — its
+    // conversation belongs to the dropped project's codebase (P0 review
+    // round 2); attaching one there is an explicit /project set away.
+    if (!session.project && !session.resumedFromOtherProject) {
+      await reloadAll(session, ctx, { project: true, kb: true, model: false });
+    } else if (session.project && !session.kbMeta) {
       const meta = await getKbMeta(session.project.id).catch(() => null);
       if (meta) {
         await reloadAll(session, ctx, { project: false, kb: true, model: false });
@@ -124,7 +130,13 @@ export async function handleUserLine(line, session, ctx, ui) {
   }
   if (!session.rt) {
     if (!session.project) {
-      ctx.print(`No project registered. Run /project init --name=<name> --source=<repo-path>, then /kb init before chatting.`);
+      let hint = `Run /project init --name=<name> --source=<repo-path>, then /kb init.`;
+      try {
+        const cur = await getCurrentProject();
+        if (cur) hint = `Attach one with /project set current ${cur.name} (the registered current), or ${hint}`;
+        else if (session.resumedFromOtherProject) hint = `This session was resumed from a project that is no longer registered — /project init to re-register it, or /project set current <name> to switch.`;
+      } catch { /* registry read failed; the generic hint stands */ }
+      ctx.print(`No project attached to this session. ${hint}`);
     } else if (!session.kbMeta) {
       ctx.print(`KB not built for project ${session.project.name}. Run /kb init before chatting.`);
     } else {

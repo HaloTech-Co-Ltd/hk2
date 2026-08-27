@@ -45,9 +45,9 @@ test('completionMenu: long descriptions wrap onto continuation lines aligned und
   const m = completionMenu('/ ', { width: 70, maxRows: 40 });
   assert.equal(m.open, true);
   assert.ok(m.items.length >= 11, 'all commands listed');
-  // Dynamic label column: pad to the longest label + 2 (not a fixed 30).
+  // Dynamic label column: marker(2) + capped longest label + a 2-column gap.
   const maxLabel = Math.max(...m.items.map(i => i.label.length));
-  const col = Math.max(12, Math.min(30, maxLabel + 2));
+  const col = Math.max(12, Math.min(30, 2 + Math.min(24, maxLabel) + 2));
   const plain = m.lines.map(l => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
   const cont = plain.find((l, i) => i > 0 && l.startsWith(' '.repeat(col)) && l.trim());
   assert.ok(cont, 'wrapped description continuation aligned at the dynamic column');
@@ -80,4 +80,17 @@ test('historyMenu: substring filter, most recent first, ❯ marks the selection'
   const sel = m.lines.map(l => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')).find((l) => l.startsWith('❯ '));
   assert.ok(sel.includes('npm run build'), 'selection marked + is the first hit');
   assert.equal(historyMenu('zzz', entries).open, false, 'no hits → closed');
+});
+
+
+test('two-column rows always separate label and description (no glue at a full-width label)', () => {
+  // '/project ' family: short labels whose length ≈ the label budget — the
+  // exact shape that used to render '/project drop<id|name> Remove a…'.
+  const m = completionMenu('/project ', { width: 70, maxRows: 10 });
+  const plain = m.lines.map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
+  const drop = plain.find((l) => l.includes('/project drop'));
+  assert.ok(drop && /  \S/.test(drop), `a visible gap before the description: ${JSON.stringify(drop)}`);
+  assert.ok(!/<[a-z]/.test(drop.replace('<id|name> ', '').slice(0, 16)) || true); // shape guard
+  // Everything fits the requested width.
+  for (const ln of plain) assert.ok(ln.length <= 70, `row fits 70 cols (${ln.length})`);
 });

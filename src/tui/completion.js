@@ -120,8 +120,14 @@ function renderItems(items, selected, maxRows, width) {
   const hideDesc = width < HIDE_DESC_W;
   // Dynamic label column (wide layout only): pad to the ACTUAL longest label
   // instead of a fixed 30, so medium terminals get real description room.
+  // Label column: marker(2) + longest label (capped for display) + a
+  // 2-column GAP. Without the gap, a label that exactly fills the column
+  // had its description glued on with zero separation ('/project drop<id|name>
+  // Remove a project…'). Over-long labels (argument signatures) truncate for
+  // DISPLAY only — accepting still inserts the full label.
+  const labelBudget = Math.min(24, Math.max(...items.map(it => style.visibleWidth(it.label))));
   const labelCol = narrow || hideDesc ? 0
-    : Math.max(12, Math.min(DESC_COL, Math.max(...items.map(it => style.visibleWidth(it.label))) + 2));
+    : Math.max(12, Math.min(DESC_COL, 2 + labelBudget + 2));
   const descW = hideDesc ? 0 : Math.max(10, width - (narrow ? 6 : labelCol) - 4);
   // Pre-render each item as 1..N lines. The selection is ALWAYS marked with
   // the non-color '❯' glyph — color only enhances it, so NO_COLOR terminals
@@ -129,15 +135,21 @@ function renderItems(items, selected, maxRows, width) {
   const mark = (sel) => (sel ? '❯ ' : '  ');
   const blocks = items.map((it, i) => {
     const sel = i === selected;
-    const label = (sel ? style.accent(style.bold(it.label)) : style.muted(it.label));
-    if (hideDesc) return [mark(sel) + label];
+    const label = style.visibleWidth(it.label) > labelBudget
+      ? style.truncateVisible(it.label, labelBudget)
+      : it.label;
+    const styled = (sel ? style.accent(style.bold(label)) : style.muted(label));
+    if (hideDesc) return [mark(sel) + styled];
     if (narrow) {
       // Stacked: label row, description indented on the row(s) below.
       const desc = wrapPlain(it.description || '', descW);
-      return [mark(sel) + label, ...desc.map(d => style.dim('    ' + d))];
+      return [mark(sel) + styled, ...desc.map(d => style.dim('    ' + d))];
     }
     const desc = wrapPlain(it.description || '', descW);
-    const first = padVis(mark(sel) + label, labelCol) + style.dim(desc[0] || '');
+    // Pad to labelCol-1 and add an explicit separator space: the label can
+    // legitimately fill its whole budget, and padVis alone would leave the
+    // description touching it.
+    const first = padVis(mark(sel) + styled, labelCol - 1) + ' ' + style.dim(desc[0] || '');
     return [first, ...desc.slice(1).map(d => ' '.repeat(labelCol) + style.dim(d))];
   });
   // Window by LINES: start at item 0, advance until the selected item fits.
