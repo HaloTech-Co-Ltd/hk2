@@ -99,8 +99,13 @@ export async function handleUserLine(line, session, ctx, ui) {
     ctx.print(`No default model configured. Use /model add + /model set-default before chatting.`);
     return;
   }
+  // KB gate (deliberate, both front-ends): hk2 is KB-driven — talking to the
+  // model about a codebase without the project initialized gives confidently
+  // wrong answers. Even when the TUI auto-configured a model on first run,
+  // the user must initialize the project (/project init + /kb init) before
+  // conversing. Plain questions are expected to go through setup first.
   if (!session.rt) {
-    ctx.print(`KB not loaded. Run /kb init or /project set current <project-with-KB>.`);
+    ctx.print(`KB not loaded. Run /project init --name=<name> --source=<repo-path>, then /kb init before chatting.`);
     return;
   }
 
@@ -169,7 +174,7 @@ async function confirmPlan(plan, session, ui) {
     }
     options.push({ row: `  ${style.bold(String(nStrats + 1))}. ${style.dim('something else (type your own approach)')}` });
 
-    const choice = await ui.optionList({ header, options, title: 'Choose implementation' });
+    const choice = await ui.optionList({ header, options, title: 'Choose implementation', defaultIndex: 0 });
     if (choice === null) return null;
     if (choice.index === nStrats) {
       // "something else": the next line is the free-form approach.
@@ -279,7 +284,7 @@ async function confirmClarification(assessment, ui) {
   }));
   options.push({ row: `  ${style.bold(String(n + 1))}. ${style.dim('something else (type what you mean)')}` });
 
-  const choice = await ui.optionList({ header, options, title: 'Clarify request' });
+  const choice = await ui.optionList({ header, options, title: 'Clarify request', defaultIndex: 0 });
   if (choice === null) return null;
   if (choice.index === n) {
     const free = await ui.freeText(style.accent('  Your request: '));

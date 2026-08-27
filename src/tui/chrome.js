@@ -100,12 +100,51 @@ function setupHints(session) {
 }
 
 /**
- * The welcome card. Left column: logo rows, the tagline, Project/KB/Model
- * facts, cwd. Right column: tips, and when setup is incomplete a
- * "Getting set up" section (instead of the REPL's ⚠ warning wall).
+ * The welcome card — RESPONSIVE, three tiers:
+ *
+ *   ≥ 88 cols            dual column (logo + facts | tips panel)
+ *   60–87 cols (or compact) single-column fact card (Project/KB/Model/Path)
+ *   < 60 cols            two borderless lines
+ *
+ * `compact` is set for returning users and short terminals (height < 30):
+ * the full logo card is a first-run / wide-screen luxury, not something a
+ * 24-row terminal should spend 80% of its viewport on. No tier ever emits a
+ * line wider than `width`.
  */
-export function renderWelcome(session, width = Math.min(style.termWidth(), 100)) {
-  const w = Math.max(64, width);
+export function renderWelcome(session, width = Math.min(style.termWidth(), 100), { compact = false } = {}) {
+  const w = Math.max(8, Math.floor(width));
+  if (w < 60) return miniWelcome(session, w);
+  if (compact || w < 88) return singleWelcome(session, Math.min(w, 100));
+  return dualWelcome(session, Math.min(w, 100));
+}
+
+/** < 60 cols: two plain lines, no borders (nothing to wrap or break). */
+function miniWelcome(session, w) {
+  const proj = session.project ? session.project.name : 'no project';
+  const model = session.modelCfg ? modelTagFor(session) : 'no-model';
+  const l1 = cutTo(`${style.bold(`hk2 v${VERSION}`)} ${style.dim('·')} ${style.accent(proj)} ${style.dim('·')} ${style.muted(model)}`, w);
+  const hint = setupHints(session)[0]
+    || (session.project && session.rt ? '/ for commands · esc interrupts' : '/ for commands');
+  return [l1, style.dim(cutTo(hint, w))];
+}
+
+/** 60–87 cols / returning users / short screens: one compact fact card. */
+function singleWelcome(session, w) {
+  const proj = session.project ? style.accent(session.project.name) : style.warning('no project');
+  const model = session.modelCfg ? style.muted(modelTagFor(session)) : style.warning('no-model');
+  const label = (s) => style.dim(s);
+  const lines = [
+    `${label('Project')}  ${proj} ${style.dim('·')} ${kbBrief(session)}`,
+    `${label('Model')}    ${model}`,
+    `${label('Path')}     ${style.dim(homeTilde(session.project?.sourcePath || null))}`,
+  ];
+  const hint = setupHints(session)[0];
+  if (hint) lines.push(style.dim(hint));
+  return style.card({ title: `hk2 v${VERSION}`, lines, width: w, token: 'border' });
+}
+
+/** ≥ 88 cols, first-run shape: logo + facts on the LEFT, tips on the RIGHT. */
+function dualWelcome(session, w) {
   const leftW = 38;
   // Body rows render as `│ L │ R │` — borders(3) + padding(4) = 7 columns.
   const rightW = w - leftW - 7;
@@ -145,6 +184,19 @@ export function renderWelcome(session, width = Math.min(style.termWidth(), 100))
   }
   lines.push(style.bottomBorder({ width: w, token: 'border' }));
   return lines;
+}
+
+/**
+ * The one-line /clear summary: a cleared context does not need the whole
+ * welcome card again — just what the fresh session is.
+ */
+export function renderClearSummary(session, width = Math.min(style.termWidth(), 100)) {
+  const proj = session.project ? session.project.name : 'no project';
+  const model = session.modelCfg ? modelTagFor(session) : 'no-model';
+  return style.dim(cutTo(
+    `${style.success(style.ICON.ok)} context cleared · fresh session · ${proj} · ${model}`,
+    width,
+  ));
 }
 
 /* ------------------------------------------------------------------ */
@@ -196,7 +248,10 @@ export function renderFooter(session, width, { armed = false, busy = false, queu
   } else if (busy) {
     left = queued > 0 ? `esc to interrupt · queued: ${queued}` : 'esc to interrupt';
   } else {
-    left = 'enter to send · / for commands';
+    // The newline hint lives HERE (not duplicated in the placeholder): one
+    // place states the send/newline/commands keys, the placeholder stays a
+    // placeholder.
+    left = 'enter send · \\+enter newline · / commands';
   }
   const model = session.modelCfg ? modelTagFor(session) : 'no-model';
   let right;

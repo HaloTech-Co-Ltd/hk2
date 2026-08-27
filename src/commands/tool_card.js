@@ -122,7 +122,19 @@ export function fullResultText(r) {
  * verbatim. 'kb_search' → 'KB Search', 'plan_step' → 'Plan Step',
  * 'mcp__github__create_issue' → 'MCP: github/create_issue'.
  */
-function toolDisplayName(name) { return String(name || '?'); }
+const ACRONYMS = new Set(['kb', 'mcp', 'ast', 'id', 'url', 'api', 'ui', 'db']);
+
+export function toolDisplayName(name) {
+  const n = String(name || '?');
+  if (n.startsWith('mcp__')) {
+    const parts = n.split('__');
+    return `MCP: ${parts[1] ?? ''}/${parts.slice(2).join('__') || '?'}`;
+  }
+  return n.split('_')
+    .filter(Boolean)
+    .map((p) => (ACRONYMS.has(p) ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join(' ');
+}
 
 /**
  * COMPACT tool line for the TUI (Claude Code's turn style):
@@ -145,18 +157,20 @@ export function compactToolHeader(name, args) {
 }
 
 /**
- * The indented result line under a compact tool header: the first
- * meaningful line of the result (bash stdout first; generic results their
- * serialized first line via the SAFE serializer), with a "+N lines" hint.
+ * The indented result line under a compact tool header. Information-dense
+ * form (Claude Code's): exit status + duration prefix the first meaningful
+ * result line, e.g.  ⎿ exit 0 · 4.9s · 856 tests passed  … +3 lines.
  * Failed calls render the error in the error color.
  */
-export function compactToolResult(name, result) {
+export function compactToolResult(name, result, { durSec = null } = {}) {
   const hook = style.HAS_UTF8 ? '  ⎿  ' : '  > ';
+  const meta = [];
   let text = '';
   let more = 0;
   if (result && result.ok) {
     const r = result.result;
     if (r && typeof r === 'object' && typeof r.stdout === 'string') {
+      if (typeof r.exitCode === 'number') meta.push(`exit ${r.exitCode}`);
       const lines = r.stdout.split('\n').filter(Boolean);
       text = lines[0] ?? '';
       more = Math.max(0, lines.length - 1);
@@ -176,7 +190,9 @@ export function compactToolResult(name, result) {
     text = `Error: ${errText}`;
     return hook + style.errorT(text);
   }
-  let line = hook + style.muted(text.length > 90 ? text.slice(0, 87) + '…' : text);
+  if (durSec != null) meta.push(`${durSec < 10 ? durSec.toFixed(1) : Math.round(durSec)}s`);
+  const metaStr = meta.length > 0 ? style.dim(meta.join(' · ')) + ' ' : '';
+  let line = hook + metaStr + style.muted(text.length > 90 ? text.slice(0, 87) + '…' : text);
   if (more > 0) line += style.dim(`  … +${more} line${more > 1 ? 's' : ''}`);
   return line;
 }
