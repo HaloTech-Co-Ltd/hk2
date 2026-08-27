@@ -62,7 +62,7 @@ import { VERSION } from './version.js';
 const VALID_MODES = new Set(['project-init', 'build-kb', 'update-kb']);
 const VALID_RUN_MODES = new Set(['once', 'serve']);
 
-const BOOL_FLAGS = new Set(['help', 'h', 'project-list', 'version', 'V']);
+const BOOL_FLAGS = new Set(['help', 'h', 'project-list', 'version', 'V', 'tui', 'repl']);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -98,6 +98,16 @@ Default: enter the interactive REPL (agent loop with tool use + automatic KB con
 Usage:
   hk2
       Enter interactive REPL (default).
+
+  hk2 --tui
+      Enter the Claude Code-style inline TUI instead: a bordered multi-line
+      input box pinned at the bottom, streaming markdown output, tool-call
+      cards, slash-command completion, arrow-key confirmation modals, and a
+      live status line. Keys: enter sends · \\ + enter continues a line ·
+      up/down history · Tab completes · esc interrupts the running turn ·
+      ctrl+c clears the input (press twice to exit). Needs a TTY terminal;
+      falls back to the line REPL otherwise. Also enabled via HK2_UI=tui;
+      --repl / HK2_UI=repl force the classic REPL.
 
   hk2 --project=<name>
   hk2 --project-id=<id>
@@ -167,6 +177,32 @@ Environment variables:
   HK2_KB_CHECKPOINT_INTERVAL  /kb init checkpoint cadence in files (default 100)
   HK2_DEBUG=1           Print error stacks
 `);
+}
+
+/**
+ * Launch the interactive front-end. Choice (highest priority first):
+ *   --tui        Claude Code-style inline TUI (input box + streaming + modals)
+ *   --repl       classic line REPL (the default)
+ *   HK2_UI=tui   env fallback
+ * The TUI needs raw-mode stdin + a TTY output + a real TERM; anything less
+ * falls back to the REPL with a notice (piped stdin, TERM=dumb, some CI
+ * consoles), which itself handles non-TTY input.
+ */
+async function launchFrontend(flags, opts) {
+  const wantTui = flags.tui ? true : flags.repl ? false : process.env.HK2_UI === 'tui';
+  if (wantTui) {
+    const { runTui, tuiCapable } = await import('./tui/index.js');
+    // The TUI draws on stderr by default (HK2_TUI_STREAM=stdout flips it);
+    // judge capability against the stream it will actually use.
+    const tuiStream = process.env.HK2_TUI_STREAM === 'stdout' ? process.stdout : process.stderr;
+    if (tuiCapable(tuiStream)) {
+      await runTui(opts);
+      return;
+    }
+    console.error('[tui] this terminal does not support the TUI (needs a TTY stdin/output and TERM != dumb) — using the line REPL.');
+  }
+  const { interactive } = await import('./commands/interactive.js');
+  await interactive(opts);
 }
 
 export async function run() {
@@ -246,21 +282,18 @@ export async function run() {
       // onto the other project on reload. Instead we pass the resolved id
       // into interactive(), which pins it per-session.
       console.error(`Selected project: ${resolved.name} (id=${resolved.id})`);
-      const { interactive } = await import('./commands/interactive.js');
-      await interactive({ projectId: resolved.id, resume: flags.resume });
+      await launchFrontend(flags, { projectId: resolved.id, resume: flags.resume });
       return;
     }
 
     // --resume / --resume=<sessionId> without an explicit project: resolve
     // the session under the CURRENT project (global `current` pointer).
     if (flags.resume !== undefined) {
-      const { interactive } = await import('./commands/interactive.js');
-      await interactive({ resume: flags.resume });
+      await launchFrontend(flags, { resume: flags.resume });
       return;
     }
 
-    const { interactive } = await import('./commands/interactive.js');
-    await interactive();
+    await launchFrontend(flags, {});
     return;
   }
 

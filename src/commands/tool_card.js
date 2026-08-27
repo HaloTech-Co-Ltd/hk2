@@ -99,3 +99,84 @@ export function writeToolCardEnd(write, call, result) {
   }
   write(style.bottomBorder({ width: w, token }) + '\n');
 }
+
+/**
+ * SAFE serialization of a tool result for display: never throws, never
+ * returns undefined. Covers undefined/null results, BigInt values (JSON
+ * throws on them), and circular references (JSON throws) — a tool result
+ * comes from arbitrary tool code and the renderer must not crash on exotic
+ * shapes.
+ */
+export function fullResultText(r) {
+  if (r === undefined) return 'undefined';
+  if (r === null) return 'null';
+  try {
+    const s = JSON.stringify(r, (_k, v) => (typeof v === 'bigint' ? `${v.toString()}n` : v));
+    if (s !== undefined) return s;
+  } catch { /* circular / exotic — fall through to a lossy but safe form */ }
+  try { return JSON.stringify(String(r)); } catch { return '"[unserializable]"'; }
+}
+
+/**
+ * User-facing tool name for the compact TUI line: internal ids never surface
+ * verbatim. 'kb_search' → 'KB Search', 'plan_step' → 'Plan Step',
+ * 'mcp__github__create_issue' → 'MCP: github/create_issue'.
+ */
+function toolDisplayName(name) { return String(name || '?'); }
+
+/**
+ * COMPACT tool line for the TUI (Claude Code's turn style):
+ *   ● Bash(echo hi)
+ *     ⎿  <first meaningful result line>
+ * Reuses toolHeader's per-tool argument picking, but renders the Claude
+ * bullet + display-name tool label + parenthesized argument instead of a
+ * bordered card. The REPL keeps the card (writeToolCardStart/End).
+ */
+export function compactToolHeader(name, args) {
+  const label = toolDisplayName(name);
+  let arg = '';
+  if (args && typeof args === 'object') {
+    arg = args.command ?? args.path ?? args.pattern ?? args.query ?? args.name
+      ?? args.symbol_id ?? args.id ?? '';
+  }
+  const shown = String(arg).length > 60 ? String(arg).slice(0, 57) + '…' : String(arg);
+  return style.accent(style.ICON.bullet === '•' ? '●' : '*') + ' '
+    + style.bold(label) + (shown ? style.dim(`(${shown})`) : '');
+}
+
+/**
+ * The indented result line under a compact tool header: the first
+ * meaningful line of the result (bash stdout first; generic results their
+ * serialized first line via the SAFE serializer), with a "+N lines" hint.
+ * Failed calls render the error in the error color.
+ */
+export function compactToolResult(name, result) {
+  const hook = style.HAS_UTF8 ? '  ⎿  ' : '  > ';
+  let text = '';
+  let more = 0;
+  if (result && result.ok) {
+    const r = result.result;
+    if (r && typeof r === 'object' && typeof r.stdout === 'string') {
+      const lines = r.stdout.split('\n').filter(Boolean);
+      text = lines[0] ?? '';
+      more = Math.max(0, lines.length - 1);
+      if (!text && r.stderr) text = r.stderr.split('\n')[0];
+    } else {
+      const lines = fullResultText(r).split('\\n');
+      text = (lines[0] || '').slice(0, 90);
+      more = lines.length - 1;
+    }
+  } else {
+    const err = result?.error ?? 'failed';
+    // Non-string errors (thrown objects, {code,message}) render their
+    // message instead of '[object Object]'.
+    const errText = err && typeof err === 'object'
+      ? (err.message || fullResultText(err))
+      : String(err);
+    text = `Error: ${errText}`;
+    return hook + style.errorT(text);
+  }
+  let line = hook + style.muted(text.length > 90 ? text.slice(0, 87) + '…' : text);
+  if (more > 0) line += style.dim(`  … +${more} line${more > 1 ? 's' : ''}`);
+  return line;
+}
