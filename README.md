@@ -651,7 +651,7 @@ reject `glm-4.7[1m]`.
 |---|---|---|
 | `HK2_HOME` | Override `~/.hk2` location | `~/.hk2` |
 | `HK2_AUTOIMPORT_CLAUDE` | When 0, disables the first-run model import from Claude Code's `~/.claude/settings.json` (TUI only) | on |
-| `HK2_LLM_RETRY_UNKNOWN_POST` | LLM requests that failed with an UNKNOWN outcome (connection reset / timeout mid-flight — the server may have executed the POST) are NOT retried by default, to avoid duplicate requests and duplicate billing. Set `1` to opt in; connection-establishment failures and HTTP 429/502/503/504 (with Retry-After) are always safe to retry. | `0` |
+| `HK2_LLM_RETRY_UNKNOWN_POST` | LLM requests with an UNKNOWN outcome are NOT retried by default, to avoid duplicate requests and duplicate billing: connection reset / timeout mid-flight, and HTTP 502/503/504 (a reverse proxy can return these AFTER the upstream already ran the inference). Set `1` to opt in (Retry-After is honored). Connection-establishment failures and HTTP 429 (refused before execution) are outcome-safe and always retried. | `0` |
 | `HK2_UI` | Interactive front-end: `tui` selects the Claude Code-style inline TUI, `repl` (default) the classic line REPL. The `--tui` / `--repl` flags take precedence. | `repl` |
 | `HK2_KB_DIR` | Override KB root | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |

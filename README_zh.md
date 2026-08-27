@@ -589,7 +589,7 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 |---|---|---|
 | `HK2_HOME` | 覆盖 `~/.hk2` 位置 | `~/.hk2` |
 | `HK2_AUTOIMPORT_CLAUDE` | 设 0 禁用首启时从 Claude Code 的 `~/.claude/settings.json` 自动导入模型（仅 TUI） | 开 |
-| `HK2_LLM_RETRY_UNKNOWN_POST` | 结果未知的 LLM 请求失败（发送后被重置/超时 —— 服务端可能已执行该 POST）默认不重试，避免重复请求与重复计费。设 `1` 显式开启；连接建立失败与 HTTP 429/502/503/504（尊重 Retry-After）始终安全重试。 | `0` |
+| `HK2_LLM_RETRY_UNKNOWN_POST` | 结果未知的 LLM 请求失败默认不重试，避免重复请求与重复计费：发送后被重置/超时，以及 HTTP 502/503/504（反向代理可能在上游已完成推理后才返回这些状态码）。设 `1` 显式开启（开启后尊重 Retry-After）。连接建立失败与 HTTP 429（执行前被拒绝）属于结果安全类，始终重试。 | `0` |
 | `HK2_UI` | 交互前端：`tui` 选择 Claude Code 风格内联 TUI，`repl`（默认）经典行式 REPL。`--tui` / `--repl` 旗标优先。 | `repl` |
 | `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
