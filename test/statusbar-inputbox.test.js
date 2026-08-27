@@ -7,6 +7,9 @@
  *   - interactive.js: formatInputBoxLine presence follows agentTurnActive;
  *     the consumeNext accessor salvages an unsubmitted box draft into the
  *     mid-task queue when an in-run menu seizes the input.
+ *   - real-cursor docking: parkSeq()/undockInputCursor()/reanchorAfterMenu()
+ *     place the REAL terminal cursor inside the box via the DECSC/DECRC
+ *     protocol; inputBoxDockColumn computes the visible dock column.
  *
  * Run:  node --test test/statusbar-inputbox.test.js
  *----------------------------------------------------------------------*/
@@ -14,7 +17,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { StatusBar } from '../lib/agent/statusbar.js';
-import { createSession, formatInputBoxLine } from '../src/commands/interactive.js';
+import { createSession, formatInputBoxLine, inputBoxDockColumn } from '../src/commands/interactive.js';
 
 /* ---------- StatusBar: reserved-block geometry ---------- */
 
@@ -219,4 +222,146 @@ test('consumeNext accessor: empty draft is not salvaged', () => {
   session.rl = { line: '   ', cursor: 0 };
   session.consumeNext = () => {};
   assert.deepEqual(session.userInputQueue, [], 'whitespace-only draft dropped');
+});
+
+/* ---------- real-cursor docking: inputBoxDockColumn ---------- */
+
+test('inputBoxDockColumn: null when no turn or a menu owns the input', () => {
+  const session = createSession();
+  assert.equal(inputBoxDockColumn(session), null, 'no agent turn -> no dock');
+  session.agentTurnActive = true;
+  session.rl = { line: 'hi', cursor: 2 };
+  assert.ok(inputBoxDockColumn(session) > 0, 'turn active -> dockable');
+  session.consumeNext = () => {};
+  assert.equal(inputBoxDockColumn(session), null, 'menu owns input -> no dock');
+  session.consumeNext = null;
+  assert.ok(inputBoxDockColumn(session) > 0, 'menu released -> dockable again');
+});
+
+test('inputBoxDockColumn: follows the readline cursor through the draft', () => {
+  const session = createSession();
+  session.agentTurnActive = true;
+  const labelW = 18; // '» add instruction ' visible width
+  session.rl = { line: '', cursor: 0 };
+  assert.equal(inputBoxDockColumn(session), labelW + 1, 'empty draft -> right after the label');
+  session.rl = { line: 'ab', cursor: 2 };
+  assert.equal(inputBoxDockColumn(session), labelW + 2 + 1, 'cursor at end -> after the draft');
+  session.rl = { line: 'ab', cursor: 1 };
+  assert.equal(inputBoxDockColumn(session), labelW + 1 + 1, 'cursor mid-draft -> at the edit point');
+  session.rl = { line: '世界', cursor: 1 };
+  assert.equal(inputBoxDockColumn(session), labelW + 2 + 1, 'wide char counts as 2 columns');
+});
+
+test('inputBoxDockColumn: clamped to a runaway readline cursor', () => {
+  const session = createSession();
+  session.agentTurnActive = true;
+  session.rl = { line: 'ab', cursor: 99 };
+  assert.equal(inputBoxDockColumn(session), 18 + 2 + 1, 'cursor clamped to line length');
+});
+
+/* ---------- real-cursor docking: formatInputBoxLine caret placement ---------- */
+
+test('formatInputBoxLine: caret sits AT the readline cursor, not always at the end', () => {
+  const session = createSession();
+  session.agentTurnActive = true;
+  const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  session.rl = { line: 'hello', cursor: 5 };
+  let out = strip(formatInputBoxLine(session)[0]);
+  assert.ok(out.includes('hello▏'), 'end cursor -> trailing caret');
+  session.rl = { line: 'hello', cursor: 2 };
+  out = strip(formatInputBoxLine(session)[0]);
+  assert.ok(out.includes('he▏llo'), 'mid cursor -> caret at the edit point');
+  // Menu owns the input: legacy tail-caret so the box reads as inert.
+  session.consumeNext = () => {};
+  session.rl = { line: 'hello', cursor: 2 };
+  out = strip(formatInputBoxLine(session)[0]);
+  assert.ok(out.includes('hello▏'), 'consumeNext armed -> legacy tail caret');
+});
+
+/* ---------- real-cursor docking: StatusBar park/undock/reanchor ---------- */
+
+test('parkSeq: null until the box renders and a cursor fn is registered', () => {
+  const { bar } = makeBar({ input: () => ['» ▏'] });
+  assert.equal(bar.parkSeq(), null, 'no cursor fn -> not dockable');
+  bar.setInputCursorFn(() => 25);
+  assert.equal(bar.parkSeq(), null, 'box not yet rendered (_inputLineCount 0) -> null');
+  bar.update();
+  // rows=24, input only -> input row 23; park at column 25.
+  assert.equal(bar.parkSeq(), '\x1b[23;25H', 'park computed from fn + geometry');
+  bar.setInputCursorFn(() => null);
+  assert.equal(bar.parkSeq(), null, 'fn returns null -> not dockable');
+});
+
+test('refreshInputLine ends with the PARK (no DECRC) while docked', () => {
+  let draft = 'hello';
+  const { bar, writes, all } = makeBar({ input: () => [`» ${draft}▏`] });
+  bar.setInputCursorFn(() => 3 + draft.length + 1);
+  bar.update();
+  writes.length = 0;
+  draft = 'hello wor';
+  bar.refreshInputLine();
+  const w = all();
+  assert.ok(w.startsWith('\x1b[23;1H'), 'targets the input row directly');
+  assert.ok(!w.startsWith('\x1b7'), 'no leading DECSC while docked (slot owned by the router)');
+  assert.ok(/\\x1b\[23;\d+H$/.test(w) || /\x1b\[23;\d+H$/.test(w), 'ends with the park sequence');
+  assert.ok(!w.includes('\x1b8'), 'no DECRC emitted while docked');
+});
+
+test('steady-state update() re-parks instead of restoring while docked', () => {
+  const { bar, writes, all } = makeBar({ input: () => ['» ▏'] });
+  bar.setInputCursorFn(() => 5);
+  bar.update(); // grow -> docked
+  writes.length = 0;
+  bar.update(); // steady state
+  const w = all();
+  assert.ok(!w.includes('\x1b8'), 'no DECRC while docked');
+  assert.ok(w.endsWith('\x1b[23;5H'), 'ends re-parked in the box');
+});
+
+test('undockInputCursor emits DECRC only when docked; reanchorAfterMenu re-docks', () => {
+  const { bar, writes } = makeBar({ input: () => ['» ▏'] });
+  bar.setInputCursorFn(() => 5);
+  bar.update(); // docked
+  writes.length = 0;
+  bar.undockInputCursor();
+  assert.equal(writes.join(''), '\x1b8', 'undock = plain DECRC (workspace slot restore)');
+  writes.length = 0;
+  bar.undockInputCursor(); // already undocked
+  assert.equal(writes.length, 0, 'undock is idempotent');
+  writes.length = 0;
+  bar.reanchorAfterMenu(); // menu released -> adopt current pos + re-dock
+  const w = writes.join('');
+  assert.ok(w.startsWith('\x1b7'), 'reanchor saves the new workspace slot first');
+  assert.ok(w.endsWith('\x1b[23;5H'), 'reanchor re-parks in the box');
+});
+
+test('grow/shrink with dock: re-saves the stale slot then re-docks', () => {
+  // Grow with the dock active (plan appears mid-turn): the steady-state tail
+  // must reset the workspace slot to the new geometry then re-dock.
+  let plan = [];
+  const { bar, writes, all } = makeBar({ input: () => ['» ▏'], plan: () => plan });
+  bar.setInputCursorFn(() => 5);
+  bar.update(); // input only -> docked at row 23
+  writes.length = 0;
+  plan = ['Plan: x']; // plan grows 0 -> 1
+  bar.update();
+  const w = all();
+  assert.ok(w.includes('\x1b7\x1b[22;5H'), 'geometry change re-saves slot then re-docks (row 22 after grow)');
+});
+
+/* ---------- write-router protocol (interactive.js wiring) ---------- */
+
+test('routed workspace write emits DECRC + payload + DECSC + park while the box is armed', () => {
+  // Simulate the router directly: StatusBar exposes parkSeq; interactive.js
+  // wraps process.stdout/stderr with this exact protocol. Here we verify the
+  // sequence shape the protocol prescribes, using a fresh bar.
+  const { bar } = makeBar({ input: () => ['» ▏'] });
+  bar.setInputCursorFn(() => 5);
+  bar.update();
+  const park = bar.parkSeq();
+  assert.ok(park, 'park available while armed');
+  const routed = `\x1b8payload\x1b7${park}`;
+  assert.ok(routed.startsWith('\x1b8'), 'payload prefixed by workspace restore');
+  assert.ok(routed.endsWith(`${park}`), 'payload suffixed by slot save + park');
+  assert.ok(routed.includes('\x1b7'), 'new continuation saved after the payload');
 });

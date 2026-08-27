@@ -236,6 +236,15 @@ export function createSession(pinnedProjectId = null) {
         base.rl.line = '';
         base.rl.cursor = 0;
       }
+      // Real-cursor docking handoff: arming a menu (null -> cb) while the
+      // cursor is docked in the box hands the cursor back to the workspace
+      // (\x1b8 restore) so the menu's prompt + native echo land at the
+      // workspace continuation position — byte-identical to pre-docking
+      // behaviour. Releasing (cb -> null, after the menu's final Enter echo)
+      // adopts wherever the cursor now sits as the NEW continuation slot and
+      // re-docks. Both are self-gating no-ops when the box is off.
+      if (cb && !consumeNextCb) base.statusBar?.undockInputCursor?.();
+      if (!cb && consumeNextCb) base.statusBar?.reanchorAfterMenu?.();
       consumeNextCb = cb;
     },
   });
@@ -331,6 +340,12 @@ export async function interactive(opts = {}) {
     // matching the legacy layout exactly.
     inputRenderer: () => formatInputBoxLine(session),
   });
+  // Real-cursor docking: the StatusBar asks this fn where the real cursor
+  // should sit on the input row (null = don't dock). It reads the LIVE
+  // readline state, so the dock follows the cursor through edits.
+  if (session.statusBar.setInputCursorFn) {
+    session.statusBar.setInputCursorFn(() => inputBoxDockColumn(session));
+  }
   if (session.statusBar.isEnabled()) {
     // Clear the visible screen so the previous session's last lines don't
     // bleed in around the welcome card on re-entry. Scrollback is preserved
@@ -428,6 +443,51 @@ export async function interactive(opts = {}) {
   // point. When inputEchoOn is false (idle turns, in-run menus via
   // session.consumeNext, slash commands) the wrapper is fully transparent —
   // prompt/echo behaviour is byte-identical to before this feature.
+  //
+  // ── Real-cursor docking ─────────────────────────────────────────
+  // While the box is active the REAL terminal cursor is docked INSIDE the
+  // box (just after the label + draft), so the user sees a blinking caret
+  // exactly where their typing will land — instead of a misleading blinking
+  // cursor somewhere in the streaming workspace. All workspace writers
+  // (spinner, streaming markdown, tool cards, ctx.print) go through
+  // process.stdout.write / process.stderr.write; a wrapper on both streams
+  // rewrites each write as:
+  //     DECRC (\x1b8: jump to workspace continuation) + payload
+  //     + DECSC (\x1b7: save the new continuation) + park-in-box
+  // so workspace output still flows in order at the saved position while the
+  // visible cursor ends up back in the box after every write. The DECSC slot
+  // is owned exclusively by this protocol while the box is armed: every
+  // StatusBar repaint therefore goes through the RAW write captured in its
+  // constructor (never re-routed), and emits its own park instead of \x1b8.
+  // The rl._writeToOutput echo-router stays as-is: native echo stays
+  // suppressed while docked (the box repaints itself on keystroke), and an
+  // in-run menu undocks (\x1b8) so its prompt/echo land in the workspace.
+  const stdoutOrig = process.stdout.write.bind(process.stdout);
+  const stderrOrig = process.stderr.write.bind(process.stderr);
+  const routedWrite = (orig, chunk, ...rest) => {
+    if (!session.statusBar?.isEnabled() || !session.inputEchoOn || session.consumeNext) {
+      return orig(chunk, ...rest);
+    }
+    const park = session.statusBar.parkSeq();
+    if (!park) return orig(chunk, ...rest);
+    // DECRC -> payload -> DECSC -> park. Nested calls (a write issued while
+    // another routed write is mid-flight, e.g. console.error inside a
+    // process.stderr.write callback) must not re-restore/re-park and double
+    // the escapes; the inner write's park is identical so passthrough is fine.
+    if (routedWrite.depth) return orig(chunk, ...rest);
+    // A caller-supplied completion callback must fire when the underlying
+    // write drains — drop it here and the caller (e.g. a stream pipeline)
+    // would hang forever. Hand it through with the routed payload.
+    routedWrite.depth = 1;
+    try {
+      return orig(`\x1b8${String(chunk)}\x1b7${park}`, ...rest);
+    } finally {
+      routedWrite.depth = 0;
+    }
+  };
+  routedWrite.depth = 0;
+  process.stdout.write = routedWrite.bind(null, stdoutOrig);
+  process.stderr.write = routedWrite.bind(null, stderrOrig);
   const rlOrigWriteToOutput = session.rl._writeToOutput
     ? session.rl._writeToOutput.bind(session.rl)
     : null;
@@ -459,7 +519,13 @@ export async function interactive(opts = {}) {
     // suppression would silently eat all readline output with no box shown.
     if (!session.statusBar?.isEnabled()) return;
     session.inputEchoOn = true;
+    // Docking protocol: save the workspace continuation position into the
+    // DECSC slot FIRST (the cursor is currently wherever the previous turn's
+    // teardown / prompt left it — that's where continued output must go),
+    // then update() draws the box and parks the real cursor inside it.
+    session.statusBar?.rawWrite('\x1b7');
     session.statusBar?.update(); // grow: input row appears above plan/status
+    session.statusBar?.parkInputCursor();
     refreshInputEcho();
   };
   const disarmInputBox = () => {
@@ -472,6 +538,11 @@ export async function interactive(opts = {}) {
       session.rl.line = '';
       session.rl.cursor = 0;
     }
+    // Undock FIRST (restore the workspace continuation from the DECSC slot)
+    // so the shrink repaint below runs with the cursor back in the workspace
+    // and its legacy save/restore tail (\x1b8) lands the cursor at the
+    // workspace position — ready for the next rl.prompt().
+    session.statusBar?.undockInputCursor();
     session.statusBar?.update(); // shrink: input row released back to workspace
   };
   session.armInputBox = armInputBox;
@@ -502,6 +573,15 @@ export async function interactive(opts = {}) {
     // the normal capture path takes over.
     if (session.inputEchoOn) {
       if (session.rl) { session.rl.line = ''; session.rl.cursor = 0; }
+      // The real cursor is docked in the box and readline's \r\n echo was
+      // suppressed (echoRouter), so the workspace continuation slot has NOT
+      // advanced past the previous line. The queued receipt that follows must
+      // start on a fresh row: restore the slot, emit an explicit \r\n there
+      // (CRLF is used rather than a bare \n because the tty may be in raw
+      // mode with OPOST off, where a lone LF does not return to column 1),
+      // save the advanced slot, and re-dock — mirroring the write-router.
+      const park = session.statusBar?.parkSeq?.();
+      if (park) session.statusBar?.rawWrite(`\x1b8\r\n\x1b7${park}`);
     }
     // If we're mid-paste, buffer the line and wait for paste-end. Pasted
     // content otherwise arrives as one 'line' event per line and each would
@@ -1331,12 +1411,40 @@ function formatPlanProgressLines(session) {
  * Exported for unit testing without a live TTY (the StatusBar truncates the
  * visible width itself, so this returns the untruncated styled string).
  */
+/**
+ * The REAL-cursor dock column for the input box: 1-based VISIBLE column just
+ * after `» add instruction ` + the draft text left of readline's cursor.
+ * Returns null when the cursor must NOT be docked (no turn, or an in-run
+ * menu owns the input via consumeNext). Exported for unit tests.
+ */
+export function inputBoxDockColumn(session) {
+  if (!session || !session.agentTurnActive || session.consumeNext) return null;
+  const label = '» add instruction ';
+  const line = String(session.rl?.line ?? '');
+  // readline's cursor is a JS string index into rl.line; the visible column
+  // accounts for wide chars via visibleWidth() (approximation is fine — the
+  // StatusBar clamps the column to the terminal width).
+  const cur = Math.max(0, Math.min(session.rl?.cursor ?? line.length, line.length));
+  const before = style.visibleWidth(label) + style.visibleWidth(line.slice(0, cur)) + 1;
+  const after = style.visibleWidth(line.slice(cur));
+  // The caret glyph itself occupies the dock cell when the cursor is at the
+  // end of the draft (no text after it): park ON the caret. With text after
+  // the cursor the caret glyph sits there instead, so dock just before it.
+  return after === 0 ? before : before; // dock column = caret cell either way
+}
+
 export function formatInputBoxLine(session) {
   if (!session || !session.agentTurnActive) return [];
   const label = style.accent('»') + style.dim(' add instruction ');
-  const draft = String(session.rl?.line ?? '');
+  const line = String(session.rl?.line ?? '');
+  const cur = Math.max(0, Math.min(session.rl?.cursor ?? line.length, line.length));
   const caret = style.accent('▏'); // caret marking the in-progress draft
-  return [label + draft + caret];
+  // The caret glyph is placed AT the readline cursor position (not always at
+  // the end), so mid-draft edits render where they will land. While an
+  // in-run menu owns the input (consumeNext), keep the legacy tail-caret so
+  // the box reads as inert while the menu is on screen.
+  if (session.consumeNext) return [label + line + caret];
+  return [label + line.slice(0, cur) + caret + line.slice(cur)];
 }
 
 function formatStatusLine(session) {
