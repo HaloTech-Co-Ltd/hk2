@@ -54,7 +54,7 @@
  */
 import readline from 'node:readline';
 import { ensureHome } from '../../lib/config/home.js';
-import { dispatchSlash } from '../slash/index.js';
+import { dispatchSlash, allSlashCompletionLabels } from '../slash/index.js';
 import { StatusBar } from '../../lib/agent/statusbar.js';
 import { PasteHandler } from '../../lib/agent/paste.js';
 import { MultiLineCollector } from '../../lib/agent/multiline.js';
@@ -390,15 +390,15 @@ export function printBanner(session, ctx) {
   }
 }
 
+/**
+ * Tab completion over the DERIVED slash-command surface (see
+ * allSlashCompletionLabels in slash/index.js): every completion comes from
+ * SLASH_COMMANDS + the HELP_TEXT subcommand sections, so the list can never
+ * drift from the registered commands. Replaces the former hand-maintained
+ * 40-entry array that had already fallen behind the real command set.
+ */
 function makeCompleter() {
-  const cmds = ['/model', '/project', '/kb', '/session', '/review', '/help', '/quit', '/exit', '/clear', '/compact', '/theme',
-    '/model list', '/model add', '/model use', '/model set-default', '/model set', '/model set-phase', '/model add-mcpserver', '/model types', '/model del', '/model show', '/model help',
-    '/project init', '/project list', '/project set', '/project show',
-    '/kb init', '/kb update', '/kb status', '/kb search', '/kb symbol', '/kb neighbors', '/kb knowledge', '/kb help',
-    '/kb knowledge list', '/kb knowledge show', '/kb knowledge add', '/kb knowledge learn', '/kb knowledge help',
-    '/session info', '/session list', '/session new', '/session resume',
-    '/theme list', '/theme set', '/theme reset', '/theme preview', '/theme title-follow', '/theme help',
-    '/review code', '/review plan'];
+  const cmds = allSlashCompletionLabels();
   return function completer(line) {
     const hits = cmds.filter(c => c.startsWith(line));
     return [hits.length ? hits : cmds, line];
