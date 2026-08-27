@@ -9,6 +9,10 @@
 # Behavior:
 #   - Clones/copies the project to $HK2_INSTALL_DIR (default: ~/.hk2)
 #     If the script is run from inside the repo, it uses the current dir.
+#   - USER DATA IS PRESERVED across reinstalls: models.json / projects.json /
+#     theme.json / kb/ / sessions/ / logs/ living in the install dir are moved
+#     aside, the code tree is refreshed, then moved back. Disable with
+#     --preserve-data=off (the pre-fix rm -rf behavior).
 #   - Symlinks $PREFIX/bin/hk2 to ./bin/hk2
 #   - Prints install location + PATH hint
 #
@@ -24,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 
 # Parse arguments. Supports both --prefix=value and --prefix value forms.
 NO_NPM_INSTALL=0
+PRESERVE_DATA=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix=*) PREFIX="${1#--prefix=}" ;;
@@ -31,6 +36,7 @@ while [ $# -gt 0 ]; do
     --install-dir=*) INSTALL_DIR="${1#--install-dir=}" ;;
     --install-dir) INSTALL_DIR="$2"; shift ;;
     --no-npm-install) NO_NPM_INSTALL=1 ;;
+    --preserve-data=off) PRESERVE_DATA=0 ;;
     *) ;;
   esac
   shift
@@ -46,13 +52,58 @@ echo "Installing hk2 from $SCRIPT_DIR"
 echo "  install dir: $INSTALL_DIR"
 echo "  bin prefix:  $PREFIX/bin"
 
+# Paths inside the install dir that hold USER DATA, not install artifacts.
+# lib/config/home.js (HK2_HOME) + lib/agent/tool_theme.js (THEME_PATH) define
+# this set: models.json, projects.json, kb/, sessions/, logs/, theme.json.
+# install.sh and the code it ships must treat this list as a contract.
+DATA_ITEMS="models.json projects.json theme.json kb sessions logs"
+
 if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
-  if [ -d "$INSTALL_DIR" ]; then
+  # Stale preserved data from an interrupted earlier run must never survive
+  # into a new one: a leftover $INSTALL_DIR.hk2-preserve would otherwise be
+  # clobbered below while the user believes their data was saved.
+  rm -rf "${INSTALL_DIR}.hk2-preserve"
+
+  PRESERVE_DIR=""
+  if [ "$PRESERVE_DATA" -eq 1 ] && [ -d "$INSTALL_DIR" ]; then
+    for item in $DATA_ITEMS; do
+      if [ -e "$INSTALL_DIR/$item" ]; then
+        PRESERVE_DIR="${INSTALL_DIR}.hk2-preserve"
+        break
+      fi
+    done
+  fi
+
+  if [ -n "$PRESERVE_DIR" ]; then
+    echo "  (preserving user data: $DATA_ITEMS found in $INSTALL_DIR)"
+    mkdir -p "$PRESERVE_DIR"
+    for item in $DATA_ITEMS; do
+      [ -e "$INSTALL_DIR/$item" ] && mv "$INSTALL_DIR/$item" "$PRESERVE_DIR/"
+    done
+  elif [ -d "$INSTALL_DIR" ]; then
     echo "  (existing $INSTALL_DIR will be overwritten)"
+  fi
+
+  if [ -d "$INSTALL_DIR" ]; then
     rm -rf "$INSTALL_DIR"
   fi
   mkdir -p "$(dirname "$INSTALL_DIR")"
   cp -R "$SCRIPT_DIR" "$INSTALL_DIR"
+  # Don't ship dev-only state inside the installed copy.
+  rm -rf "$INSTALL_DIR/.git" "$INSTALL_DIR/node_modules"
+
+  if [ -n "$PRESERVE_DIR" ]; then
+    # Restore user data on top of the fresh copy. If the new tree ships a same-
+    # named item (e.g. a future version adds a kb/ template), user data wins —
+    # this is an upgrade, not a factory reset.
+    for item in $DATA_ITEMS; do
+      if [ -e "$PRESERVE_DIR/$item" ]; then
+        rm -rf "$INSTALL_DIR/$item"
+        mv "$PRESERVE_DIR/$item" "$INSTALL_DIR/"
+      fi
+    done
+    rmdir "$PRESERVE_DIR" 2>/dev/null || true
+  fi
 fi
 
 mkdir -p "$PREFIX/bin"
