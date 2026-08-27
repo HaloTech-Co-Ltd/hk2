@@ -101,6 +101,66 @@ export function writeToolCardEnd(write, call, result) {
 }
 
 /**
+ * The Ctrl+O expansion of a tool result as PHYSICAL display lines:
+ * bash results expand their REAL stdout/stderr (the compact line's JSON
+ * form escapes newlines, so the raw text would render as one giant line);
+ * object results render as pretty-printed JSON; every line is hard-wrapped
+ * to `width` grapheme columns and the total is capped at `maxLines`.
+ *
+ * @returns {{lines: string[], capped: boolean}}
+ */
+export function fullResultLines(result, { width = 80, maxLines = 40 } = {}) {
+  let text = '';
+  if (result && result.ok) {
+    const r = result.result;
+    if (r && typeof r === 'object' && typeof r.stdout === 'string') {
+      const parts = [];
+      if (r.stdout) parts.push(r.stdout.replace(/\n+$/, ''));
+      if (r.stderr) parts.push('[stderr]\n' + r.stderr.replace(/\n+$/, ''));
+      if (typeof r.exitCode === 'number') parts.push(`[exit ${r.exitCode}]`);
+      text = parts.length > 0 ? parts.join('\n') : '(no output)';
+    } else {
+      // Pretty-printed JSON: multi-line and readable, with the same safe
+      // handling of undefined / BigInt / circular inputs as fullResultText.
+      try {
+        const s = JSON.stringify(r ?? null, (_k, v) => (typeof v === 'bigint' ? `${v.toString()}n` : v), 2);
+        text = s === undefined ? String(r) : s;
+      } catch { text = fullResultText(r); }
+    }
+  } else if (result) {
+    const err = result.error ?? 'failed';
+    text = err && typeof err === 'object'
+      ? (err.message || fullResultText(err))
+      : `Error: ${String(err)}`;
+  } else {
+    text = 'undefined';
+  }
+  // Hard-wrap every physical line to the width (grapheme columns), then cap.
+  const out = [];
+  let capped = false;
+  for (const src of String(text).split('\n')) {
+    if (src === '') { out.push(''); continue; }
+    let line = '';
+    let lineW = 0;
+    for (const g of style.graphemes(src)) {
+      const gw = style.graphemeWidth(g);
+      if (lineW + gw > width && lineW > 0) {
+        if (out.length >= maxLines) { capped = true; break; }
+        out.push(line);
+        line = '';
+        lineW = 0;
+      }
+      line += g;
+      lineW += gw;
+    }
+    if (capped) break;
+    if (out.length >= maxLines && line) { capped = true; if (line) break; }
+    out.push(line);
+  }
+  return { lines: out, capped };
+}
+
+/**
  * SAFE serialization of a tool result for display: never throws, never
  * returns undefined. Covers undefined/null results, BigInt values (JSON
  * throws on them), and circular references (JSON throws) — a tool result

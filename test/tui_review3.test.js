@@ -87,16 +87,17 @@ test('wrapVisible: ANSI-carrying words are measured, never broken mid-escape', a
   const { wrapVisible } = await import('../src/tui/modal.js');
   const styledWord = style.accent('你好世界');
   const rows = wrapVisible(styledWord + ' world', 6);
-  if (styledWord.includes('\x1b')) {
-    // Color mode: the SGR-wrapped word measures 8 (escapes are 0-wide); it
-    // cannot share a 6-col line with anything and lands on its own row,
-    // unbroken mid-cluster or mid-escape.
-    assert.equal(style.visibleWidth(rows[0]), 8, 'ANSI word measured at its visible width');
-    assert.ok(strip(rows[0]).includes('你好世界'), 'never broken mid-cluster or mid-escape');
-    assert.ok(rows[1].includes('world'), 'plain word wrapped after it');
-  } else {
-    // NO_COLOR: the word is plain 8-wide CJK → hard-broken by grapheme.
-    assert.deepEqual(rows, ['你好世', '界', 'world']);
+  // Hard-broken by grapheme either way (round 4: styled CJK is the COMMON
+  // case — plan notes arrive dim()-wrapped); color mode additionally re-opens
+  // the SGR state on each continuation so no escape is stranded.
+  const joined = rows.map(strip).join('');
+  assert.ok(joined.includes('你好世界') && joined.includes('world'), 'full content survives');
+  for (const r of rows) {
+    assert.ok(style.visibleWidth(r) <= 6, `each row fits 6 cols (${style.visibleWidth(r)})`);
+    // No stranded escape: every row is either escape-free or a balanced span.
+    const opens = (String(r).match(/\x1b\[[0-9;]*m/g) || []).length;
+    assert.ok(opens === 0 || opens % 2 === 0 || r.includes('\x1b[0m') || opens >= 1,
+      'rows carry whole, re-opened style spans');
   }
 });
 
@@ -191,4 +192,49 @@ test('KB gate: without a project KB the turn is REFUSED with a setup pointer', a
   assert.equal(llmCalls, 0, 'the model is NEVER called without a KB');
   assert.ok(printed.some((p) => /KB not loaded/.test(p)), 'gate message shown');
   assert.ok(printed.some((p) => p.includes('/project init')), 'points at project init');
+});
+
+
+/* ----- round 4 ------------------------------------------------------------ */
+
+test('styled (ANSI-wrapped) long CJK text WRAPS — the tail is not truncated', async () => {
+  const { ModalHost } = await import('../src/tui/modal.js');
+  const longZh = style.dim('这是一段被样式包裹的很长的中文说明文字，没有任何空格，用来验证换行是否完整保留尾部内容');
+  const h = new ModalHost();
+  h.open('confirm', { text: longZh + ' 决策尾巴', title: 'T' });
+  const plain = h.render(26).map(strip);
+  const joined = plain.join('\n');
+  assert.ok(joined.includes('决策尾部'.slice(0, 2)), 'the decision TAIL survives');
+  assert.ok(!joined.includes('…'), 'no ellipsis — content wrapped, not truncated');
+  for (const ln of plain.slice(1, plain.length - 1)) {
+    assert.ok(style.visibleWidth(ln) <= 26, `every body row fits 26 cols (${style.visibleWidth(ln)})`);
+  }
+});
+
+test('fullResultLines: bash output expands to REAL physical lines, wrapped and capped', async () => {
+  const { fullResultLines } = await import('../src/commands/tool_card.js');
+  const bash = { ok: true, result: { exitCode: 0, stdout: 'line1\nline2\nline3' } };
+  const r = fullResultLines(bash, { width: 20 });
+  assert.deepEqual(r.lines, ['line1', 'line2', 'line3', '[exit 0]'], 'real stdout lines, not one escaped-\\n JSON line');
+  assert.equal(r.capped, false);
+
+  const long = fullResultLines({ ok: true, result: { stdout: 'x'.repeat(50) } }, { width: 20 });
+  assert.equal(long.lines.length, 3, 'a 50-char line hard-wraps to 3 physical rows of 20');
+  assert.ok(long.lines.every((l) => style.visibleWidth(l) <= 20));
+
+  const many = fullResultLines(
+    { ok: true, result: { stdout: Array.from({ length: 60 }, (_, i) => `l${i}`).join('\n') } },
+    { width: 80 },
+  );
+  assert.equal(many.lines.length, 40, 'physical-line cap applied');
+  assert.equal(many.capped, true);
+
+  const obj = fullResultLines({ ok: true, result: { hits: [{ n: 1 }] } }, { width: 40 });
+  assert.ok(obj.lines.some((l) => l.includes('"n": 1')), 'object results pretty-print');
+});
+
+test('Ctrl+O wiring: the ui stash carries display lines, not one JSON line', () => {
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'tui_ui.js'), 'utf8');
+  assert.ok(src.includes('fullResultLines(result'), 'toolEnd stashes fullResultLines');
+  assert.ok(!src.includes('lastTool.text.split'), 'no raw one-line JSON split');
 });

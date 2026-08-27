@@ -245,22 +245,67 @@ export function wrapVisible(text, w) {
     // so word-splitting never cuts through them.
     const ww = style.visibleWidth(word);
     if (ww <= w) { place(word, ww); continue; }
-    // Over-wide word. Hard-break ONLY plain text — breaking inside an ANSI
-    // span would strand the escape; ANSI-carrying words get their own line
-    // (bodyLine's truncation is the last resort there).
-    if (word.includes('\x1b')) { place(word, ww); continue; }
-    let piece = '';
-    let pieceW = 0;
-    for (const g of style.graphemes(word)) {
-      const gw = style.graphemeWidth(g);
-      if (pieceW + gw > w && pieceW > 0) { place(piece, pieceW); piece = ''; pieceW = 0; }
-      piece += g;
-      pieceW += gw;
-    }
-    if (piece) place(piece, pieceW);
+    // Over-wide word: hard-break at grapheme boundaries. PLAIN words split
+    // directly; STYLED words (plan notes arrive dim()-wrapped and CJK text
+    // has no spaces, so styled over-wide words are the common case, not the
+    // exception) are split with their SGR state tracked and RE-OPENED on
+    // every continuation line — otherwise the tail was handed to bodyLine's
+    // truncation and the decision content disappeared behind an ellipsis.
+    for (const piece of breakWord(word, w)) place(piece.piece, piece.w);
   }
   if (cur) out.push(cur);
   return out;
+}
+
+/**
+ * Hard-break one over-wide word (plain or ANSI-styled) into pieces that each
+ * fit `w` columns. Escape sequences are zero-width: an opening sequence is
+ * remembered and re-emitted after every break; a closing reset is emitted at
+ * the break itself so the remainder of the line never inherits the style.
+ */
+function breakWord(word, w) {
+  const pieces = [];
+  let piece = '';
+  let pieceW = 0;
+  const open = []; // active SGR sequences, in order
+  const esc = /\x1b\[[0-9;?]*[A-Za-z]/g;
+  let m;
+  let last = 0;
+  const flush = () => {
+    if (piece) { pieces.push({ piece, w: pieceW }); piece = ''; pieceW = 0; }
+  };
+  while ((m = esc.exec(word)) !== null) {
+    for (const g of style.graphemes(word.slice(last, m.index))) {
+      const gw = style.graphemeWidth(g);
+      if (pieceW + gw > w && pieceW > 0) {
+        // Close the style at the break, re-open it on the next piece.
+        if (open.length > 0) piece += '\x1b[0m';
+        flush();
+        for (const seq of open) piece += seq;
+      }
+      piece += g;
+      pieceW += gw;
+    }
+    const seq = m[0];
+    piece += seq;
+    if (seq === '\x1b[0m') open.length = 0;
+    else open.push(seq);
+    last = m.index + seq.length;
+  }
+  for (const g of style.graphemes(word.slice(last))) {
+    const gw = style.graphemeWidth(g);
+    if (pieceW + gw > w && pieceW > 0) {
+      if (open.length > 0) piece += '\x1b[0m';
+      flush();
+      for (const seq of open) piece += seq;
+    }
+    piece += g;
+    pieceW += gw;
+  }
+  if (pieceW > 0) pieces.push({ piece, w: pieceW });
+  // A word too wide for one column can only happen with w <= 1; emit as-is.
+  if (pieces.length === 0) pieces.push({ piece: word, w: style.visibleWidth(word) });
+  return pieces;
 }
 
 /** Key-hint row at the modal's bottom. Falls back to a compact form when narrow. */

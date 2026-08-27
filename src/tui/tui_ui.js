@@ -52,7 +52,7 @@ import { MarkdownStream } from '../../lib/agent/markdown.js';
 import { ReasoningStream } from '../../lib/agent/reasoning_stream.js';
 import * as style from '../../lib/agent/style.js';
 import { userMarkerLines } from '../commands/session_ctx.js';
-import { compactToolHeader, compactToolResult, toolDisplayName, fullResultText } from '../commands/tool_card.js';
+import { compactToolHeader, compactToolResult, toolDisplayName, fullResultLines } from '../commands/tool_card.js';
 
 /**
  * Open a modal prompt and KEEP THE FRAME IN SYNC: a redraw is requested the
@@ -211,9 +211,13 @@ export function makeTuiUi(frame, session, modalHost, hooks = {}) {
       if (call?.id) toolStarts.delete(call.id);
       const durSec = started ? Math.max(0, (Date.now() - started) / 1000) : null;
       frame.writeLine(compactToolResult(call.name, result, { durSec }));
-      // Stash the full result for Ctrl+O — the compact line deliberately
-      // shows one line + "+N lines"; expansion is a keypress away.
-      lastTool = { name: call?.name || '?', text: fullResultText(result), durSec };
+      // Stash the FULL result (as physical display lines) for Ctrl+O — the
+      // compact line deliberately shows one line + "+N lines".
+      lastTool = {
+        name: call?.name || '?',
+        durSec,
+        lines: fullResultLines(result, { width: Math.max(20, (hooks.contentWidth ? hooks.contentWidth() : 80) - 6) }),
+      };
     },
     /** Ctrl+O: drop the most recent tool's FULL output into the transcript. */
     expandLastTool() {
@@ -223,10 +227,9 @@ export function makeTuiUi(frame, session, modalHost, hooks = {}) {
         return;
       }
       frame.writeLine(style.dim(`  ⎿  ${toolDisplayName(lastTool.name)} · full result${lastTool.durSec != null ? ` · ${lastTool.durSec.toFixed(1)}s` : ''}`));
-      const lines = lastTool.text.split('\n').slice(0, 40);
-      for (const ln of lines) frame.writeLine(style.muted(`     ${ln}`));
-      if (lastTool.text.split('\n').length > 40) {
-        frame.writeLine(style.dim(`     … output capped at 40 lines`));
+      for (const ln of lastTool.lines.lines) frame.writeLine(style.muted(`     ${ln}`));
+      if (lastTool.lines.capped) {
+        frame.writeLine(style.dim('     … output capped at 40 lines'));
       }
       frame.requestRender();
     },
