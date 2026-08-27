@@ -391,3 +391,10 @@ test('KB gate RECOVERY: a projectless session re-attaches the registered current
     await home.removeProject(p.id).catch(() => {});
   }
 });
+
+
+test('HK2_WELCOME pins the welcome tier over the returning-user default', () => {
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
+  assert.ok(src.includes("wantWelcome === 'full' ? false"), 'full forces the logo card');
+  assert.ok(src.includes("wantWelcome === 'compact' ? true"), 'compact forces the fact card');
+});

@@ -637,8 +637,13 @@ export async function runTui(opts = {}) {
   try {
     welcomeSeen = String(await fs.readFile(welcomeSeenPath, 'utf8')).trim() === '1';
   } catch { /* first run */ }
-  const compactWelcome = welcomeSeen
-    || (process.stdout.rows || process.stderr.rows || 24) < 30;
+  // Welcome tier: HK2_WELCOME=full always shows the logo card; =compact
+  // always the fact card; default (auto) = full on first run, compact for
+  // returning users and short screens.
+  const wantWelcome = (process.env.HK2_WELCOME || 'auto').trim().toLowerCase();
+  const compactWelcome = wantWelcome === 'full' ? false
+    : wantWelcome === 'compact' ? true
+    : welcomeSeen || (process.stdout.rows || process.stderr.rows || 24) < 30;
   if (!welcomeSeen) {
     await fs.writeFile(welcomeSeenPath, '1').catch(() => {});
   }
