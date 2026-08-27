@@ -49,6 +49,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { writeFileAtomic } from '../../lib/util/fs_atomic.js';
 
 const DEFAULT_MAX = 1000;
 
@@ -74,14 +75,23 @@ export class History {
     // Migration: a history written by an older version under a permissive
     // umask may be group/world-readable — tighten it on every load.
     await fs.chmod(this.file, 0o600).catch(() => {});
-    const items = [];
+    const events = [];
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
         const ev = JSON.parse(line);
-        if (ev && typeof ev.text === 'string' && ev.text.trim()) items.push(ev.text);
+        if (ev && typeof ev.text === 'string' && ev.text.trim()) events.push(ev);
       } catch { /* skip torn trailing line */ }
     }
+    // Migration #2: an older build persisted EVERY submitted line — including
+    // credential-bearing ones. Scrub them from memory AND rewrite the file so
+    // the key does not keep sitting on disk after the upgrade.
+    const clean = events.filter((ev) => !isSensitiveInput(ev.text));
+    if (clean.length !== events.length) {
+      const body = clean.map((ev) => JSON.stringify(ev)).join('\n') + (clean.length > 0 ? '\n' : '');
+      await writeFileAtomic(this.file, body).catch(() => { /* best-effort scrub */ });
+    }
+    const items = clean.map((ev) => ev.text);
     // Compaction on boot: keep only the newest max entries.
     this.items = dedupeConsecutive(items).slice(-this.max);
     return this;

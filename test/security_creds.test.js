@@ -101,3 +101,25 @@ test('ensureHome: HK2_HOME 0700, models.json 0600 (created or migrated)', async 
   await saveModels(data);
   assert.equal((await modeOf(MODELS_PATH)) & 0o077, 0);
 });
+
+
+test('History.load SCRUBS secrets from a pre-existing history file (rewrite, not just memory)', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'hk2-sec-s-'));
+  const file = path.join(dir, 'history.jsonl');
+  const before = [
+    JSON.stringify({ ts: 't1', text: '/model add claude m --api-key=sk-OLD-SECRET' }),
+    JSON.stringify({ ts: 't2', text: '正常的问题' }),
+    JSON.stringify({ ts: 't3', text: 'curl -H "Authorization: Bearer sk-OLD-TOKEN" https://x' }),
+    JSON.stringify({ ts: 't4', text: 'another normal one' }),
+  ].join('\n') + '\n';
+  await fsp.writeFile(file, before, { mode: 0o644 });
+  const h = new History(file);
+  await h.load();
+  // Memory: only the clean entries.
+  assert.deepEqual(h.entries(), ['正常的问题', 'another normal one']);
+  // Disk: rewritten WITHOUT the secret lines, still owner-only.
+  const raw = await fsp.readFile(file, 'utf8');
+  assert.ok(!raw.includes('sk-OLD-SECRET') && !raw.includes('sk-OLD-TOKEN'), 'secrets scrubbed from disk');
+  assert.ok(raw.includes('正常的问题'), 'clean history preserved');
+  assert.equal(await modeOf(file), 0o600);
+});
