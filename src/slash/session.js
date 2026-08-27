@@ -227,7 +227,7 @@ async function sessionNew(ctx) {
   ctx.print(`New session started.`);
 }
 
-async function sessionResume(rest, ctx) {
+export async function sessionResume(rest, ctx) {
   const id = rest[0];
   if (!id) {
     // No id → resume the project's LATEST previous session (the one this
@@ -272,4 +272,14 @@ function parseFlags(tokens) {
     }
   }
   return out;
+}
+
+
+/**
+ * Top-level /resume (Claude Code convention): '/resume' resumes the
+ * project's latest previous session; '/resume <id>' resumes that one.
+ * Thin wrapper over /session resume — same engine, shorter path.
+ */
+export async function resumeDirect(args, ctx) {
+  return sessionResume(args, ctx);
 }

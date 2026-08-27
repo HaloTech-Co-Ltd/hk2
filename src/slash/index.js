@@ -61,7 +61,7 @@
 import { cmdModel } from './model.js';
 import { cmdProject } from './project.js';
 import { cmdKb } from './kb.js';
-import { cmdSession } from './session.js';
+import { cmdSession, resumeDirect } from './session.js';
 import { cmdReview } from './review.js';
 import { cmdTheme } from './theme.js';
 import { printCommandHelp, HELP_TEXT } from './help.js';
@@ -71,6 +71,7 @@ export const SLASH_COMMANDS = [
   { name: '/project', handler: cmdProject, description: 'Manage projects.json (init / list / set / show / drop)' },
   { name: '/kb',      handler: cmdKb,      description: 'Current project KB (init / update / status / search ...)' },
   { name: '/session', handler: cmdSession, description: 'Session management (info / new / clear / list / resume)' },
+  { name: '/resume',   handler: resumeDirect, description: 'Resume a previous session (latest, or /resume <id>) — Claude Code convention' },
   { name: '/review',  handler: cmdReview,  description: 'Manually review the completed task (code) — fresh-eyes regression check' },
   { name: '/theme',   handler: cmdTheme,   description: 'Customize tool-card border colors (list / set / reset / preview / title-follow)' },
   { name: '/clear',   handler: cmdClear,   description: 'Clear the current conversation context' },

@@ -64,8 +64,8 @@ import fs from 'node:fs/promises';
 import { loadTheme } from '../../lib/agent/tool_theme.js';
 import { VERSION } from '../version.js';
 import {
-  createSession, buildCtx, reloadAll, resumeSessionInto, formatRecentOutputs,
-  captureMidTaskInput,
+  createSession, buildCtx, reloadAll, flushSessionReloads, resumeSessionInto,
+  formatRecentOutputs, captureMidTaskInput,
 } from './session_ctx.js';
 import { handleUserLine } from './turn.js';
 import {
@@ -78,7 +78,7 @@ import { makeReplUi } from './repl_ui.js';
 // interactive.js names — the test suite (and later the TUI front-end) imports
 // them from here, so the extraction stays a no-op for every consumer.
 export {
-  createSession, buildCtx, buildBaseCtx, replIo, reloadAll,
+  createSession, buildCtx, buildBaseCtx, replIo, reloadAll, flushSessionReloads,
   splitOutputUnits, formatRecentOutputs, userMarkerLines, allLines,
   resumeSessionInto, confirmThreeWay,
   isContinuationCue, captureMidTaskInput, buildMidTaskInjection,
@@ -140,6 +140,10 @@ export async function interactive(opts = {}) {
     if (freshPath && (!ok || session.transcript.path !== freshPath)) {
       await fs.unlink(freshPath).catch(() => {});
     }
+    // A cross-project resume arms reloadFlags.model — consume it BEFORE the
+    // banner/first prompt so the first post-resume message already runs on
+    // the owner project's model (not the launch project's leftover llm).
+    if (ok) await flushSessionReloads(session, ctx);
     if (!ok) {
       console.error(wanted
         ? `Error: session '${wanted}' not found for this project. (/session list to browse.)`
@@ -238,10 +242,7 @@ export async function interactive(opts = {}) {
       while (session.queue.length > 0 && !session.exiting) {
         const l = session.queue.shift();
         await processLine(l, session, ctx);
-        if (session.reloadFlags.project || session.reloadFlags.kb || session.reloadFlags.model) {
-          await reloadAll(session, ctx, session.reloadFlags);
-          session.reloadFlags = { project: false, kb: false, model: false };
-        }
+        await flushSessionReloads(session, ctx);
       }
     } finally {
       session.processing = false;

@@ -62,7 +62,7 @@ import { KbFirstGuard } from '../../lib/agent/tools.js';
 import { getMcpTools, invalidateMcpTools, invalidateAllMcpTools } from '../../lib/agent/mcp.js';
 import { resetPermissionService } from '../../lib/config/setting.js';
 import { getKbMeta } from '../../lib/index/registry.js';
-import Transcript, { replayTranscript, findLatestSessionId } from '../../lib/agent/transcript.js';
+import Transcript, { replayTranscript, findLatestSessionId, findSessionProject, isValidSessionId } from '../../lib/agent/transcript.js';
 import { saveTaskState, loadTaskState } from '../../lib/agent/task_state.js';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { toolCardToken } from '../../lib/agent/tool_theme.js';
@@ -309,11 +309,25 @@ export function formatRecentOutputs(messages, { outputs = 5 } = {}) {
  * @returns {Promise<boolean>} true on success; false = not found / no project
  */
 export async function resumeSessionInto(session, sessionId) {
-  if (!session.project) return false;
+  // Session ids are flat tokens everywhere — reject traversal BEFORE any
+  // path is built (CLI --resume, /resume, /session resume share this).
+  if (sessionId && !isValidSessionId(sessionId)) return false;
+  // Resolve the owning project: the CURRENT project's dir first, then a
+  // cross-project fallback — /project drop must not strand the session the
+  // exit hint points at (the transcript on disk is still resumable).
+  let pid = session.project?.id || null;
+  if (sessionId && pid) {
+    const t = new Transcript(pid, sessionId);
+    if (!await exists(t.path)) pid = null; // not under the current project
+  }
+  if (sessionId && !pid) {
+    pid = await findSessionProject(sessionId);
+  }
   let id = sessionId;
   if (!id) {
+    if (!session.project) return false;
     id = await findLatestSessionId(session.project.id, {
-      // NEVER pick the session this REPL just created / is writing — that
+      // NEVER pick the session this process just created / is writing — that
       // would resume "now" (an empty history). At launch time reloadAll has
       // already written the fresh transcript's session_start line to disk,
       // so without this exclusion a bare `hk2 --resume` would find the
@@ -321,9 +335,42 @@ export async function resumeSessionInto(session, sessionId) {
       exclude: session.transcript?.sessionId,
     });
     if (!id) return false;
+    pid = session.project.id;
   }
-  const t = new Transcript(session.project.id, id);
+  if (!pid) return false;
+  const t = new Transcript(pid, id);
   if (!await exists(t.path)) return false;
+
+  // [P0 fix] Unify project ownership BEFORE replaying: the conversation
+  // must execute in the OWNER project's context (KB, tools, permissions),
+  // never in whatever project happened to be current. If the owner is
+  // still registered → pin + load it. If it was dropped → run with NO
+  // project (KB-optional chat) rather than borrowing the current one.
+  if (pid !== session.project?.id) {
+    session.resumedFromOtherProject = pid;
+    const owner = await getProject(pid);
+    if (owner) {
+      session.pinnedProjectId = pid;
+      session.project = owner;
+      session.rt = null;
+      session.kbMeta = null;
+      if (owner.sourcePath) process.env.HK2_PROJECT_SOURCE = owner.sourcePath;
+      try { session.rt = await getRuntime(pid); session.kbMeta = await getKbMeta(pid); }
+      catch { session.rt = null; }
+    } else {
+      // Owner deregistered: NO project context — not the current project's.
+      session.project = null;
+      session.rt = null;
+      session.kbMeta = null;
+      delete process.env.HK2_PROJECT_SOURCE;
+    }
+    resetPermissionService();
+    if (session.reloadFlags) {
+      session.reloadFlags.project = false; // already reloaded here
+      session.reloadFlags.kb = false;
+      session.reloadFlags.model = !session.sessionModelRef; // re-resolve default unless session-pinned
+    }
+  }
   const text = await fs.readFile(t.path, 'utf8');
   const { messages, lastUserText, firstTs, lastTs } = replayTranscript(text);
 
@@ -336,8 +383,11 @@ export async function resumeSessionInto(session, sessionId) {
   // Restore interrupted-task context when task_state points at this session.
   // (A /quit'd session that finished its task normally has no taskstate on
   // disk — clearTaskState already ran — so nothing is restored and "请继续"
-  // is treated as a fresh request, which is correct.)
-  const saved = await loadTaskState(session.project.id);
+  // is treated as a fresh request, which is correct.) Keyed on the OWNER
+  // project id `pid` — NOT session.project — so a session whose owner project
+  // was deregistered (session.project === null now) still recovers its
+  // interrupted task/planProgress.
+  const saved = await loadTaskState(pid);
   if (saved && saved.userRequest && saved.sessionId === id) {
     session.lastTask = {
       userRequest: saved.userRequest,
@@ -508,6 +558,23 @@ export function replIo(session) {
 }
 
 /**
+ * Consume any pending session.reloadFlags RIGHT NOW (used by the resume
+ * paths). The enqueue loops also drain the flags after each line, but a
+ * resume that arms them (a cross-project switch flags `model` unless the
+ * session pins one) must not wait for the FIRST post-resume message to be
+ * answered — that first turn would run on the OLD project's model, MCP
+ * tools, and context window.
+ * @returns {boolean} true when a reload actually ran
+ */
+export async function flushSessionReloads(session, ctx) {
+  const f = session.reloadFlags || {};
+  if (!f.project && !f.kb && !f.model) return false;
+  await reloadAll(session, ctx, { project: !!f.project, kb: !!f.kb, model: !!f.model });
+  session.reloadFlags = { project: false, kb: false, model: false };
+  return true;
+}
+
+/**
  * Build the slash-command ctx for `session`. `io` supplies the UI-owned
  * prompt primitives (print/confirm/choose/write); pass `replIo(session)`
  * for the line REPL (the historical behavior) or a modal-backed io under
@@ -673,7 +740,12 @@ export function buildBaseCtx(session, io) {
     resumeSession: async (sessionId) => {
       // sessionId undefined/null → the project's latest PREVIOUS session
       // (excluding the one this session is currently writing to).
-      return resumeSessionInto(session, sessionId || null);
+      const ok = await resumeSessionInto(session, sessionId || null);
+      // A cross-project resume arms reloadFlags (model unless session-pinned).
+      // Consume them NOW: the first post-resume message must already run on
+      // the owner project's model/MCP config, not the one left in session.llm.
+      if (ok) await flushSessionReloads(session, ctx);
+      return ok;
     },
     /**
      * Render the last N output events (default 5) of the CURRENT conversation

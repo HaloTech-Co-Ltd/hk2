@@ -55,12 +55,12 @@ import readline from 'node:readline';
 import fs from 'node:fs/promises';
 import { ensureHome, HK2_HOME } from '../../lib/config/home.js';
 import {
-  createSession, buildBaseCtx, reloadAll, resumeSessionInto,
+  createSession, buildBaseCtx, reloadAll, flushSessionReloads, resumeSessionInto,
   formatRecentOutputs, captureMidTaskInput, userMarkerLines,
 } from '../commands/session_ctx.js';
 import { handleUserLine } from '../commands/turn.js';
 import { formatPlanProgressLines } from '../commands/status_format.js';
-import { renderWelcome, renderInputChrome, renderFooter } from './chrome.js';
+import { renderWelcome, renderClearSummary, renderInputChrome, renderFooter } from './chrome.js';
 import { makeTuiUi } from './tui_ui.js';
 import { makeTuiIo } from './tui_io.js';
 import { Frame } from './frame.js';
@@ -189,14 +189,11 @@ export async function runTui(opts = {}) {
   // time). An idle frame writes zero bytes — no periodic redraw traffic.
   const frame = new Frame(stream, { blocks, animateWhen: () => session.agentTurnActive });
   const resetScreen = () => {
-    // /clear resets the screen with a fresh welcome card (Claude Code's
-    // behavior) instead of leaving the cleared conversation on screen.
+    // /clear resets the screen with a ONE-LINE session summary — the full
+    // welcome card is a boot luxury; a cleared context doesn't need it again.
     frame.write('\x1b[H\x1b[2J');
     frame.cursorHome();
-    for (const ln of renderWelcome(session, Math.min(style.termWidth(), 100))) {
-      frame.writeLine(ln);
-    }
-    frame.writeLine('');
+    frame.writeLine(renderClearSummary(session, Math.min(style.termWidth(), 100)));
     frame.writeLine('');
     frame.requestRender();
   };
@@ -285,10 +282,7 @@ export async function runTui(opts = {}) {
       while (session.queue.length > 0 && !session.exiting) {
         const l = session.queue.shift();
         await handleUserLine(l, session, ctx, ui);
-        if (session.reloadFlags.project || session.reloadFlags.kb || session.reloadFlags.model) {
-          await reloadAll(session, ctx, session.reloadFlags);
-          session.reloadFlags = { project: false, kb: false, model: false };
-        }
+        await flushSessionReloads(session, ctx);
       }
     } finally {
       session.processing = false;
@@ -598,6 +592,9 @@ export async function runTui(opts = {}) {
         : `Error: no previous session found for this project. Nothing to resume.`);
       process.exit(2);
     }
+    // Cross-project resume armed reloadFlags.model — consume it NOW so the
+    // first post-resume message runs on the owner project's model/MCP.
+    await flushSessionReloads(session, ctx);
     const msgCount = session.messages.filter(m => m.role === 'user' || m.role === 'assistant').length;
     session.resumeNotice =
       `Resumed session ${session.transcript.sessionId}: ${msgCount} message(s) restored into context`
@@ -622,8 +619,23 @@ export async function runTui(opts = {}) {
     return;
   }
 
+  // Welcome tier: the FULL logo card is a first-run luxury. Returning users
+  // and short terminals (< 30 rows, where the card ate ~80% of the screen)
+  // get the compact single-column card; the width tiers inside
+  // renderWelcome handle the rest.
+  const welcomeSeenPath = `${HK2_HOME}/welcome-seen`;
+  let welcomeSeen = false;
+  try {
+    welcomeSeen = String(await fs.readFile(welcomeSeenPath, 'utf8')).trim() === '1';
+  } catch { /* first run */ }
+  const compactWelcome = welcomeSeen
+    || (process.stdout.rows || process.stderr.rows || 24) < 30;
+  if (!welcomeSeen) {
+    await fs.writeFile(welcomeSeenPath, '1').catch(() => {});
+  }
+
   booted = true;
-  for (const ln of renderWelcome(session, Math.min(style.termWidth(), 100))) {
+  for (const ln of renderWelcome(session, Math.min(style.termWidth(), 100), { compact: compactWelcome })) {
     frame.writeLine(ln);
   }
   while (pendingSubmits.length > 0) {

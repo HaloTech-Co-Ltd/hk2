@@ -300,6 +300,15 @@ export const HELP_TEXT = {
     `  /session resume`,
     `  /session resume 3f9c1a2e`,
   ],
+  resume: [
+    `Usage: /resume [<sessionId>]`,
+    `Reopen a previous session's transcript and restore the full conversation`,
+    `context (messages, tool-call history, interrupted-task state).`,
+    ``,
+    `With no id: resumes the project's LATEST previous session.`,
+    `With an id (from /session list or the exit hint): resumes that session.`,
+    `Equivalent to /session resume — Claude Code's convention.`,
+  ],
   clear: [
     `Usage: /clear`,
     `Clear the current in-memory conversation context (the LLM sees a fresh`,
