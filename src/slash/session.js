@@ -218,7 +218,14 @@ async function sessionList(rest, ctx) {
   for (const s of slice) {
     const dt = new Date(s.mtime).toISOString().replace('T', ' ').slice(0, 19);
     const cur = s.id === info.sessionId ? '*' : ' ';
-    ctx.print(`${cur} ${s.id}  ${dt}  ${(s.size / 1024).toFixed(1)}KB`);
+    // Boot-only empties (launch + quit without a message) are marked so the
+    // list explains itself instead of showing rows that resume to nothing.
+    let tag = '';
+    try {
+      const raw = await fs.readFile(s.path, 'utf8');
+      if (!raw.includes('"type":"user"')) tag = '  (empty)';
+    } catch { /* unreadable → untagged */ }
+    ctx.print(`${cur} ${s.id}  ${dt}  ${(s.size / 1024).toFixed(1)}KB${tag}`);
   }
 }
 

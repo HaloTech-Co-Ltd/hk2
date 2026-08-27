@@ -245,9 +245,18 @@ export async function runTui(opts = {}) {
     // Silent exit, but ONE dim resume hint — hk2's sessions are its value:
     // the id is easy to lose with no pointer (Claude Code has /resume in
     // the next session; hk2's equivalent needs the flag or the id).
-    const sid = session.transcript?.sessionId;
-    if (sid) stream.write(style.dim(`resume: hk2 --tui --resume ${sid}`) + '\n');
-    history.flush().catch(() => {}).then(() => process.exit(code));
+    // Quit-without-messages: this boot's transcript is EMPTY — delete it
+    // (every bare launch would otherwise strand one) and point the hint at
+    // the newest session that actually has content, if any.
+    history.flush().catch(() => {}).then(async () => {
+      let hint = null;
+      try {
+        const { resumeHintAfterExit } = await import('../../lib/agent/transcript.js');
+        hint = await resumeHintAfterExit(session.transcript);
+      } catch { /* best-effort hint */ }
+      if (hint) stream.write(style.dim(`resume: hk2 --tui --resume ${hint}`) + '\n');
+      process.exit(code);
+    });
   };
   // Single cleanup covering normal exit, the REPL fallback, and signals:
   // unwire keypress/resize listeners, drop raw mode, and restore the

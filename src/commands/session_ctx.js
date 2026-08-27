@@ -331,8 +331,10 @@ export async function resumeSessionInto(session, sessionId) {
       // would resume "now" (an empty history). At launch time reloadAll has
       // already written the fresh transcript's session_start line to disk,
       // so without this exclusion a bare `hk2 --resume` would find the
-      // brand-new empty session as the "latest".
+      // brand-new empty session as the "latest". requireContent additionally
+      // skips OTHER boot-only empties (launch + quit without a message).
       exclude: session.transcript?.sessionId,
+      requireContent: true,
     });
     if (!id) return false;
     pid = session.project.id;
