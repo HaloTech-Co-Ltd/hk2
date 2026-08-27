@@ -86,14 +86,30 @@ export class History {
     // Migration #2: an older build persisted EVERY submitted line — including
     // credential-bearing ones. Scrub them from memory AND rewrite the file so
     // the key does not keep sitting on disk after the upgrade.
-    const clean = events.filter((ev) => !isSensitiveInput(ev.text));
-    if (clean.length !== events.length) {
-      const body = clean.map((ev) => JSON.stringify(ev)).join('\n') + (clean.length > 0 ? '\n' : '');
-      await writeFileAtomic(this.file, body).catch(() => { /* best-effort scrub */ });
+    // Compaction on boot: keep only the newest max entries, DEDUPED, and
+    // REWRITE the file when compaction actually dropped something —
+    // otherwise add()'s appendFile grows history.jsonl forever while only
+    // memory stays capped, and every boot re-reads/parses the whole file.
+    // Sensitive rows and consecutive duplicates rewrite immediately (rare);
+    // pure overflow rewrites with hysteresis (max * 1.2) so a file sitting
+    // at max+1 doesn't thrash on every boot.
+    const kept = [];
+    let droppedSensitive = false;
+    let droppedDuplicate = false;
+    let prev = null;
+    for (const ev of events) {
+      if (isSensitiveInput(ev.text)) { droppedSensitive = true; continue; }
+      if (ev.text === prev) { droppedDuplicate = true; continue; }
+      kept.push(ev);
+      prev = ev.text;
     }
-    const items = clean.map((ev) => ev.text);
-    // Compaction on boot: keep only the newest max entries.
-    this.items = dedupeConsecutive(items).slice(-this.max);
+    const overflow = kept.length - this.max;
+    if (overflow > 0) kept.splice(0, overflow);
+    if (droppedSensitive || droppedDuplicate || overflow > Math.ceil(this.max * 0.2)) {
+      const body = kept.map((ev) => JSON.stringify(ev)).join('\n') + (kept.length > 0 ? '\n' : '');
+      await writeFileAtomic(this.file, body).catch(() => { /* best-effort compaction */ });
+    }
+    this.items = kept.slice(-this.max).map((ev) => ev.text);
     return this;
   }
 

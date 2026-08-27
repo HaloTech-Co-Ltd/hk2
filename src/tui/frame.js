@@ -111,7 +111,10 @@ export class Frame {
     if (!this.enabled || this._started) return;
     this._started = true;
     this._resizeHandler = () => this.update();
-    process.stdout.on('resize', this._resizeHandler);
+    // Follow the DRAW stream (it may be stderr while stdout is redirected —
+    // in that case stdout never emits resize); SIGWINCH remains the
+    // process-wide fallback.
+    this.stream.on?.('resize', this._resizeHandler);
     process.on('SIGWINCH', this._resizeHandler);
     this._applyScrollRegion();
     this.update();
@@ -121,7 +124,7 @@ export class Frame {
     if (!this._started) return;
     this._started = false;
     if (this._resizeHandler) {
-      process.stdout.off('resize', this._resizeHandler);
+      this.stream.off?.('resize', this._resizeHandler);
       process.off('SIGWINCH', this._resizeHandler);
       this._resizeHandler = null;
     }

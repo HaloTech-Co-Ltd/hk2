@@ -495,3 +495,54 @@ test('claude import: context window maps EXACT ids only (no glm-5 prefix blanket
   assert.equal(importedContextWindow('glm-5'), 200000);
   assert.equal(importedContextWindow('claude-sonnet-4-6'), 200000);
 });
+
+
+/* ----- round 6 ------------------------------------------------------------ */
+
+test('Ctrl+G cancels an active confirm modal WITHOUT throwing (controller-level)', async () => {
+  const { cancelAliasKey } = await import('../src/tui/index.js');
+  // The regression: the key loop REASSIGNED the const normalized key
+  // ('Assignment to constant variable') — an uncaught throw in raw mode
+  // killed the process with the terminal still held by the Frame.
+  const h = new ModalHost();
+  const p = h.open('confirm', { text: 'Proceed?' });
+  const alias = cancelAliasKey({ type: 'ctrl', ch: 'g' });
+  assert.deepEqual(alias, { type: 'escape' }, 'Ctrl+G maps to escape');
+  h.applyKey(alias);           // must not throw
+  assert.equal(await p, false, 'modal cancelled, process alive');
+  // Non-alias keys pass through untouched.
+  assert.deepEqual(cancelAliasKey({ type: 'down' }), { type: 'down' });
+  // The key loop itself must not reassign the normalized key.
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
+  assert.ok(!/\bk\s*=\s*\{/.test(src), 'no assignment to the const key object');
+});
+
+test('Ctrl+D defers exit while a turn runs (two-phase exit)', async () => {
+  const { ctrlDAction } = await import('../src/tui/index.js');
+  assert.equal(ctrlDAction({ processing: true }), 'defer');
+  assert.equal(ctrlDAction({ agentTurnActive: true }), 'defer');
+  assert.equal(ctrlDAction({ processing: false, agentTurnActive: false }), 'exit');
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
+  assert.ok(src.includes('exitAfterTurn = true;'), 'the deferred exit is armed');
+  assert.ok(src.includes('if (session.exiting || exitAfterTurn) shutdown(0);'),
+    'enqueue exits only AFTER the turn pipeline has unwound (its finally saved task state)');
+});
+
+test('width + resize follow the DRAW stream, not stdout', async () => {
+  const { tuiTermWidth } = await import('../src/tui/index.js');
+  // hk2 --tui >log: stdout redirected (no columns), stderr is the draw TTY.
+  const drawStream = { columns: 100 };
+  const saved = { stdout: process.stdout.columns, stderr: process.stderr.columns };
+  process.stdout.columns = undefined;
+  try {
+    assert.equal(tuiTermWidth(drawStream), 100, 'the draw stream wins');
+    assert.equal(tuiTermWidth({}), 80, 'falls back through the process streams to 80');
+  } finally {
+    process.stdout.columns = saved.stdout;
+  }
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
+  assert.ok(src.includes("stream.on?.('resize', onResize)"), 'resize listens on the draw stream');
+  assert.ok(src.includes("process.on('SIGWINCH', onResize)"), 'SIGWINCH kept as fallback');
+  const frameSrc = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'frame.js'), 'utf8');
+  assert.ok(frameSrc.includes("this.stream.on?.('resize'"), 'Frame listens on its draw stream too');
+});

@@ -82,6 +82,24 @@ const CTRL_C_WINDOW_MS = 1500;
  * this the draft either leaks in as the modal's answer or is lost when the
  * modal finishes and clears the box. Pure state, unit-testable.
  */
+/**
+ * Ctrl+G is the cancel alias: inside a modal it behaves exactly like Esc.
+ * Pure — the key loop feeds the result to ModalHost.applyKey. Exported for
+ * controller-level regression tests (the const-reassignment bug lived here).
+ */
+/**
+ * What an InputBox exit signal (Ctrl+D on an empty buffer) should do right
+ * now: 'defer' while a turn is running (interrupt + exit after cleanup),
+ * 'exit' when idle. Pure — exported for controller-level tests.
+ */
+export function ctrlDAction(session) {
+  return (session && (session.processing || session.agentTurnActive)) ? 'defer' : 'exit';
+}
+
+export function cancelAliasKey(k) {
+  return (k && k.type === 'ctrl' && k.ch === 'g') ? { type: 'escape' } : k;
+}
+
 export function makeDraftGuard() {
   let saved = null;
   return {
@@ -113,8 +131,20 @@ export function tuiCapable(stream = process.stderr) {
     && process.env.TERM !== 'dumb');
 }
 
+/** The stream the TUI actually draws into (stderr unless HK2_TUI_STREAM). */
+let drawStream = process.stderr;
+
+/**
+ * Terminal width from the DRAW stream first: with stdout redirected
+ * (`hk2 --tui >log`) stdout.columns is undefined and its resize events never
+ * fire, but stderr — the stream being drawn — still knows the real size.
+ */
+export function tuiTermWidth(stream = drawStream) {
+  return stream?.columns || process.stdout.columns || process.stderr.columns || 80;
+}
+
 function boxWidthFor() {
-  return Math.max(20, style.termWidth() - 2);
+  return Math.max(20, tuiTermWidth() - 2);
 }
 
 export async function runTui(opts = {}) {
@@ -123,6 +153,7 @@ export async function runTui(opts = {}) {
   const session = createSession(opts.projectId || null);
   const modalHost = new ModalHost();
   const stream = process.env.HK2_TUI_STREAM === 'stdout' ? process.stdout : process.stderr;
+  drawStream = stream;
   const history = new History(historyPath(HK2_HOME), { max: 1000 });
   await history.load();
 
@@ -142,6 +173,8 @@ export async function runTui(opts = {}) {
   const pendingSubmits = [];
   let ccArmedAt = 0;
   let ccTimer = null;              // one-shot expiry for the double-Ctrl+C window
+  let exitAfterTurn = false;       // Ctrl+D during a turn: interrupt, let the
+                                   // turn's cleanup run, THEN exit
   let interrupted = false; // last ESC aborted the running turn (hint text)
   const interruptCbs = new Set();
   let shutDown = false;
@@ -252,6 +285,9 @@ export async function runTui(opts = {}) {
       let hint = null;
       try {
         const { resumeHintAfterExit } = await import('../../lib/agent/transcript.js');
+        // Await any in-flight transcript append BEFORE computing the hint /
+        // exiting — the exit hint must not race the last event lines.
+        await session.transcript?.flush?.();
         hint = await resumeHintAfterExit(session.transcript);
       } catch { /* best-effort hint */ }
       if (hint) stream.write(style.dim(`resume: hk2 --tui --resume ${hint}`) + '\n');
@@ -298,7 +334,7 @@ export async function runTui(opts = {}) {
     }
     interrupted = false;
     frame.requestRender();
-    if (session.exiting) shutdown(0);
+    if (session.exiting || exitAfterTurn) shutdown(0);
   };
 
   const submit = (line) => {
@@ -474,8 +510,11 @@ export async function runTui(opts = {}) {
         frame.requestRender();
         return;
       }
-      if (k.type === 'ctrl' && k.ch === 'g') k = { type: 'escape' }; // Ctrl+G = cancel
-      modalHost.applyKey(k);
+      // Ctrl+G = cancel. Derive a NEW key object — reassigning the const
+      // `k` threw 'Assignment to constant variable' and, in raw mode with
+      // the Frame holding the terminal, killed the process outright.
+      const modalKey = cancelAliasKey(k);
+      modalHost.applyKey(modalKey);
       frame.requestRender();
       return;
     }
@@ -561,7 +600,22 @@ export async function runTui(opts = {}) {
       frame.requestRender();
       return;
     }
-    if (r.exit) { shutdown(0); return; }
+    if (r.exit) {
+      // NEVER hard-exit mid-turn: process.exit() would bypass runTurn's
+      // catch/finally — the interrupted-task state would never reach
+      // task_state.js, mid-task input would stay un-redirected, and the
+      // transcript would show an unfinished session instead of a clearly
+      // interrupted one. Interrupt now; enqueue() exits after the pipeline
+      // has unwound.
+      if (ctrlDAction(session) === 'defer') {
+        exitAfterTurn = true;
+        fireInterrupt();
+        frame.requestRender();
+        return;
+      }
+      shutdown(0);
+      return;
+    }
     if (boxText(box) !== before) {
       completionSelected = 0;
       completionDismissed = false; // new text re-opens the menu
@@ -574,10 +628,14 @@ export async function runTui(opts = {}) {
     box = { ...box, width: boxWidthFor() };
     frame.requestRender();
   };
-  process.stdout.on('resize', onResize);
+  // Resize follows the DRAW stream (stdout redirect = no stdout resize
+  // events); SIGWINCH stays as the process-wide fallback.
+  stream.on?.('resize', onResize);
+  process.on('SIGWINCH', onResize);
   stdinTeardown = () => {
     stdin.off('keypress', onKeypress);
-    process.stdout.off('resize', onResize);
+    stream.off?.('resize', onResize);
+    process.off('SIGWINCH', onResize);
     try { stdin.pause(); } catch { /* ignore */ }
   };
 
