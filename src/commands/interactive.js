@@ -284,6 +284,14 @@ export async function interactive(opts = {}) {
   // readline drawing through rl._writeToOutput, a single choke point; with
   // inputEchoOn false (idle turns, in-run menus via session.consumeNext,
   // slash commands) the wrapper is fully transparent.
+  //
+  // MAINTENANCE (review round 8): _writeToOutput / rl.line / rl.cursor are
+  // readline PRIVATE surface — not stable public API across Node majors
+  // (engines: >=18). The design fails OPEN: if a future Node renames or
+  // removes _writeToOutput, the guard below skips installing the wrapper and
+  // native echo returns unchanged (no box, no crash). test/repl_midtask_pty
+  // .test.js drives this path end-to-end under a real pty; CI runs the suite
+  // on Node 18/20/22 to catch drift the day it happens.
   const rlOrigWriteToOutput = session.rl._writeToOutput
     ? session.rl._writeToOutput.bind(session.rl)
     : null;
