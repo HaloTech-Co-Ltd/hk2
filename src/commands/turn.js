@@ -64,8 +64,9 @@ import * as style from '../../lib/agent/style.js';
 import { saveTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 import {
   buildResumeContext, buildSessionDigest, buildMidTaskInjection, disarmMidTaskCapture,
-  isContinuationCue,
+  isContinuationCue, reloadAll,
 } from './session_ctx.js';
+import { getKbMeta } from '../../lib/index/registry.js';
 import {
   safeParseArgs, finalizePlanProgress, formatPlanProgressLines, formatUsage, fmtTok,
 } from './status_format.js';
@@ -103,9 +104,32 @@ export async function handleUserLine(line, session, ctx, ui) {
   // model about a codebase without the project initialized gives confidently
   // wrong answers. Even when the TUI auto-configured a model on first run,
   // the user must initialize the project (/project init + /kb init) before
-  // conversing. Plain questions are expected to go through setup first.
+  // conversing.
   if (!session.rt) {
-    ctx.print(`KB not loaded. Run /project init --name=<name> --source=<repo-path>, then /kb init before chatting.`);
+    // RECOVERY before refusing: session.rt is a BOOT-time snapshot. A KB
+    // that finished building in ANOTHER process after this session booted
+    // (or a transient load failure at boot) leaves rt null forever, while
+    // /project list honestly reports "built" — the user is then locked out
+    // by a stale negative. If the registry now has a KB for the project,
+    // load it before saying no.
+    if (session.project && !session.kbMeta) {
+      const meta = await getKbMeta(session.project.id).catch(() => null);
+      if (meta) {
+        await reloadAll(session, ctx, { project: false, kb: true, model: false });
+      }
+    } else if (session.project && session.kbMeta && !session.rt) {
+      // kbMeta loaded but the runtime failed at boot — one fresh attempt.
+      await reloadAll(session, ctx, { project: false, kb: true, model: false });
+    }
+  }
+  if (!session.rt) {
+    if (!session.project) {
+      ctx.print(`No project registered. Run /project init --name=<name> --source=<repo-path>, then /kb init before chatting.`);
+    } else if (!session.kbMeta) {
+      ctx.print(`KB not built for project ${session.project.name}. Run /kb init before chatting.`);
+    } else {
+      ctx.print(`KB failed to load for project ${session.project.name} (the registry shows it built). Run /kb update or restart the session.`);
+    }
     return;
   }
 

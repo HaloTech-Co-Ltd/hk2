@@ -55,6 +55,45 @@ test('bodyLine: a wide glyph never crosses the cap — odd widths, CJK, emoji, A
   assert.ok(style.visibleWidth(styled) <= 9, 'ANSI + CJK');
 });
 
+
+/**
+ * Full-surface recording fake ui (same shape as turn_ui.test.js's fakeUi):
+ * the recovery test's turn RUNS past the gate, so every ui method must exist.
+ */
+function fullFakeUi() {
+  const events = [];
+  const rec = (name) => (...args) => { events.push([name, ...args]); };
+  return {
+    events,
+    canPrompt: false,
+    progress: {
+      phase: null, stopped: false, midLine: false,
+      start(p) { this.phase = p; }, nextPhase(p) { this.phase = p; },
+      reason() { this.phase = 'thinking'; }, resume(p) { this.phase = p; this.stopped = false; },
+      pause() { this.phase = null; }, stop() { this.phase = null; this.stopped = true; },
+      tick() { this.stopped = true; }, done() { this.phase = null; }, breakLine() {},
+    },
+    spinnerStart(p) { rec('spinnerStart')(p); this.progress.start(p); },
+    phase(p) { this.progress.nextPhase(p); rec('phase')(p); },
+    phaseOnly(p) { rec('phaseOnly')(p); },
+    setPhaseSafe(p) { rec('setPhaseSafe')(p); },
+    statusRefresh() { rec('statusRefresh')(); },
+    stream: {
+      reset() {}, delta() {}, reasoning() {},
+      flushReasoning() { return ''; }, flushMarkdown() { return ''; }, flush() { return ''; },
+    },
+    toolStart(call) { rec('toolStart')(call.name); },
+    toolEnd(call) { rec('toolEnd')(call.name); },
+    finishStream() { rec('finishStream')(); },
+    noticeLines() {}, notice() {}, userEcho() {}, usageLine() {},
+    cancelled() {}, interrupted() {}, failed(err) { rec('failed')(err.message); },
+    retryNotice() {},
+    confirm: async () => false, optionList: async () => null,
+    freeText: async () => ({ text: '', cancelled: true }),
+    onInterrupt() { return () => {}; },
+  };
+}
+
 /* ----- optionList wrapping ------------------------------------------------- */
 
 test('optionList: long rows and notes wrap — the decision-critical tail survives', () => {
@@ -179,7 +218,7 @@ test('plan / clarification menus default to the RECOMMENDED first option', () =>
 
 /* ----- the KB gate is back ---------------------------------------------------- */
 
-test('KB gate: without a project KB the turn is REFUSED with a setup pointer', async () => {
+test('KB gate: without a project the turn is REFUSED with a setup pointer', async () => {
   let llmCalls = 0;
   const session = createSession(null);
   session.llm = { async *stream() { llmCalls++; yield { type: 'delta', text: 'should not run' }; } };
@@ -190,8 +229,78 @@ test('KB gate: without a project KB the turn is REFUSED with a setup pointer', a
   const ui = { statusRefresh() {} };
   await handleUserLine('你是谁', session, ctx, ui);
   assert.equal(llmCalls, 0, 'the model is NEVER called without a KB');
-  assert.ok(printed.some((p) => /KB not loaded/.test(p)), 'gate message shown');
+  assert.ok(printed.some((p) => /No project registered/.test(p)), 'state-specific gate message');
   assert.ok(printed.some((p) => p.includes('/project init')), 'points at project init');
+});
+
+test('KB gate: project registered but no KB built → /kb init pointer', async () => {
+  const home = await import('../lib/config/home.js');
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'hk2-gate-nokb-'));
+  const p = await home.registerProject({ sourcePath: dir, name: 'gate-no-kb' });
+  try {
+    const session = createSession(null);
+    session.project = p; // registered, but kbMeta/rt were never built
+    session.llm = { async *stream() { yield { type: 'delta', text: 'x' }; } };
+    session.modelCfg = { ref: 'p/m', maxChars: 65536 };
+    session.rt = null;
+    session.kbMeta = null;
+    const printed = [];
+    const ctx = buildBaseCtx(session, { print: (t) => printed.push(t) });
+    await handleUserLine('你是谁', session, ctx, { statusRefresh() {} });
+    assert.ok(printed.some((x) => /KB not built for project gate-no-kb/.test(x) && x.includes('/kb init')),
+      'points at /kb init for the registered project');
+  } finally {
+    await home.removeProject(p.id).catch(() => {});
+  }
+});
+
+test('KB gate RECOVERY: a KB built after this session booted is loaded on the next message (stale negative heals)', async () => {
+  const home = await import('../lib/config/home.js');
+  const { addKbForProject } = await import('../lib/index/registry.js');
+  const { buildIndex } = await import('../lib/index/indexer.js');
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const dir = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'hk2-gate-recover-'));
+  await fsp.writeFile(pathMod.join(dir, 'one.js'), 'export function alpha() { return 1; }\n');
+  const p = await home.registerProject({ sourcePath: dir, name: 'gate-recover' });
+  try {
+    await addKbForProject(p);
+    await buildIndex(p.id, { skipSummary: true });
+    await home.setCurrentProject(p.id);
+
+    // Boot snapshot: project known, KB MISSED (the exact user report:
+    // session.rt stayed null while /project list shows the KB built).
+    const session = createSession(p.id);
+    session.project = p;
+    session.llm = { async *stream() { yield { type: 'delta', text: 'x' }; } };
+    session.modelCfg = { ref: 'p/m', maxChars: 65536, enableReasoning: false, temperature: 0.2 };
+    session.rt = null;
+    session.kbMeta = null;
+    // The recovered session must get PAST the gate and actually run the turn;
+    // disable the optional pre-turn phases so the fake ui suffices.
+    // the very next check reports the missing model — proving the turn got
+    // past the KB gate without running one.
+    const printed = [];
+    const ctx = buildBaseCtx(session, { print: (t) => printed.push(t) });
+    process.env.HK2_ENABLE_QUERYREWRITE = '0';
+    process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+    try {
+      await handleUserLine('你是谁', session, ctx, fullFakeUi());
+    } finally {
+      delete process.env.HK2_ENABLE_QUERYREWRITE;
+      delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+    }
+    assert.ok(session.rt, 'the stale rt=null healed: runtime loaded from disk');
+    assert.ok(!printed.some((x) => /No project registered|KB not built|failed to load/.test(x)),
+      'no gate refusal after recovery');
+    assert.equal(session.lastAnswer, 'x', 'the recovered session actually RAN the turn');
+  } finally {
+    await home.removeProject(p.id).catch(() => {});
+  }
 });
 
 
