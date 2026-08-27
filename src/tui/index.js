@@ -83,6 +83,21 @@ const CTRL_C_WINDOW_MS = 1500;
  * modal finishes and clears the box. Pure state, unit-testable.
  */
 /**
+ * Drain session.queue one line at a time. `stopRequested` is re-checked
+ * AFTER every line: a deferred exit (Ctrl+D during a turn) or /quit armed
+ * mid-processing stops consumption before the NEXT queued item starts —
+ * the user's exit intent cancels everything not yet running. Extracted so
+ * the drain semantics are behaviorally testable without a TTY.
+ */
+export async function drainInputQueue(session, { handle, flushReloads, stopRequested = () => false }) {
+  while (session.queue.length > 0 && !session.exiting && !stopRequested()) {
+    const line = session.queue.shift();
+    await handle(line);
+    await flushReloads();
+  }
+}
+
+/**
  * Ctrl+G is the cancel alias: inside a modal it behaves exactly like Esc.
  * Pure — the key loop feeds the result to ModalHost.applyKey. Exported for
  * controller-level regression tests (the const-reassignment bug lived here).
@@ -331,11 +346,11 @@ export async function runTui(opts = {}) {
       // exitAfterTurn (deferred Ctrl+D) stops consumption HERE: the current
       // turn was interrupted and its cleanup has run — queued input must not
       // START now that the user asked to leave (review round 7).
-      while (session.queue.length > 0 && !session.exiting && !exitAfterTurn) {
-        const l = session.queue.shift();
-        await handleUserLine(l, session, ctx, ui);
-        await flushSessionReloads(session, ctx);
-      }
+      await drainInputQueue(session, {
+        handle: (l) => handleUserLine(l, session, ctx, ui),
+        flushReloads: () => flushSessionReloads(session, ctx),
+        stopRequested: () => exitAfterTurn,
+      });
     } finally {
       session.processing = false;
     }

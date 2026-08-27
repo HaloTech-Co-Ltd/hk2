@@ -89,3 +89,35 @@ test('pty: boot + /quit exits cleanly at 40 / 80 / 120 cols', { skip: !hasScript
     });
   }
 });
+
+
+test('pty: failed --resume restores the terminal (raw mode off, stty unchanged)', { skip: !hasScript }, async () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), 'hk2-pty-res-'));
+  // Inside the pty: snapshot termios, run the failing resume, snapshot again.
+  // If raw mode leaked, the second stty -g differs (and/or echo is dead).
+  const out = await new Promise((resolve, reject) => {
+    const child = spawn('script', [
+      '-qec',
+      `stty -g > /tmp/hk2-stty-before.$$; node ${JSON.stringify(CLI)} --tui --resume definitely-missing; code=$?; stty -g > /tmp/hk2-stty-after.$$; cat /tmp/hk2-stty-before.$$ /tmp/hk2-stty-after.$$; echo EXIT=$code; rm -f /tmp/hk2-stty-before.$$ /tmp/hk2-stty-after.$$`,
+      '/dev/null',
+    ], {
+      cwd: os.tmpdir(),
+      env: { ...process.env, HK2_HOME: home, TERM: 'xterm-256color', HK2_AUTOIMPORT_CLAUDE: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let buf = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('pty timed out')); }, 20000);
+    child.stdout.on('data', (b) => { buf += b.toString(); });
+    child.stderr.on('data', (b) => { buf += b.toString(); });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', () => { clearTimeout(timer); resolve(buf); });
+  });
+  // The bracketed-paste disable escape lands on the SAME line as the first
+  // snapshot — strip ANSI before matching.
+  const plainOut = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+  const hashes = [...plainOut.matchAll(/^([0-9a-f:;]+)\r?$/gm)].map((m) => m[1]);
+  const exitCode = /EXIT=(\d+)/.exec(out)?.[1];
+  assert.equal(exitCode, '2', 'resume failure exits 2');
+  assert.ok(hashes.length >= 2, `two stty -g snapshots captured (${hashes.length})`);
+  assert.equal(hashes[0], hashes[1], 'terminal termios identical before and after — raw mode restored');
+});

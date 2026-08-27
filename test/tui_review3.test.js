@@ -574,10 +574,12 @@ test('restoreOnce drops raw mode (resume-failure / REPL-fallback leave the termi
   assert.ok(body.includes('setRawMode(false)'), 'restoreOnce clears raw mode');
 });
 
-test('deferred Ctrl+D stops queue consumption once the interrupted turn unwinds', () => {
+test('deferred Ctrl+D stops queue consumption once the interrupted turn unwinds (wiring)', () => {
   const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
-  assert.ok(src.includes('!session.exiting && !exitAfterTurn'),
-    'the enqueue loop stops on the deferred exit, not only on session.exiting');
+  assert.ok(src.includes('stopRequested: () => exitAfterTurn'),
+    'enqueue wires the deferred exit into the drain loop');
+  assert.ok(src.includes('!session.exiting && !stopRequested()'),
+    'the drain loop stops on the stop request, not only on session.exiting');
 });
 
 test('viewport/absolute cursor mismatch: long buffers keep a cursor INSIDE the rendered window', async () => {
@@ -599,4 +601,35 @@ test('viewport/absolute cursor mismatch: long buffers keep a cursor INSIDE the r
   // Empty buffer: ZERO rows so the chrome renders the placeholder.
   assert.deepEqual(ib.visibleRows(ib.initialState({ width: 20 }), 20), [],
     'empty buffer reports no rows — the placeholder path');
+});
+
+
+/* ----- round 7 hardening (reviewer-suggested behavioral tests) ----- */
+
+test('deferred exit cancels the REST of the queue (behavioral: item 2 never runs)', async () => {
+  const { drainInputQueue } = await import('../src/tui/index.js');
+  const session = { queue: ['first', 'second', 'third'], exiting: false };
+  const ran = [];
+  let armExit = false; // flipped while item 1 is being processed (Ctrl+D)
+  await drainInputQueue(session, {
+    handle: async (l) => {
+      ran.push(l);
+      if (l === 'first') armExit = true; // keypress during the turn
+    },
+    flushReloads: async () => {},
+    stopRequested: () => armExit,
+  });
+  assert.deepEqual(ran, ['first'], 'the queued items after the exit intent never start');
+  assert.deepEqual(session.queue, ['second', 'third'], 'they stay unconsumed, not lost');
+});
+
+test('without a stop request the queue drains fully', async () => {
+  const { drainInputQueue } = await import('../src/tui/index.js');
+  const session = { queue: ['a', 'b'], exiting: false };
+  const ran = [];
+  await drainInputQueue(session, {
+    handle: async (l) => ran.push(l),
+    flushReloads: async () => {},
+  });
+  assert.deepEqual(ran, ['a', 'b']);
 });
