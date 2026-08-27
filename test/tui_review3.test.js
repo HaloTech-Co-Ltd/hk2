@@ -546,3 +546,57 @@ test('width + resize follow the DRAW stream, not stdout', async () => {
   const frameSrc = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'frame.js'), 'utf8');
   assert.ok(frameSrc.includes("this.stream.on?.('resize'"), 'Frame listens on its draw stream too');
 });
+
+
+/* ----- round 7 ------------------------------------------------------------ */
+
+test('Transcript.flush() awaits a fire-and-forget append issued in the SAME tick', async () => {
+  const { Transcript } = await import('../lib/agent/transcript.js');
+  const projId = 'proj-flush-race';
+  const t = new Transcript(projId, 'sess-flush-race');
+  // The race: append used to await _init() BEFORE attaching to _tail, so an
+  // un-awaited logUser followed by an immediate flush() resolved the OLD
+  // tail — the last event never hit the disk before process.exit.
+  t.logUser('the-last-line');          // NOT awaited
+  await t.flush();                     // immediately
+  const raw = await import('node:fs/promises').then((fsp) => fsp.readFile(t.path, 'utf8'));
+  assert.ok(raw.includes('the-last-line'), 'the fire-and-forget append landed before flush resolved');
+  const fsp = await import('node:fs/promises');
+  const pathMod = await import('node:path');
+  await fsp.rm(pathMod.dirname(t.path), { recursive: true, force: true });
+});
+
+test('restoreOnce drops raw mode (resume-failure / REPL-fallback leave the terminal usable)', () => {
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
+  const ro = src.indexOf('const restoreOnce = () => {');
+  const end = src.indexOf('};', ro);
+  const body = src.slice(ro, end);
+  assert.ok(body.includes('setRawMode(false)'), 'restoreOnce clears raw mode');
+});
+
+test('deferred Ctrl+D stops queue consumption once the interrupted turn unwinds', () => {
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'tui', 'index.js'), 'utf8');
+  assert.ok(src.includes('!session.exiting && !exitAfterTurn'),
+    'the enqueue loop stops on the deferred exit, not only on session.exiting');
+});
+
+test('viewport/absolute cursor mismatch: long buffers keep a cursor INSIDE the rendered window', async () => {
+  const ib = await import('../src/tui/input_box.js');
+  const st = ib.initialState({ width: 20, maxVisibleRows: 2 });
+  let cur = st;
+  for (const c of 'a\nb\nc\nd\ne') {
+    cur = ib.applyKey(cur, { type: 'char', text: c }).state;
+  }
+  // 5 logical lines, window of 2, cursor at the end → scrolled to the bottom.
+  const rows = ib.visibleRows(cur, 20);
+  assert.equal(rows.length, 2, 'viewport shows only the window');
+  const c = ib.cursorScreen(cur, 20);
+  assert.ok(c.row >= 0 && c.row < rows.length, `cursor row is viewport-relative (${c.row} of ${rows.length})`);
+  // The Frame adds +1 for the top rule; the resulting cell must be inside
+  // the input block's rendered line count.
+  assert.ok(c.row + 1 < 2 + rows.length, 'block-relative cursor stays within the block');
+
+  // Empty buffer: ZERO rows so the chrome renders the placeholder.
+  assert.deepEqual(ib.visibleRows(ib.initialState({ width: 20 }), 20), [],
+    'empty buffer reports no rows — the placeholder path');
+});

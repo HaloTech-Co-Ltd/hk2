@@ -301,6 +301,10 @@ export async function runTui(opts = {}) {
   let stdinTeardown = null;
   const restoreOnce = () => {
     if (shutDown) return;
+    // Raw mode MUST be dropped here too, not only in shutdown(): this path
+    // runs on resume-failure and the TUI→REPL fallback — leaving raw mode
+    // armed handed the user a terminal where Ctrl+C/Echo were dead.
+    try { process.stdin.setRawMode(false); } catch { /* not raw */ }
     disableBracketedPaste(stream);
     try { frame.stop(); } catch { /* not started */ }
     if (stdinTeardown) { try { stdinTeardown(); } catch { /* ignore */ } stdinTeardown = null; }
@@ -324,7 +328,10 @@ export async function runTui(opts = {}) {
     if (session.processing) return;
     session.processing = true;
     try {
-      while (session.queue.length > 0 && !session.exiting) {
+      // exitAfterTurn (deferred Ctrl+D) stops consumption HERE: the current
+      // turn was interrupted and its cleanup has run — queued input must not
+      // START now that the user asked to leave (review round 7).
+      while (session.queue.length > 0 && !session.exiting && !exitAfterTurn) {
         const l = session.queue.shift();
         await handleUserLine(l, session, ctx, ui);
         await flushSessionReloads(session, ctx);

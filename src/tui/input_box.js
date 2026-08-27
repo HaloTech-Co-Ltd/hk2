@@ -131,10 +131,18 @@ export function layout(state, width = state.width) {
   return { perLine, lineRow0, totalRows: total, cursorVisualRow, cursorVisualCol };
 }
 
-/** Cursor cell for the Frame to position the terminal cursor at. */
+/**
+ * Cursor cell for the Frame to position the terminal cursor at —
+ * VIEWPORT-RELATIVE, aligned with visibleRows()/render()'s windowing: the
+ * absolute visual row minus the window offset. Returning the absolute row
+ * made the Frame see a cursor beyond the input block's rendered height once
+ * the buffer exceeded maxVisibleRows, and it dropped the cursor entirely.
+ */
 export function cursorScreen(state, width = state.width) {
   const L = layout(state, width);
-  return { row: L.cursorVisualRow, col: L.cursorVisualCol };
+  const max = Math.max(1, state.maxVisibleRows);
+  const from = Math.min(state.scrollTop, Math.max(0, L.totalRows - max));
+  return { row: L.cursorVisualRow - from, col: L.cursorVisualCol };
 }
 
 /* ------------------------------------------------------------------ */
@@ -495,6 +503,9 @@ function visualMove(st, L, dir) {
  * open-rules layout). Aligned with render()'s windowing.
  */
 export function visibleRows(st, width = st.width) {
+  // An EMPTY buffer reports ZERO rows — its single blank row made callers
+  // render an empty content line instead of their placeholder.
+  if (isEmpty(st)) return [];
   const L = layout(st, width);
   const max = Math.max(1, st.maxVisibleRows);
   const from = Math.min(st.scrollTop, Math.max(0, L.totalRows - max));
