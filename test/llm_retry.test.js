@@ -116,11 +116,17 @@ test('llmApiNumOfRetries: default 10, explicit 0, positive N, invalid → defaul
   const saved = process.env.HK2_LLMAPI_NUMOFRETRIES;
   try {
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
     assert.equal(llmApiNumOfRetries(), DEFAULT_LLM_NUM_OF_RETRIES);
     assert.equal(DEFAULT_LLM_NUM_OF_RETRIES, 10);
     process.env.HK2_LLMAPI_NUMOFRETRIES = '0';
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
     assert.equal(llmApiNumOfRetries(), 0);
     process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
+  // makes the retry loop reachable for them (the default-off policy itself
+  // is pinned in the classification test above).
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
     assert.equal(llmApiNumOfRetries(), 3);
     process.env.HK2_LLMAPI_NUMOFRETRIES = '-2';
     assert.equal(llmApiNumOfRetries(), DEFAULT_LLM_NUM_OF_RETRIES);
@@ -136,14 +142,37 @@ test('llmApiNumOfRetries: default 10, explicit 0, positive N, invalid → defaul
 
 // ---------- error classification ----------
 
-test('isRetryableLlmError: transient yes, client errors no', () => {
-  assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), true);
-  assert.equal(isRetryableLlmError(new Error('OpenAI request failed: fetch failed')), true);
-  assert.equal(isRetryableLlmError(new Error('Anthropic request failed: timeout')), true);
+test('isRetryableLlmError: outcome-safe always; unknown-outcome opt-in; client errors never', () => {
+  // Outcome-safe: the request never left, or was refused before execution.
+  assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ECONNREFUSED)')), true);
+  assert.equal(isRetryableLlmError(new Error('OpenAI request failed: getaddrinfo ENOTFOUND (ENOTFOUND)')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI 429: rate limited')), true);
-  assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), true);
-  assert.equal(isRetryableLlmError(new Error('OpenAI 502: bad gateway')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI 408: request timeout')), true);
+  // Unknown outcome: mid-flight transport failures and 5xx (the gateway may
+  // speak for an upstream that already RAN the request). NOT retried by
+  // default — duplicate requests / duplicate billing are worse than a
+  // failed turn (merged semantics from the TUI branch review rounds).
+  const prev = process.env.HK2_LLM_RETRY_UNKNOWN_POST;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
+  try {
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), false, 'bare fetch failed = unknown');
+    assert.equal(isRetryableLlmError(new Error('OpenAI request failed: read ECONNRESET (ECONNRESET)')), false, 'mid-flight reset = unknown');
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: timeout')), false, 'timeout after send = unknown');
+    assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), false, '5xx = unknown');
+    assert.equal(isRetryableLlmError(new Error('OpenAI 502: bad gateway')), false, '5xx = unknown');
+    assert.equal(isRetryableLlmError(new Error('OpenAI 500: internal')), false, '5xx = unknown');
+  } finally {
+    if (prev !== undefined) process.env.HK2_LLM_RETRY_UNKNOWN_POST = prev;
+  }
+  // ...and opted in explicitly.
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
+  try {
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), true);
+    assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), true);
+  } finally {
+    if (prev === undefined) delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
+    else process.env.HK2_LLM_RETRY_UNKNOWN_POST = prev;
+  }
   // deterministic client errors: retrying cannot help
   assert.equal(isRetryableLlmError(new Error('Anthropic 400: tool_use ids...')), false);
   assert.equal(isRetryableLlmError(new Error('OpenAI 401: invalid key')), false);
@@ -167,6 +196,10 @@ test('stream: transient fetch failure is retried; retry event emitted; attempt-2
   const restoreT = fastTimers();
   const sf = scriptedFetch(['fail', 'attempt-two']);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
+  // makes the retry loop reachable for them (the default-off policy itself
+  // is pinned in the classification test above).
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const evts = await collect(makeClient().stream(MSGS, { timeoutMs: 0 }));
     const retries = evts.filter(e => e.type === 'retry');
@@ -179,6 +212,7 @@ test('stream: transient fetch failure is retried; retry event emitted; attempt-2
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -204,6 +238,7 @@ test('stream: partial output from the failed attempt is void (no glued text)', a
   };
   const restoreT = fastTimers();
   process.env.HK2_LLMAPI_NUMOFRETRIES = '2';
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const evts = await collect(makeClient().stream(MSGS, { timeoutMs: 0 }));
     assert.equal(text(evts), 'RETRY-OK', 'the broken attempt\'s "BROKEN-" must be discarded');
@@ -212,6 +247,7 @@ test('stream: partial output from the failed attempt is void (no glued text)', a
     globalThis.fetch = original;
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -219,6 +255,7 @@ test('stream: exhausting the budget throws after retries+1 attempts', async () =
   const restoreT = fastTimers();
   const sf = scriptedFetch(['fail']);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '2';
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     await assert.rejects(
       collect(makeClient().stream(MSGS, { timeoutMs: 0 })),
@@ -229,6 +266,7 @@ test('stream: exhausting the budget throws after retries+1 attempts', async () =
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -246,6 +284,7 @@ test('stream: HTTP 4xx fails fast — one fetch, no retry events', async () => {
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -253,6 +292,7 @@ test('stream: HTTP 429 and 5xx are retried', async () => {
   const restoreT = fastTimers();
   const sf = scriptedFetch([429, 503, 'third-time-works']);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '5';
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1'; // 503 = unknown-outcome class
   try {
     const evts = await collect(makeClient().stream(MSGS, { timeoutMs: 0 }));
     assert.equal(text(evts), 'third-time-works');
@@ -262,6 +302,7 @@ test('stream: HTTP 429 and 5xx are retried', async () => {
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -269,6 +310,7 @@ test('stream: HK2_LLMAPI_NUMOFRETRIES=0 disables retries (single attempt)', asyn
   const restoreT = fastTimers();
   const sf = scriptedFetch(['fail']);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '0';
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     await assert.rejects(
       collect(makeClient().stream(MSGS, { timeoutMs: 0 })),
@@ -279,6 +321,7 @@ test('stream: HK2_LLMAPI_NUMOFRETRIES=0 disables retries (single attempt)', asyn
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -305,6 +348,7 @@ test('stream: user abort during the backoff sleep is honored immediately', async
   } finally {
     sf.restore();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
     user.abort();
   }
 });
@@ -325,6 +369,10 @@ test('complete: openai non-streaming path retries transient failures', async () 
     };
   };
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
+  // makes the retry loop reachable for them (the default-off policy itself
+  // is pinned in the classification test above).
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const out = await makeClient().complete(MSGS, { timeoutMs: 0 });
     assert.equal(out, 'recovered');
@@ -333,6 +381,7 @@ test('complete: openai non-streaming path retries transient failures', async () 
     globalThis.fetch = original;
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -391,6 +440,10 @@ test('complete: anthropic path resets accumulated text on mid-stream failure + r
     return anthropicStreamResponse('RETRY-OK');
   };
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
+  // makes the retry loop reachable for them (the default-off policy itself
+  // is pinned in the classification test above).
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const out = await makeAnthropicClient().complete(MSGS, { timeoutMs: 0 });
     assert.equal(out, 'RETRY-OK', 'the broken attempt\u2019s "BROKEN-" must be discarded, not glued in front');
@@ -399,6 +452,7 @@ test('complete: anthropic path resets accumulated text on mid-stream failure + r
     globalThis.fetch = original;
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -406,6 +460,10 @@ test('complete: 401 is not retried', async () => {
   const restoreT = fastTimers();
   const sf = scriptedFetch([401]);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
+  // makes the retry loop reachable for them (the default-off policy itself
+  // is pinned in the classification test above).
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     await assert.rejects(
       makeClient().complete(MSGS, { timeoutMs: 0 }),
@@ -416,6 +474,7 @@ test('complete: 401 is not retried', async () => {
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });
 
@@ -425,6 +484,7 @@ test('adapters: retried calls reusing one signal do not accumulate abort listene
   const restoreT = fastTimers();
   const sf = scriptedFetch(['fail', 'fail', 'ok-after-two-failures']);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '5';
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1'; // 'fetch failed' = unknown class
   const user = new AbortController();
   let maxListeners = 0;
   const origAdd = user.signal.addEventListener.bind(user.signal);
@@ -447,6 +507,7 @@ test('adapters: retried calls reusing one signal do not accumulate abort listene
     sf.restore();
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
     user.abort();
     mock.restoreAll();
   }

@@ -228,6 +228,66 @@ hk2
 | `/kb knowledge del <id>` | 删除条目（需确认） |
 | `/kb transform <id> <from> <to>` | 在 Holy 与 Eden 之间移动条目（需确认） |
 
+## 交互前端：REPL 与 TUI（`--tui`）
+
+hk2 提供两个交互前端，共享同一套会话、slash 命令与 agent 回合管线：
+
+- **行式 REPL（默认）** — `hk2`。经典 readline 提示符
+  （`hk2(项目|Eden/N Holy/N|模型)>`）、状态栏与工具卡片。
+- **内联 TUI** — `hk2 --tui`（或 `HK2_UI=tui`）。Claude Code 风格的界面：
+  底部固定带边框的多行输入框、终端原生回滚区里的流式 markdown 回答与
+  工具卡片、实时状态行、slash 命令补全、方向键确认弹窗。需要 TTY 终端；
+  不满足时（管道输入、`TERM=dumb`）自动回落到 REPL。`--repl` /
+  `HK2_UI=repl` 强制使用经典 REPL。
+
+TUI 按键：
+
+| 按键 | 作用 |
+|---|---|
+| enter | 发送消息（空输入不发送） |
+| `\` + enter | 续行而不是发送（slash 命令行尾的反斜杠照常提交） |
+| alt+enter / ctrl+j | 插入真实换行 |
+| ↑ / ↓ | 单行时切换历史；多行时跨折行移动 |
+| ← / →、home / end、ctrl+a / ctrl+e | 光标移动 |
+| ctrl+k / ctrl+u / ctrl+w / alt+退格 | 删到行尾 / 行首 / 光标前一个词 |
+| Tab | 采纳高亮的 slash 补全项 |
+| `/` + 前缀 | 补全菜单（从已注册命令派生；↑↓ 选择，pageup/pagedown 翻 5 项） |
+| ctrl+r | 历史增量搜索：输入子串过滤，↑↓（或连按 ctrl+r）循环匹配，enter 把选中项填回输入框，esc 关闭 |
+| esc / ctrl+g | 回合运行中：中断回合。否则：关闭补全菜单 / 取消当前弹窗 |
+| ctrl+l | 清屏（对话记录保留在终端回滚里） |
+| ctrl+o | 展开最近一次工具结果到对话区（紧凑行只显示一行 + "+N lines"） |
+| ctrl+c | 清空输入；输入为空且回合运行中则中断；输入为空且空闲时连续按两次退出（按其它键立即解除"再按一次退出"状态） |
+| ctrl+d | 空缓冲时退出（否则向前删除） |
+
+界面自适应终端宽度：≥ 88 列显示完整欢迎卡（含提示面板），60–87 列紧凑
+单栏卡片，更窄只显示两行摘要——任何行都不会超出终端边缘。老用户（以及
+高度不足 30 行的终端）始终用紧凑形态；`/clear` 只打印一行会话摘要而不再
+重画整张卡。菜单与弹窗的选中项永远用 `❯` 标记，绝不只靠颜色区分；弹窗
+问题文本自动换行并显示按键提示行（`↑↓ select · enter confirm · esc
+cancel · y/n/e`）。
+
+TUI 默认折叠思考输出（窗口结束后显示 `Thought for Ns`）；设置
+`HK2_HIDE_THINKING=0` 可像 REPL 一样实时流式显示推理过程。
+
+**零配置首启**：未配置任何模型时，`hk2 --tui` 会自动从 Claude Code 的
+`~/.claude/settings.json` 导入一个模型（取 `env` 块的
+`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`，
+模型列表来自 `ANTHROPIC_DEFAULT_*_MODEL`）。欢迎卡下方会显示导入
+提示。仅填充——已有默认模型时绝不覆盖；设 `HK2_AUTOIMPORT_CLAUDE=0`
+可禁用。
+
+其余一切 —— `/model`、`/kb`、计划确认菜单、知识保存 y/N/E 确认、会话恢复
+（`hk2 --tui --resume`）、任务中输入排队 —— 与 REPL 完全同一套代码。
+
+历史与配置存储的两个安全属性：携带凭据的输入（`--api-key=…`、
+`--token=…`、`Authorization` 头、`password=`/`secret=` 赋值）完全不落盘；
+`~/.hk2/history.jsonl` 与 `models.json` 保持仅属主可读（0600，启动时自动
+迁移，`~/.hk2` 目录本身 0700）。
+
+对话仍然要求先初始化项目：hk2 是 KB 驱动的，在 `/project init` +
+`/kb init` 完成之前消息会被拒绝并给出初始化指引 —— 即使首启导入已经
+配置好了模型。输入历史持久化在 `~/.hk2/history.jsonl`（上限 1000 条）。
+
 ## REPL 命令参考
 
 输入 `/help` 查看完整列表；输入 `/help <命令>`（如 `/help kb`、`/help knowledge`）查看单个命令的详细用法与参数。每个命令族也支持 `<命令> help` 下钻（如 `/model help set`、`/kb knowledge help learn`）。常用命令：
@@ -525,6 +585,9 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 | 变量 | 说明 | 默认值 |
 |---|---|---|
 | `HK2_HOME` | 覆盖 `~/.hk2` 位置 | `~/.hk2` |
+| `HK2_AUTOIMPORT_CLAUDE` | 设 0 禁用首启时从 Claude Code 的 `~/.claude/settings.json` 自动导入模型（仅 TUI） | 开 |
+| `HK2_LLM_RETRY_UNKNOWN_POST` | 结果未知的 LLM 请求失败默认不重试，避免重复请求与重复计费：发送后的传输层失败（被重置/超时），以及 HTTP 500/502/503/504（反向代理可能在上游已完成推理后才返回这些状态码）。设 `1` 显式开启。连接建立失败与 HTTP 408/429（执行前被拒绝）属于结果安全类，始终重试，次数受 `HK2_LLMAPI_NUMOFRETRIES` 约束。 | `0` |
+| `HK2_UI` | 交互前端：`tui` 选择 Claude Code 风格内联 TUI，`repl`（默认）经典行式 REPL。`--tui` / `--repl` 旗标优先。 | `repl` |
 | `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
 | `HK2_PROJECT_SOURCE` | 工具沙箱的项目源码根（交互模式下自动设置） | - |
@@ -544,12 +607,13 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划调用超时（毫秒）。慢速供应商（大文件映射上的推理模型）可能超过默认 300 秒。单次运行可用 `--plan-timeout-ms=N` 覆盖。 | `300000` |
 | `HK2_LLMAPI_TIMEOUT_MS` | 所有 LLM API 请求（chat completions / messages，流式与非流式）的默认超时（毫秒）。解析优先级：单次调用 `opts.timeoutMs` > 每模型 `config.timeout`（解析时始终从同一变量盖戳）> 本环境变量默认值。显式 `0` 表示无超时（不启动中止定时器——plan-review / code-review 阶段依赖此行为）。未设置 / 非法 / 负数回退到默认值。 | `3600000`（3600 秒） |
+| `HK2_WELCOME` | TUI 欢迎卡档位：`full` 在终端宽度允许（≥88 列）时显示带 logo 与提示面板的完整卡，较窄终端仍自动降级为单栏/两行；`compact` 跳过完整 logo 卡但极窄终端仍用两行摘要；`auto`（默认）首启完整、老用户与矮屏（<30 行）紧凑。 | `auto` |
 | `HK2_LLMAPI_NUMOFRETRIES` | LLM API 调用发生瞬时故障（网络错误如 `fetch failed`、HTTP 408/429/5xx、请求超时）时的最大连续重试次数，避免网络闪断或供应商短暂故障直接中止整个代理任务。失败后按指数退避（1s 起、封顶 30s）最多重试 N 次（总计 N+1 次尝试）；尝试间会发出 `{type:'retry'}` 事件，消费方据此丢弃已累积的半截输出。确定性客户端错误（其他 4xx）与用户中止（ESC）不重试。显式 `0` 表示禁用重试（仅尝试一次）；未设置 / 非法 / 负数回退默认值。 | `10` |
 | `HK2_INDEX_PARALLEL` | KB 索引解析池的并行度（`/kb init` / `/kb update`）。`0` 或未设置 = 自动（取当前系统 CPU 数）；正整数 N 则固定为 N。 | `0` |
 | `HK2_DEBUG` | 打印错误堆栈 | - |
 | `HK2_NO_COLOR` | 为 1 时禁用 ANSI 颜色（亦遵从标准 `NO_COLOR` 环境变量）。 | - |
 | `HK2_ASCII` | 为 1 时，强制使用 ASCII 字符替代 UTF-8 的制表/加载动画/图标（适用于非 UTF-8 终端）。 | - |
-| `HK2_HIDE_THINKING` | 未设置或为 `1`（默认）时，`✎ thinking` 推理窗口最多渲染 9 行内容，之后以灰暗提示报告隐藏了多少行。为 `0` 时渲染完整推理流（旧行为）。 | `1` |
+| `HK2_HIDE_THINKING` | 未设置或为 `1`（默认）时，`✎ thinking` 推理窗口最多渲染 9 行内容，之后以灰暗提示报告隐藏了多少行（TUI 中思考过程运行期间折叠为一行 `Thought for Ns`）。为 `0` 时渲染完整推理流（旧行为；TUI 中同样实时显示）。 | `1` |
 | `ANTHROPIC_API_KEY` | 首次初始化时自动创建 `anthropic` 提供商 | - |
 | `OPENAI_API_KEY` | 首次初始化时自动创建 `openai` 提供商 | - |
 

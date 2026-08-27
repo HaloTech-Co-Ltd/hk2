@@ -254,7 +254,11 @@ export async function cmdReview(args, ctx) {
     };
     const onReasoning = (text) => {
       const rendered = reasoningStream.feed(text);
-      if (rendered) process.stdout.write(rendered);
+      // ctx.write: the io seam's character-stream primitive. Writing to the
+      // raw output stream here would bypass the TUI's Frame and land under
+      // its reserved input region (guarded by test — src/slash never touches
+      // the process streams directly).
+      if (rendered) ctx.write?.(rendered);
     };
     const onDelta = createVerdictFilter(emit);
     const reviewRun = await runPhaseWithSkipOnUnreachable({

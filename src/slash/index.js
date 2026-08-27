@@ -61,16 +61,17 @@
 import { cmdModel } from './model.js';
 import { cmdProject } from './project.js';
 import { cmdKb } from './kb.js';
-import { cmdSession } from './session.js';
+import { cmdSession, resumeDirect } from './session.js';
 import { cmdReview } from './review.js';
 import { cmdTheme } from './theme.js';
-import { printCommandHelp } from './help.js';
+import { printCommandHelp, HELP_TEXT } from './help.js';
 
 export const SLASH_COMMANDS = [
   { name: '/model',   handler: cmdModel,   description: 'Manage models.json (list / use / set-default / set / add / del / show)' },
   { name: '/project', handler: cmdProject, description: 'Manage projects.json (init / list / set / show / drop)' },
   { name: '/kb',      handler: cmdKb,      description: 'Current project KB (init / update / status / search ...)' },
   { name: '/session', handler: cmdSession, description: 'Session management (info / new / clear / list / resume)' },
+  { name: '/resume',   handler: resumeDirect, description: 'Resume a previous session (latest, or /resume <id>) — Claude Code convention' },
   { name: '/review',  handler: cmdReview,  description: 'Manually review the completed task (code) — fresh-eyes regression check' },
   { name: '/theme',   handler: cmdTheme,   description: 'Customize tool-card border colors (list / set / reset / preview / title-follow)' },
   { name: '/clear',   handler: cmdClear,   description: 'Clear the current conversation context' },
@@ -200,3 +201,131 @@ function tokenizeSlashLine(s) {
   return out;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Slash-command completion — derived, single source of truth.
+ *
+ * Everything offered by Tab completion (and later the TUI completion menu)
+ * is DERIVED from what already exists: SLASH_COMMANDS for the top level and
+ * the "Subcommands:" / "Phases:" sections of HELP_TEXT for the sub levels.
+ * No hand-maintained list, so completions can never drift from the
+ * registered commands again.
+ */
+
+/**
+ * Parse a HELP_TEXT block's subcommand rows into [{name, description}].
+ *
+ * A subcommand row starts at column 2 (`  name <args>   description`);
+ * deeper-indented lines are argument/description continuations of the
+ * previous row and are skipped. The section runs from its header to the
+ * first blank line. `help` is always supported (via subcommandHelp) even
+ * when no explicit row exists, so it is appended synthetically.
+ */
+function helpSubcommands(key) {
+  const lines = HELP_TEXT[key];
+  if (!Array.isArray(lines)) return [];
+  const out = [];
+  let inSection = false;
+  for (const ln of lines) {
+    if (/^(Subcommands|Phases|Modes|Commands):/.test(ln)) { inSection = true; continue; }
+    if (!inSection) continue;
+    if (ln.trim() === '') break; // section ends at the first blank line
+    const m = ln.match(/^  (\S+)\s*(.*)$/);
+    if (m) out.push({ name: m[1], description: m[2] });
+  }
+  if (!out.some(s => s.name === 'help')) {
+    out.push({ name: 'help', description: 'Show detailed usage' });
+  }
+  // Multiple rows can start with the same subcommand (e.g. "set-default" and
+  // "set-default current"); keep the first per name so completion never
+  // offers duplicates.
+  const seen = new Set();
+  return out.filter(s => (seen.has(s.name) ? false : (seen.add(s.name), true)));
+}
+
+/** HELP_TEXT keys that appear as a subcommand row of `key` (nested topics, e.g. kb → knowledge, code). */
+function nestedTopics(key) {
+  const subs = helpSubcommands(key);
+  return Object.keys(HELP_TEXT).filter(t => t !== key && subs.some(s => s.name === t));
+}
+
+/**
+ * Structured completions for the (partial) input `line`.
+ *
+ * @returns {{items: Array<{label: string, description: string}>, replaceFrom: number}}
+ *   items — candidate completions (label = full replacement text, e.g.
+ *   "/kb knowledge learn"); replaceFrom — index in `line` where the label
+ *   replaces from (the start of the token being completed).
+ */
+export function slashCompletions(line) {
+  if (typeof line !== 'string' || !line.startsWith('/')) return { items: [], replaceFrom: 0 };
+  const tokens = line.split(/\s+/);
+  const fragment = tokens[tokens.length - 1] || '';
+  const replaceFrom = line.length - fragment.length;
+
+  if (tokens.length === 1) {
+    return {
+      items: SLASH_COMMANDS
+        .filter(c => c.name.startsWith(fragment))
+        .map(c => ({ label: c.name, description: c.description })),
+      replaceFrom,
+    };
+  }
+  const family = tokens[0];
+  const key = family.slice(1);
+  if (tokens.length === 2) {
+    const subs = helpSubcommands(key);
+    if (key === '') {
+      // Bare '/ ': Claude Code shows ALL top-level commands here.
+      return {
+        items: SLASH_COMMANDS
+          .filter(c => c.name.startsWith('/' + fragment))
+          .map(c => ({ label: c.name, description: c.description })),
+        replaceFrom,
+      };
+    }
+    if (!HELP_TEXT[key]) {
+      // A registered command with no HELP_TEXT block (e.g. '/help '), or an
+      // unknown family: no subcommands to offer — returning EMPTY keeps the
+      // menu closed so Enter submits the typed command instead of silently
+      // replacing it with the top-level list's first entry.
+      return { items: [], replaceFrom };
+    }
+    const items = subs
+      .filter(s => s.name.startsWith(fragment))
+      .map(s => ({ label: `${family} ${s.name}`, description: s.description }));
+    for (const topic of nestedTopics(key)) {
+      if (topic.startsWith(fragment)) {
+        const row = subs.find(s => s.name === topic);
+        items.push({ label: `${family} ${topic}`, description: row ? row.description : '' });
+      }
+    }
+    return { items, replaceFrom };
+  }
+  if (tokens.length === 3) {
+    const topic = tokens[1];
+    if (HELP_TEXT[topic] && helpSubcommands(key).some(s => s.name === topic)) {
+      return {
+        items: helpSubcommands(topic)
+          .filter(s => s.name.startsWith(fragment))
+          .map(s => ({ label: `${family} ${topic} ${s.name}`, description: s.description })),
+        replaceFrom,
+      };
+    }
+  }
+  return { items: [], replaceFrom: 0 };
+}
+
+/** Flat list of every completion label (commands + family subs + nested topic subs). */
+export function allSlashCompletionLabels() {
+  const labels = [];
+  for (const c of SLASH_COMMANDS) {
+    labels.push(c.name);
+    const key = c.name.slice(1);
+    for (const s of helpSubcommands(key)) labels.push(`${c.name} ${s.name}`);
+    for (const topic of nestedTopics(key)) {
+      for (const s of helpSubcommands(topic)) labels.push(`${c.name} ${topic} ${s.name}`);
+    }
+  }
+  return labels;
+}

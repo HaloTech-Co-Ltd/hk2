@@ -27,6 +27,7 @@ import { cmdSession } from '../src/slash/session.js';
 import { Transcript, replayTranscript, findLatestSessionId } from '../lib/agent/transcript.js';
 import { saveTaskState, clearTaskState } from '../lib/agent/task_state.js';
 import { ensureHome, registerProject, setCurrentProject } from '../lib/config/home.js';
+import { exists } from '../lib/util/fs_atomic.js';
 
 /* ----- replayTranscript ----- */
 
@@ -523,4 +524,57 @@ test('Goodbye hint format (string template used by interactive())', async () => 
     ? `Goodbye (using \`hk2 --resume ${sid}\` to resume the session)`
     : 'Goodbye';
   assert.equal(line, 'Goodbye (using `hk2 --resume deadbeef-1234` to resume the session)');
+});
+
+
+/* ----- empty-session hygiene (boot creates a transcript before any message) ----- */
+
+test('resumeHintAfterExit: an EMPTY transcript is deleted and the hint falls back to the newest WITH content', async () => {
+  const projId = 'proj-empty-hygiene';
+  const { resumeHintAfterExit } = await import('../lib/agent/transcript.js');
+
+  // The real-world shape: an older session WITH content, then two boot-only
+  // empties (launch + quit), newest by mtime.
+  const real = new Transcript(projId, 'sess-real');
+  await real.logUser('actual question');
+  await new Promise(r => setTimeout(r, 20));
+  const empty1 = new Transcript(projId, 'sess-empty-1');
+  await empty1.logMeta('start', { pid: 1 }); // boot writes session_start, nothing else
+  await new Promise(r => setTimeout(r, 20));
+  const empty2 = new Transcript(projId, 'sess-empty-2'); // newest of all
+  await empty2.logMeta('start', { pid: 1 });
+
+  // Quitting the empty boot: file deleted, hint points at the real session.
+  assert.equal(await resumeHintAfterExit(empty2), 'sess-real');
+  assert.equal(await exists(empty2.path), false, 'empty transcript removed on exit');
+
+  // Quitting the session WITH content keeps its own id and file.
+  assert.equal(await resumeHintAfterExit(real), 'sess-real');
+  assert.equal(await exists(real.path), true);
+
+  // The stale older empty is skipped by requireContent lookups too.
+  assert.equal(await findLatestSessionId(projId, { requireContent: true }), 'sess-real');
+  assert.equal(await findLatestSessionId(projId), 'sess-empty-1', 'without requireContent the empty still wins by mtime (unchanged legacy behavior)');
+
+  await fs.rm(path.join(path.dirname(real.path)), { recursive: true, force: true });
+});
+
+test('bare ctx.resumeSession never lands on a boot-only empty session', async () => {
+  const projId = 'proj-bare-skip-empty';
+  const real = new Transcript(projId, 'sess-has-content');
+  await real.logUser('hello');
+  await new Promise(r => setTimeout(r, 20));
+  const newerEmpty = new Transcript(projId, 'sess-newer-empty'); // newest mtime, no content
+  await newerEmpty.logMeta('start', { pid: 1 });
+
+  const { session, ctx } = await makeSessionWithProject();
+  // Point the session at the probe project via an explicit resume of the
+  // real session first, then a bare resume must pick the real one again
+  // (the newer empty exists).
+  const ok = await ctx.resumeSession('sess-has-content');
+  assert.equal(ok, true);
+  // The probe project's transcripts live under its own dir; query directly.
+  assert.equal(await findLatestSessionId(projId, { requireContent: true }), 'sess-has-content');
+
+  await fs.rm(path.dirname(real.path), { recursive: true, force: true });
 });

@@ -28,7 +28,11 @@ import {
 } from '../src/commands/interactive.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const INTERACTIVE = path.join(here, '..', 'src', 'commands', 'interactive.js');
+// The ui/io seam extraction (TUI branch) moved this code out of
+// interactive.js: maybeAutoCompact / applyCompactTokenEstimate live in
+// turn_support.js, the turn-start token reset in turn.js.
+const INTERACTIVE = path.join(here, '..', 'src', 'commands', 'turn_support.js');
+const TURN = path.join(here, '..', 'src', 'commands', 'turn.js');
 
 const pad = (ch, n) => ch.repeat(n);
 
@@ -84,7 +88,7 @@ test('estimate never exceeds a fresh real usage event path (turn-start reset pre
   // Source-order contract: both stream entry points zero callIn/loopPeakIn
   // before the first usage event, so an estimate written by compaction can
   // never mask a smaller-but-real first measurement.
-  const src = fs.readFileSync(INTERACTIVE, 'utf8');
+  const src = fs.readFileSync(TURN, 'utf8');
   const resetIdx = src.indexOf('session.tokens.loopPeakIn = 0;');
   assert.ok(resetIdx > 0, 'token reset present');
   const usageIdx = src.indexOf("if (typeof u.input === 'number'");
@@ -139,7 +143,7 @@ test('auto-compact captures the pre-compact estimate BEFORE swapping messages', 
   // (pre-compact) list — capturing it after the swap would calibrate the
   // estimator against the wrong baseline.
   const src = fs.readFileSync(INTERACTIVE, 'utf8');
-  const fnStart = src.indexOf('async function maybeAutoCompact');
+  const fnStart = src.indexOf('export async function maybeAutoCompact');
   assert.ok(fnStart >= 0, 'maybeAutoCompact found');
   const fnEnd = src.indexOf('\nfunction ', fnStart);
   const body = src.slice(fnStart, fnEnd > 0 ? fnEnd : undefined);
