@@ -2228,7 +2228,7 @@ async function knowledgeEmptyKb(rest, ctx) {
   const breakdown = spaces.map(s => `${s}=${counts[s]}`).join(', ');
   ctx.print(`This will permanently delete ${totalCount} entries (${breakdown}).`);
   ctx.print(`This action is IRREVERSIBLE.`);
-  const ok = await ctx.confirm(`Empty ${scope} space(s)? (y/N) `);
+  const ok = await ctx.confirm(`Empty ${scope} space(s)? (y/N) `, { title: 'Empty space' });
   if (!ok) {
     ctx.print(`Cancelled.`);
     return;
@@ -2614,9 +2614,9 @@ async function knowledgeCleanupKb(rest, ctx) {
       printMergedPreview(ctx, verdict, cluster);
       let ok;
       if (space === 'holy') {
-        ok = await ctx.confirm(`Replace these ${cluster.length} Holy entries with ONE merged entry? This is irreversible. (y/N) `);
+        ok = await ctx.confirm(`Replace these ${cluster.length} Holy entries with ONE merged entry? This is irreversible. (y/N) `, { title: 'Merge knowledge' });
       } else {
-        ok = await ctx.confirm(`Replace these ${cluster.length} Eden entries with ONE merged entry? (y/N) `);
+        ok = await ctx.confirm(`Replace these ${cluster.length} Eden entries with ONE merged entry? (y/N) `, { title: 'Merge knowledge' });
       }
       if (!ok) {
         ctx.print(`  Skipped.`);
@@ -3171,7 +3171,7 @@ async function codeAddKb(rest, ctx) {
   ctx.print(`  "${text}"`);
   if (plan.action === 'update') ctx.print(`  (replaces: "${codes[plan.id - 1]}")`);
   ctx.print(``);
-  const ok = await ctx.confirm(`Write to the Supreme Code (Holy, permanent)? (y/N) `);
+  const ok = await ctx.confirm(`Write to the Supreme Code (Holy, permanent)? (y/N) `, { title: 'Supreme Code' });
   if (!ok) { ctx.print(`Cancelled. Nothing was written.`); return; }
   try {
     await writeSupremeCode(p.id, plan.codes);
@@ -3206,7 +3206,7 @@ async function codeDelKb(rest, ctx) {
   } else {
     ctx.print(`(the Supreme Code entry itself is permanent and stays, now empty)`);
   }
-  const ok = await ctx.confirm(`Delete item ${id} from the Supreme Code? (y/N) `);
+  const ok = await ctx.confirm(`Delete item ${id} from the Supreme Code? (y/N) `, { title: 'Delete knowledge' });
   if (!ok) { ctx.print(`Cancelled.`); return; }
   try {
     await writeSupremeCode(p.id, plan.codes);
@@ -3237,7 +3237,7 @@ async function knowledgeDelKb(rest, ctx) {
   }
   if (!foundSpace) { ctx.print(`(entry not found: ${id})`); return; }
   // Always confirm — Holy deletion especially
-  const ok = await ctx.confirm(`Delete "${id}" from ${foundSpace} space? (y/N) `);
+  const ok = await ctx.confirm(`Delete "${id}" from ${foundSpace} space? (y/N) `, { title: 'Delete knowledge' });
   if (!ok) { ctx.print('Cancelled.'); return; }
   await deleteKnowledge(p.id, foundSpace, id);
   // Refresh in-memory runtime
@@ -3277,7 +3277,7 @@ async function transformKb(rest, ctx) {
   const entry = await readKnowledge(p.id, fromSpace, id).catch(() => null);
   if (!entry) { ctx.print(`(entry "${id}" not found in ${fromSpace} space)`); return; }
   ctx.print(`Found entry: ${entry.title || entry.id}  (intro: ${(entry.intro || '').slice(0, 120)}${(entry.intro || '').length > 120 ? '...' : ''})`);
-  const ok = await ctx.confirm(`Move "${id}" from ${fromSpace} → ${toSpace}? (y/N) `);
+  const ok = await ctx.confirm(`Move "${id}" from ${fromSpace} → ${toSpace}? (y/N) `, { title: 'Move knowledge' });
   if (!ok) { ctx.print('Cancelled.'); return; }
   const newPath = await moveKnowledge(p.id, id, fromSpace, toSpace);
   // Refresh in-memory runtime so subsequent kb_knowledge / kb_search_knowledge sees it

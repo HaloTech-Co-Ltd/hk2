@@ -32,9 +32,13 @@ import { fileURLToPath } from 'node:url';
 import { buildRequestGraph } from '../lib/agent/graph.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const INTERACTIVE = path.join(here, '..', 'src', 'commands', 'interactive.js');
+// The turn pipeline moved out of interactive.js (M2 extraction): runTurn
+// lives in turn.js, learnNewKnowledge in turn_support.js. The assertions
+// themselves are unchanged — the bodies were moved verbatim.
+const TURN = path.join(here, '..', 'src', 'commands', 'turn.js');
+const TURN_SUPPORT = path.join(here, '..', 'src', 'commands', 'turn_support.js');
 
-/* ── P0: source-order contract inside runAgentTurn ─────────────────────
+/* ── P0: source-order contract inside runTurn ─────────────────────
  *
  * The reset of session.kbConflicts must come BEFORE both assignments that
  * populate it from graph.conflicts (pass-1 and pass-2), and the end-of-turn
@@ -42,8 +46,8 @@ const INTERACTIVE = path.join(here, '..', 'src', 'commands', 'interactive.js');
  * a reset between assignment and consumption, this test fails immediately.
  */
 function runAgentTurnBody() {
-  const src = fs.readFileSync(INTERACTIVE, 'utf8');
-  const start = src.indexOf('async function runAgentTurn(');
+  const src = fs.readFileSync(TURN, 'utf8');
+  const start = src.indexOf('async function runTurn(');
   assert.ok(start >= 0, 'runAgentTurn found');
   // End at the next top-level function after runAgentTurn.
   const rest = src.slice(start + 10);
@@ -147,7 +151,7 @@ test('P1: un-stamped conflicting Eden entry still suppressed normally (no behavi
 
 /* ── P2: [kb learn] NEW Holy proposal offers y/N/E ───────────────────── */
 function learnSource() {
-  return fs.readFileSync(INTERACTIVE, 'utf8');
+  return fs.readFileSync(TURN_SUPPORT, 'utf8');
 }
 
 test('P2: learnNewKnowledge offers the E option for NEW Holy proposals', () => {
