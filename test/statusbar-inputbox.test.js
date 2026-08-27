@@ -259,6 +259,62 @@ test('inputBoxDockColumn: clamped to a runaway readline cursor', () => {
   assert.equal(inputBoxDockColumn(session), 18 + 2 + 1, 'cursor clamped to line length');
 });
 
+test('consumeNext release re-anchors in the SAME assignment (menu -> box handoff, no poll gap)', () => {
+  // Regression (v1.1.100): the consumeNext setter used to call
+  // reanchorAfterMenu() BEFORE clearing consumeNextCb, so parkSeq() ->
+  // inputBoxDockColumn() -> session.consumeNext (the getter) still saw the
+  // armed menu, returned null, and the re-anchor silently no-opped. The DECSC
+  // slot then stayed stale until the next status-bar poll (<=200ms later),
+  // making the very next routed write — a follow-up menu prompt like
+  // "  Your approach: " after "Choose [1-N]: 3", or promptChoice's
+  // "Please enter a number 1-N" retry — restore to a pre-menu position and
+  // render on top of the just-echoed answer. The fix flips the state FIRST,
+  // then re-anchors; this test locks the integration wiring (a real StatusBar
+  // wired to the session) so the release path emits the re-anchor bytes.
+  const session = createSession();
+  session.agentTurnActive = true;
+  session.inputEchoOn = true;
+  session.rl = { line: '', cursor: 0 };
+  const writes = [];
+  // Minimal real StatusBar wired exactly like interactive() does.
+  Object.defineProperty(process.stdout, 'rows', { value: 24, configurable: true });
+  Object.defineProperty(process.stderr, 'rows', { value: 24, configurable: true });
+  const bar = new StatusBar({ isTTY: true, columns: 80, write: (s) => { writes.push(s); } }, {
+    formatter: () => 'STATUS',
+    planRenderer: () => [],
+    inputRenderer: () => formatInputBoxLine(session),
+  });
+  bar._started = true;
+  bar.setInputCursorFn(() => inputBoxDockColumn(session));
+  session.statusBar = bar;
+  bar.update(); // input row rendered; geometry cached; dock not yet armed
+  writes.length = 0;
+
+  // Arm a menu (null -> cb): the box was docked by update(), so arming
+  // hands the cursor back to the workspace — exactly one plain DECRC.
+  session.consumeNext = () => {};
+  assert.equal(writes.join(''), '\x1b8', 'arming while docked emits the undock DECRC');
+  writes.length = 0;
+
+  // Release (cb -> null) IN THE SAME ASSIGNMENT must re-anchor: adopt the
+  // current cursor as the new workspace slot, then re-dock into the box.
+  session.consumeNext = null;
+  const w = writes.join('');
+  assert.ok(w.startsWith('\x1b7'), 'release saves the post-menu workspace slot (DECSC) first');
+  assert.ok(/\x1b\[23;19H$/.test(w), 'release re-parks the real cursor right after the label (col 19 = labelW+1)');
+  assert.ok(bar._docked, 'bar back in the docked state');
+});
+
+test('consumeNext release does not double-anchor when the box is off', () => {
+  // The same release path with no StatusBar wired: pure no-op, no throw.
+  const session = createSession();
+  session.agentTurnActive = true;
+  session.rl = { line: '', cursor: 0 };
+  session.consumeNext = () => {};
+  session.consumeNext = null;
+  assert.equal(session.consumeNext, null);
+});
+
 /* ---------- real-cursor docking: formatInputBoxLine caret placement ---------- */
 
 test('formatInputBoxLine: caret sits AT the readline cursor, not always at the end', () => {

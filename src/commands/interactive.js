@@ -243,9 +243,22 @@ export function createSession(pinnedProjectId = null) {
       // behaviour. Releasing (cb -> null, after the menu's final Enter echo)
       // adopts wherever the cursor now sits as the NEW continuation slot and
       // re-docks. Both are self-gating no-ops when the box is off.
+      // ORDER MATTERS: undock runs BEFORE the flip (it is gated on the _docked
+      // flag only and never consults the dock column), but reanchor MUST run
+      // AFTER consumeNextCb is cleared — parkSeq() asks
+      // inputBoxDockColumn(), which reads session.consumeNext through this
+      // very getter; called pre-flip it still saw the armed menu, got null
+      // back, and silently no-opped, leaving the DECSC slot stale until the
+      // next status-bar poll. A stale slot made the very next routed write
+      // (a follow-up menu prompt like "  Your approach: " after a plan-menu
+      // choice, or promptChoice's invalid-input retry "Please enter a number
+      // 1-N") restore to a pre-menu position and render on top of the
+      // just-echoed answer. Flipping first makes the release re-anchor in the
+      // same assignment, so the slot always tracks the end of the echo.
+      const releasing = !cb && !!consumeNextCb;
       if (cb && !consumeNextCb) base.statusBar?.undockInputCursor?.();
-      if (!cb && consumeNextCb) base.statusBar?.reanchorAfterMenu?.();
-      consumeNextCb = cb;
+      consumeNextCb = cb || null;
+      if (releasing) base.statusBar?.reanchorAfterMenu?.();
     },
   });
   return base;
@@ -1425,12 +1438,14 @@ export function inputBoxDockColumn(session) {
   // accounts for wide chars via visibleWidth() (approximation is fine — the
   // StatusBar clamps the column to the terminal width).
   const cur = Math.max(0, Math.min(session.rl?.cursor ?? line.length, line.length));
-  const before = style.visibleWidth(label) + style.visibleWidth(line.slice(0, cur)) + 1;
-  const after = style.visibleWidth(line.slice(cur));
-  // The caret glyph itself occupies the dock cell when the cursor is at the
-  // end of the draft (no text after it): park ON the caret. With text after
-  // the cursor the caret glyph sits there instead, so dock just before it.
-  return after === 0 ? before : before; // dock column = caret cell either way
+  // The dock cell is the caret glyph's cell in BOTH cases: with the cursor at
+  // the end of the draft the trailing caret occupies it; with the cursor
+  // mid-draft formatInputBoxLine splices the caret AT the edit point — the
+  // same column. Either way it is label width + visible width of the draft
+  // left of the cursor, +1 (a single expression; the earlier
+  // `after === 0 ? before : before` ternary was a dead branch — both arms
+  // returned the same value).
+  return style.visibleWidth(label) + style.visibleWidth(line.slice(0, cur)) + 1;
 }
 
 export function formatInputBoxLine(session) {
