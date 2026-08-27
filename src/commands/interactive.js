@@ -70,6 +70,7 @@ import {
 import { handleUserLine } from './turn.js';
 import {
   modelTagFor, promptFor, kbBrief, formatStatusLine, formatPlanProgressLines,
+  formatInputBoxLine,
 } from './status_format.js';
 import { runTurn } from './turn.js';
 import { makeReplUi } from './repl_ui.js';
@@ -87,7 +88,7 @@ export {
 export {
   modelTagFor, promptFor, kbBrief, formatPlanProgressLines, finalizePlanProgress,
   formatStatusLine, formatUsage, fmtTok, safeParseArgs, cardWidthFor, toolHeader,
-  digestLine, plainPlanLines,
+  digestLine, plainPlanLines, formatInputBoxLine,
 } from './status_format.js';
 export {
   envFlag, envPercent, estimateMessagesTokens, applyCompactTokenEstimate, execFileAsync,
@@ -185,6 +186,11 @@ export async function interactive(opts = {}) {
     // one line per step + a header, and the scroll region shrinks to make
     // room. Updated on every statusBar.update() (incl. the 500ms poll).
     planRenderer: () => formatPlanProgressLines(session),
+    // One-line mid-task instruction input box, rendered as the FIRST
+    // reserved row (above the plan panel, below the status line) while an
+    // agent turn runs. [] when idle — the bar then reserves nothing extra,
+    // matching the legacy layout exactly.
+    inputRenderer: () => formatInputBoxLine(session),
   });
   if (session.statusBar.isEnabled()) {
     // Clear the visible screen so the previous session's last lines don't
@@ -232,7 +238,13 @@ export async function interactive(opts = {}) {
     // the whole task finishes. Slash commands keep the legacy behavior.
     if (captureMidTaskInput(session, line)) {
       const n = session.userInputQueue.length;
+      // Break any pending spinner frame / partial line FIRST: the receipt
+      // must start on its own line, not glue onto `⠋ phase · 0.0s`.
+      session.progress?.breakLine();
       process.stderr.write(style.success(`${style.ICON.ok} queued #${n} ${style.dim('· delivered after the current action')}`) + '\n');
+      // The submitted line left the box: clear the reserved input row so it
+      // doesn't keep showing the just-queued text (receipt printed above).
+      session.statusBar?.refreshInputLine();
       return;
     }
     session.queue.push(line);
@@ -264,6 +276,56 @@ export async function interactive(opts = {}) {
   paste.onFlush = (text) => { void enqueue(text); };
   paste.start();
 
+  // ── Mid-task instruction input box: echo redirection ──────────────
+  // While an agent turn runs, the input box is the FIRST reserved StatusBar
+  // row. readline's native echo writes at the terminal cursor, where
+  // streaming agent output would immediately trample it — so suppress native
+  // echo and repaint just the input row on every keystroke. Node routes ALL
+  // readline drawing through rl._writeToOutput, a single choke point; with
+  // inputEchoOn false (idle turns, in-run menus via session.consumeNext,
+  // slash commands) the wrapper is fully transparent.
+  const rlOrigWriteToOutput = session.rl._writeToOutput
+    ? session.rl._writeToOutput.bind(session.rl)
+    : null;
+  if (rlOrigWriteToOutput) {
+    session.rl._writeToOutput = function echoRouter(s) {
+      // An in-run menu owns the input while session.consumeNext is armed:
+      // its prompt echo must land at the cursor exactly as before.
+      if (session.inputEchoOn && !session.consumeNext) return; // suppressed; box repaints itself
+      rlOrigWriteToOutput(s);
+    };
+  }
+  const refreshInputEcho = () => {
+    if (!session.inputEchoOn || session.consumeNext) return;
+    session.statusBar?.refreshInputLine();
+  };
+
+  // ── Mid-task instruction input box: lifecycle helpers ─────────────
+  const armInputBox = () => {
+    if (session.inputEchoOn) return;
+    // Only redirect echo when there is a real reserved row to echo into. With
+    // a non-TTY stderr (statusBar disabled — e.g. forceTty over pipes)
+    // suppression would silently eat all readline output with no box shown.
+    if (!session.statusBar?.isEnabled()) return;
+    session.inputEchoOn = true;
+    session.statusBar?.update(); // grow: input row appears above plan/status
+    refreshInputEcho();
+  };
+  const disarmInputBox = () => {
+    if (!session.inputEchoOn) return;
+    session.inputEchoOn = false;
+    if (session.rl && !session.rl.closed) {
+      // Clear the draft so the next idle prompt starts empty. The queued
+      // receipt was already printed by the 'line' handler; anything left was
+      // never submitted.
+      session.rl.line = '';
+      session.rl.cursor = 0;
+    }
+    session.statusBar?.update(); // shrink: input row released back to workspace
+  };
+  session.armInputBox = armInputBox;
+  session.disarmInputBox = disarmInputBox;
+
   // Heuristic fallback for terminals WITHOUT bracketed-paste support (older
   // emulators, some IDE consoles, multiplexers that strip the mode, non-TTY
   // piped input): coalesce a rapid burst of 'line' events into one message.
@@ -275,8 +337,20 @@ export async function interactive(opts = {}) {
   });
   session.ml = ml;
 
+  // Mid-task input box live refresh: every keystroke re-echoes the draft
+  // into the reserved input row. Registered once (emitKeypressEvents is
+  // idempotent) and cheap when the box is off.
+  readline.emitKeypressEvents(session.rl.input);
+  session.rl.input.on('keypress', () => { refreshInputEcho(); });
+
   if (isInteractive) session.rl.prompt();
   session.rl.on('line', (line) => {
+    // Mid-task input box: when the box is echoing, every completed line is
+    // cleared from the box (the queued-#n receipt prints in its place)
+    // before the normal capture path takes over.
+    if (session.inputEchoOn) {
+      if (session.rl) { session.rl.line = ''; session.rl.cursor = 0; }
+    }
     // If we're mid-paste, buffer the line and wait for paste-end. Pasted
     // content otherwise arrives as one 'line' event per line and each would
     // fire as a separate agent turn.

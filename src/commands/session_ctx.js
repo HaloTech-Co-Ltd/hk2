@@ -79,7 +79,7 @@ import { compactMessages, collectWorkingTreeDiff, estimateMessagesTokens, applyC
  * on first reload) or a project id for `--project=<...>` launches.
  */
 export function createSession(pinnedProjectId = null) {
-  return {
+  const base = {
     project: null,
     pinnedProjectId,
     // True when the pin came from an EXPLICIT --project/--project-id launch
@@ -177,7 +177,49 @@ export function createSession(pinnedProjectId = null) {
     // True while the agent turn is executing (armed at turn start, disarmed in
     // its finally). enqueue() consults this to decide whether to capture.
     agentTurnActive: false,
+    // ── Mid-task instruction input box (ported from main ad4765d) ──
+    // While agentTurnActive is true the StatusBar reserves one line above the
+    // plan panel / status bar as a persistent input box; the user's readline
+    // buffer is echoed THERE (native echo would be trampled by streaming
+    // output). inputEchoOn gates the redirect; slash commands and in-run
+    // menus flip it off so their own echo lands at the cursor.
+    inputEchoOn: false,
+    // Arm/disarm callbacks, installed by the REPL front-end once the status
+    // bar + readline exist; optional-chained everywhere so headless sessions
+    // and the TUI (which has its own input box) are unaffected.
+    armInputBox: null,
+    disarmInputBox: null,
+    // The CURRENT turn's ProgressIndicator, published by runTurn so the
+    // enqueue() receipt writer can breakLine() before printing — without it
+    // the receipt glues onto a spinner frame. Null when idle.
+    progress: null,
   };
+
+  // `consumeNext` accessor: when an in-run menu seizes the input WHILE the
+  // mid-task input box is echoing, any unsubmitted readline draft must not
+  // prepend itself to the menu answer. On the null -> cb transition the
+  // draft is salvaged into the mid-task queue (exactly where it would have
+  // gone had the user pressed Enter) and the buffer cleared. With the box
+  // off the setter is a plain assignment — byte-identical to before.
+  let consumeNextCb = null;
+  Object.defineProperty(base, 'consumeNext', {
+    configurable: true,
+    enumerable: true,
+    get: () => consumeNextCb,
+    set: (cb) => {
+      if (cb && !consumeNextCb && base.inputEchoOn && base.rl) {
+        const draft = String(base.rl.line || '');
+        if (draft.trim()) {
+          if (!Array.isArray(base.userInputQueue)) base.userInputQueue = [];
+          base.userInputQueue.push(draft);
+        }
+        base.rl.line = '';
+        base.rl.cursor = 0;
+      }
+      consumeNextCb = cb;
+    },
+  });
+  return base;
 }
 
 /* ------------------------------------------------------------------ */

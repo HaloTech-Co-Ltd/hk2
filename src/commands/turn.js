@@ -355,6 +355,10 @@ function stripDanglingToolUse(messages) {
 }
 
 export async function runTurn(userText, session, ctx, ui, opts = {}) {
+  // Publish the turn's ProgressIndicator so out-of-turn-scope writers (the
+  // REPL enqueue() mid-task receipt) can breakLine() before printing onto a
+  // spinner frame. Front-end shims (TUI) make this a harmless reference.
+  session.progress = ui.progress;
   session.turnStart = Date.now();
   // Track whether a plan was already active when this turn started, so the
   // end-of-turn Code Review can run on the turn that COMPLETES a multi-turn
@@ -372,6 +376,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // sure no stale queue survives from an earlier aborted turn.
   session.agentTurnActive = true;
   session.userInputQueue = [];
+  // Mid-task instruction input box (REPL): appear as soon as the turn starts
+  // and stay across in-run plan menus; every exit path disarms. No-op for
+  // the TUI (its own input box is always present) and headless sessions.
+  session.armInputBox?.();
 
   // ---- Auto context compaction (safe turn boundary) ------------------------
   // Runs before any rewrite/retrieval/agent work so it never interrupts an
@@ -676,6 +684,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
           // disarm here explicitly — leaving agentTurnActive armed would make
           // enqueue() capture (and never deliver) every subsequent line.
           disarmMidTaskCapture(session);
+          // Input box follows the same early-exit: disappear now, not on the
+          // next turn's arm.
+          session.disarmInputBox?.();
           ui.cancelled();
           session.phase = 'idle';
           session.turnStart = 0;
@@ -1431,6 +1442,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // become fresh user turns right after this task, so nothing typed by the
     // user is ever dropped.
     const leftover = disarmMidTaskCapture(session);
+    // Input box: the turn is over — disappears now (success / error /
+    // interrupt alike). Disarm flips echo routing off before shrinking the
+    // reserved block, so the post-turn prompt redraw lands at the cursor.
+    session.disarmInputBox?.();
     if (leftover.length > 0) {
       ui.notice(style.dim(`(queued instruction${leftover.length > 1 ? 's' : ''} passed to a new turn — the task finished before they could be delivered mid-run)`));
     }

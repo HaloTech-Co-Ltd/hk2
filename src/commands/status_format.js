@@ -159,6 +159,19 @@ export function finalizePlanProgress(session) {
  * call's numbers — a multi-step task with N tool-call rounds shows the sum
  * across all N calls.
  */
+/**
+ * The mid-task instruction input box line (REPL StatusBar inputRenderer):
+ * shown as the FIRST reserved row while an agent turn runs. [] when idle —
+ * the bar then reserves nothing extra, matching the legacy layout.
+ */
+export function formatInputBoxLine(session) {
+  if (!session || !session.agentTurnActive) return [];
+  const label = style.accent('»') + style.dim(' add instruction ');
+  const draft = String(session.rl?.line ?? '');
+  const caret = style.accent('▏'); // caret marking the in-progress draft
+  return [label + draft + caret];
+}
+
 export function formatStatusLine(session) {
   const projTag = session.project ? style.accent(session.project.name) : style.dim('no-project');
   const kbTag = kbBrief(session);
