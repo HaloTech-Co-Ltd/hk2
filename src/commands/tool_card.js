@@ -139,7 +139,14 @@ export function fullResultLines(result, { width = 80, maxLines = 40 } = {}) {
   const out = [];
   let capped = false;
   for (const src of String(text).split('\n')) {
-    if (src === '') { out.push(''); continue; }
+    // Blank rows count against the cap too: without this check a result of
+    // 60 blank lines bypassed the limit entirely (79 rows under maxLines 40)
+    // and flooded the transcript with whitespace.
+    if (src === '') {
+      if (out.length >= maxLines) { capped = true; break; }
+      out.push('');
+      continue;
+    }
     let line = '';
     let lineW = 0;
     for (const g of style.graphemes(src)) {

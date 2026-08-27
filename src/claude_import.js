@@ -79,17 +79,19 @@ export function claudeSettingsPath(homeDir) {
  * mis-guessed entry with: /model set claude/<id> --context-window=<N>.
  */
 const DEFAULT_CONTEXT_WINDOW = 200000;
-const KNOWN_CONTEXT_WINDOWS = [
-  // BigModel GLM 5.x: 1M context (user-confirmed on the anthropic-
-  // compatible endpoint).
-  { match: /glm-5/i, window: 1000000 },
-];
+// EXACT ids only (review round 5): a broad prefix match (/glm-5/) would
+// also capture future/smaller variants (a 128k glm-5.x-flash would be
+// inflated 8x, delaying auto-compact until the provider hard-fails).
+// Unlisted ids keep the conservative default; fix any entry with
+// /model set claude/<id> --context-window=<N>.
+const KNOWN_CONTEXT_WINDOWS = new Map([
+  // BigModel GLM-5.3: 1M context (user-confirmed on the anthropic-compatible
+  // endpoint).
+  ['glm-5.3', 1000000],
+]);
 
-function importedContextWindow(id) {
-  for (const k of KNOWN_CONTEXT_WINDOWS) {
-    if (k.match.test(id)) return k.window;
-  }
-  return DEFAULT_CONTEXT_WINDOW;
+export function importedContextWindow(id) {
+  return KNOWN_CONTEXT_WINDOWS.get(id) ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 export async function autoImportClaudeModel({ homeDir } = {}) {

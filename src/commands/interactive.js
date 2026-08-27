@@ -320,10 +320,16 @@ export async function interactive(opts = {}) {
     // Tell the user how to get this conversation back before the process
     // exits — the transcript survives on disk and `hk2 --resume <id>` (or a
     // bare `hk2 --resume` for the project's latest) reopens it with full
-    // context.
-    const sid = session.transcript?.sessionId;
-    console.error(sid
-      ? `Goodbye (using \`hk2 --resume ${sid}\` to resume the session)`
+    // context. Same lifecycle rule as the TUI exit: a boot that never got a
+    // message DELETES its empty transcript and the hint falls back to the
+    // newest session with actual content (resumeHintAfterExit).
+    let hint = null;
+    try {
+      const { resumeHintAfterExit } = await import('../../lib/agent/transcript.js');
+      hint = await resumeHintAfterExit(session.transcript);
+    } catch { /* best-effort hint */ }
+    console.error(hint
+      ? `Goodbye (using \`hk2 --resume ${hint}\` to resume the session)`
       : 'Goodbye');
   }
   process.exit(0);
