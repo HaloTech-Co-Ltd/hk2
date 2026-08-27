@@ -910,8 +910,14 @@ export function buildCtx(session) {
         console.error(`(nothing to compact yet)`);
         return;
       }
+      // Capture the PRE-compact char estimate for calibration BEFORE swapping
+      // in the compacted list, then refresh token accounting + the status bar
+      // so the bar reflects the compacted context instead of freezing on the
+      // pre-compact peak (see applyCompactTokenEstimate).
+      const preEstimate = estimateMessagesTokens(session.messages);
       session.messages = out.messages;
-      await session.transcript?.logMeta('compact', { dropped: out.dropped, kept: out.kept });
+      applyCompactTokenEstimate(session, preEstimate);
+      await session.transcript?.logMeta('compact', { dropped: out.dropped, kept: out.kept, estTokens: session.lastContextTokens });
       console.error(`Compacted: dropped ${out.dropped} messages, kept ${out.kept}.`);
     },
     /**
@@ -3486,7 +3492,7 @@ async function compactMessages(session) {
  * using the snapshot captured at the previous turn's end. The tolerance comes
  * from only checking at this safe boundary — never mid-loop.
  */
-async function maybeAutoCompact(session, ctx) {
+export async function maybeAutoCompact(session, ctx) {
   if (!envFlag('HK2_ENABLE_AUTOCOMPACT', 0)) return;
   const windowTokens = session.modelCfg?.maxChars || 0;
   if (!windowTokens) return;
@@ -3496,11 +3502,15 @@ async function maybeAutoCompact(session, ctx) {
   const current = session.lastContextTokens || estimateMessagesTokens(session.messages);
   if (current < threshold) return;
 
+  const preEstimate = estimateMessagesTokens(session.messages);
   const out = await compactMessages(session);
   if (!out) return;
 
   session.messages = out.messages;
-  session.lastContextTokens = estimateMessagesTokens(session.messages);
+  // Calibrated post-compact estimate (vs the raw chars/4 guess): keeps the
+  // status bar truthful after compaction and keeps the NEXT threshold check
+  // on the same scale as the real measurements it is compared against.
+  applyCompactTokenEstimate(session, preEstimate);
   await session.transcript?.logMeta('auto-compact', {
     beforeTokens: current,
     afterTokens: session.lastContextTokens,
@@ -3539,7 +3549,7 @@ function envPercent(name, defaultValue = 90) {
  * per token). Used as the fallback when the provider hasn't reported a real
  * usage value for the last call.
  */
-function estimateMessagesTokens(messages) {
+export function estimateMessagesTokens(messages) {
   let chars = 0;
   for (const m of messages || []) {
     if (typeof m.content === 'string') chars += m.content.length;
@@ -3549,6 +3559,46 @@ function estimateMessagesTokens(messages) {
     }
   }
   return estimateTokensFromChars(chars);
+}
+
+/**
+ * Refresh token accounting after a compaction replaced session.messages, so
+ * the status bar reflects the COMPACTED context instead of freezing on the
+ * pre-compact peak. No provider usage exists for the compacted list yet (no
+ * call has been made against it), so the value is an ESTIMATE — calibrated
+ * against the last real measurement to inherit the active model's tokenizer
+ * characteristics (a raw chars/4 estimate can be 2-4x off for CJK-heavy text,
+ * which is exactly the regime where compaction tends to fire):
+ *
+ *   factor = pre-compact real peak input / pre-compact char estimate
+ *   est    = post-compact char estimate × clamp(factor, 0.25, 4)
+ *
+ * The clamp keeps a degenerate calibration (tiny pre-estimate, or a real peak
+ * inflated by a one-off huge tool result) from producing an absurd number.
+ * The estimate lands in callIn/loopPeakIn (what formatUsage displays) and in
+ * lastContextTokens (what the next auto-compact threshold check reads). The
+ * next real usage event overwrites it via the normal max() semantics — every
+ * stream path (runAgentTurn's turn-start reset, ctx.streamLLM's reset)
+ * zeroes callIn/loopPeakIn before the first usage event can arrive, so the
+ * estimate can never mask a real measurement.
+ */
+export function applyCompactTokenEstimate(session, preEstimate) {
+  const real = Math.max(
+    session.tokens?.loopPeakIn || 0,
+    session.tokens?.callIn || 0,
+    session.lastContextTokens || 0
+  );
+  const postEstimate = estimateMessagesTokens(session.messages);
+  let est = postEstimate;
+  if (real > 0 && preEstimate > 0) {
+    const factor = Math.max(0.25, Math.min(4, real / preEstimate));
+    est = Math.round(postEstimate * factor);
+  }
+  session.tokens.callIn = est;
+  session.tokens.loopPeakIn = est;
+  session.lastContextTokens = est;
+  session.statusBar?.update();
+  return est;
 }
 
 // Note: bash search detection lives in lib/agent/tools.js's KbFirstGuard
