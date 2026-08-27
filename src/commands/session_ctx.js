@@ -68,7 +68,7 @@ import { exists } from '../../lib/util/fs_atomic.js';
 import { toolCardToken } from '../../lib/agent/tool_theme.js';
 import * as style from '../../lib/agent/style.js';
 import { safeParseArgs, toolHeader, formatPlanProgressLines, digestLine, plainPlanLines } from './status_format.js';
-import { compactMessages, collectWorkingTreeDiff } from './turn_support.js';
+import { compactMessages, collectWorkingTreeDiff, estimateMessagesTokens, applyCompactTokenEstimate } from './turn_support.js';
 
 /**
  * Build a bare session object (no readline / status bar). Shared by
@@ -766,13 +766,20 @@ export function buildBaseCtx(session, io) {
       return info;
     },
     compactConversation: async () => {
+      const preEstimate = estimateMessagesTokens(session.messages);
       const out = await compactMessages(session);
       if (out == null) {
         console.error(`(nothing to compact yet)`);
         return;
       }
       session.messages = out.messages;
-      await session.transcript?.logMeta('compact', { dropped: out.dropped, kept: out.kept });
+      // PRE-compact estimate captured above (before the swap; compactMessages
+      // builds a fresh array and never mutates session.messages). Calibrate
+      // the post-compact estimate against it (see applyCompactTokenEstimate
+      // in turn_support.js) so the bar and the next auto-compact check
+      // reflect the compacted context instead of freezing on the old peak.
+      applyCompactTokenEstimate(session, preEstimate);
+      await session.transcript?.logMeta('compact', { dropped: out.dropped, kept: out.kept, estTokens: session.lastContextTokens });
       console.error(`Compacted: dropped ${out.dropped} messages, kept ${out.kept}.`);
     },
     /**

@@ -82,6 +82,37 @@ export function envPercent(name, defaultValue = 90) {
  * per token). Used as the fallback when the provider hasn't reported a real
  * usage value for the last call.
  */
+/**
+ * Calibrated post-compaction context estimate (ported from main's
+ * interactive.js during the merge): a raw chars-per-4 guess freezes the
+ * status bar at the pre-compact peak and skews the next auto-compact
+ * threshold check. Calibrate against the best REAL measurement this
+ * session has seen (loopPeakIn / callIn / lastContextTokens — the last
+ * matters because maybeAutoCompact runs at the TOP of the next turn,
+ * after loopPeakIn was reset but before its snapshot reads), with the
+ * factor clamped so CJK-heavy text or a one-off huge tool result cannot
+ * degenerate the calibration.
+ * @returns {number} the estimate (also landed in the session's token slots)
+ */
+export function applyCompactTokenEstimate(session, preEstimate) {
+  const real = Math.max(
+    session.tokens?.loopPeakIn || 0,
+    session.tokens?.callIn || 0,
+    session.lastContextTokens || 0
+  );
+  const postEstimate = estimateMessagesTokens(session.messages);
+  let est = postEstimate;
+  if (real > 0 && preEstimate > 0) {
+    const factor = Math.max(0.25, Math.min(4, real / preEstimate));
+    est = Math.round(postEstimate * factor);
+  }
+  session.tokens.callIn = est;
+  session.tokens.loopPeakIn = est;
+  session.lastContextTokens = est;
+  session.statusBar?.update();
+  return est;
+}
+
 export function estimateMessagesTokens(messages) {
   let chars = 0;
   for (const m of messages || []) {
@@ -368,11 +399,15 @@ export async function maybeAutoCompact(session, ctx) {
   const current = session.lastContextTokens || estimateMessagesTokens(session.messages);
   if (current < threshold) return;
 
+  const preEstimate = estimateMessagesTokens(session.messages);
   const out = await compactMessages(session);
   if (!out) return;
 
   session.messages = out.messages;
-  session.lastContextTokens = estimateMessagesTokens(session.messages);
+  // Calibrated post-compact estimate (vs the raw chars/4 guess): keeps the
+  // status bar truthful after compaction and keeps the NEXT threshold check
+  // on the same scale as the real measurements it is compared against.
+  applyCompactTokenEstimate(session, preEstimate);
   await session.transcript?.logMeta('auto-compact', {
     beforeTokens: current,
     afterTokens: session.lastContextTokens,

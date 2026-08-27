@@ -218,17 +218,28 @@ test('LLMClient.stream default path unchanged: config.timeout still arms the abo
     timeout: 50,
   });
   const { timers, started, restore } = instrumentStreamingFetch();
+  // Retries disabled for this test: a timeout is now classified retryable by
+  // lib/llm/retries.js (transient), so with the default budget of 10 the
+  // client would re-issue the request and re-arm the timer over and over.
+  // The DEFAULT-timeout contract under test is only about the adapter arming
+  // the timer; retry behavior has its own suite (test/llm_retry.test.js).
+  process.env.HK2_LLMAPI_NUMOFRETRIES = '0';
   const pump = (async () => {
     for await (const _evt of client.stream(MSGS)) { /* drain */ }
   })();
   try {
     await withTimeout(started, 2000, 'fetch never fired');
     // No user abort here: the armed 50ms timeout timer must fire BY ITSELF,
-    // abort the hanging request, and end the stream — proving the default
-    // timeout path is still live (?? only forwards EXPLICIT values).
-    await withTimeout(pump, 2000, 'the config.timeout timer did not abort the stream');
+    // abort the hanging request, and fail the call (previously the aborted
+    // body read was swallowed and the stream ended cleanly — that silent
+    // truncation is now surfaced as an error the retry layer can handle).
+    await assert.rejects(
+      withTimeout(pump, 2000, 'the config.timeout timer did not fail the stream'),
+      /timeout/,
+    );
     assert.ok(timers.includes(50), `expected the adapter to arm config.timeout=50 (saw: ${JSON.stringify(timers)})`);
   } finally {
+    delete process.env.HK2_LLMAPI_NUMOFRETRIES;
     restore();
   }
 });

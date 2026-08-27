@@ -1193,12 +1193,12 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         session.loopFallbackCalls.push({ call, result: payload, seq });
       }
     },
-    // Transient network retry of the model request (fetchWithRetry): one
-    // dim transcript line per attempt so a 100k-token turn doesn't look
-    // frozen during the backoff window.
-    onRetry: (attempt, delayMs, _err, attempts) => {
-      // attempt is the retry INDEX (1 = second try); show it as attempt 2/3.
-      ui.notice(style.dim(`retrying model request · attempt ${attempt + 1}/${attempts} · ${(delayMs / 1000).toFixed(1)}s`));
+    // Transient LLM failure: the client restarts the call from scratch
+    // (see lib/llm/retries.js). runLoop has already voided this attempt's
+    // partial output; the ui drops the orphaned partial render and tells the
+    // user why the stream visibly restarts.
+    onRetry: (evt) => {
+      ui.retryNotice(evt);
     },
   };
 

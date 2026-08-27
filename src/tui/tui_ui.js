@@ -242,6 +242,21 @@ export function makeTuiUi(frame, session, modalHost, hooks = {}) {
     noticeLines(lines) {
       for (const ln of lines || []) frame.writeLine(ln);
     },
+    /**
+     * Transient LLM failure — the client restarts the call from scratch
+     * (see lib/llm/retries.js). Flush what the failed attempt streamed,
+     * one dim notice line, then FRESH renderers: the retried attempt
+     * re-generates the whole reply.
+     */
+    retryNotice(evt) {
+      stream.flushReasoning();
+      stream.flushMarkdown();
+      frame.writeLine(style.muted(
+        `[llm retry ${evt.attempt}/${evt.maxRetries} in ${Math.round((evt.delayMs || 0) / 1000)}s: ${evt.error}]`
+      ));
+      stream.reset();
+      setPhaseLocal('waiting for model');
+    },
     notice(text) {
       frame.writeLine(text);
     },

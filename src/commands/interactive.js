@@ -90,8 +90,8 @@ export {
   digestLine, plainPlanLines,
 } from './status_format.js';
 export {
-  envFlag, envPercent, estimateMessagesTokens, execFileAsync, summarizeConversation,
-  compactMessages, collectWorkingTreeDiff, maybeAutoCompact,
+  envFlag, envPercent, estimateMessagesTokens, applyCompactTokenEstimate, execFileAsync,
+  summarizeConversation, compactMessages, collectWorkingTreeDiff, maybeAutoCompact,
   maybeOfferKbUpdate, syncConflictingEden, runCodeReview, learnNewKnowledge,
 } from './turn_support.js';
 export { runTurn } from './turn.js';

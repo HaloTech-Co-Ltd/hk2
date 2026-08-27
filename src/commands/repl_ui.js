@@ -217,6 +217,22 @@ export function makeReplUi(session) {
       for (const ln of lines || []) process.stderr.write(ln + '\n');
     },
     /** Single-line stderr notice + '\n'. */
+    /**
+     * Transient LLM failure — the client restarts the call from scratch
+     * (see lib/llm/retries.js). Byte-for-byte the sequence main's
+     * interactive.js ran: flush both renderers, print the bracketed retry
+     * notice, install FRESH renderers (the retried attempt re-generates the
+     * whole reply), and resume the spinner.
+     */
+    retryNotice(evt) {
+      stream.flush();
+      process.stdout.write('\n' + style.muted(
+        `[llm retry ${evt.attempt}/${evt.maxRetries} in ${Math.round((evt.delayMs || 0) / 1000)}s: ${evt.error}]`
+      ) + '\n');
+      stream.reset();
+      progress.resume('waiting for model');
+      session.statusBar?.update();
+    },
     notice(text) {
       process.stderr.write(text + '\n');
     },

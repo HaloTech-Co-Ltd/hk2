@@ -651,7 +651,7 @@ reject `glm-4.7[1m]`.
 |---|---|---|
 | `HK2_HOME` | Override `~/.hk2` location | `~/.hk2` |
 | `HK2_AUTOIMPORT_CLAUDE` | When 0, disables the first-run model import from Claude Code's `~/.claude/settings.json` (TUI only) | on |
-| `HK2_LLM_RETRY_UNKNOWN_POST` | LLM requests with an UNKNOWN outcome are NOT retried by default, to avoid duplicate requests and duplicate billing: connection reset / timeout mid-flight, and HTTP 502/503/504 (a reverse proxy can return these AFTER the upstream already ran the inference). Set `1` to opt in (Retry-After is honored). Connection-establishment failures and HTTP 429 (refused before execution) are outcome-safe and always retried. | `0` |
+| `HK2_LLM_RETRY_UNKNOWN_POST` | LLM requests with an UNKNOWN outcome are NOT retried by default, to avoid duplicate requests and duplicate billing: mid-flight transport failures (reset / timeout after the request was sent), and HTTP 500/502/503/504 (a reverse proxy can return these AFTER the upstream already ran the inference). Set `1` to opt in. Connection-establishment failures and HTTP 408/429 (refused before execution) are outcome-safe and always retried, bounded by `HK2_LLMAPI_NUMOFRETRIES`. | `0` |
 | `HK2_UI` | Interactive front-end: `tui` selects the Claude Code-style inline TUI, `repl` (default) the classic line REPL. The `--tui` / `--repl` flags take precedence. | `repl` |
 | `HK2_KB_DIR` | Override KB root | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |
@@ -672,6 +672,7 @@ reject `glm-4.7[1m]`.
 | `HK2_KB_CHECKPOINT_INTERVAL` | Save `/kb init` checkpoint every N files | `100` |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning call timeout in ms. Slow providers (reasoning models on large file maps) can exceed the default 300s. Per-run override: `--plan-timeout-ms=N`. | `300000` |
 | `HK2_LLMAPI_TIMEOUT_MS` | Default timeout (ms) for every LLM API request (chat completions / messages, streaming and non-streaming). Resolution precedence: per-call `opts.timeoutMs` > per-model `config.timeout` (always stamped at resolve time from this same variable) > this env default. Explicit `0` means NO timeout (no abort timer armed — the plan-review / code-review phases rely on this). Unset / invalid / negative values fall back to the default. | `3600000` (3600s) |
+| `HK2_LLMAPI_NUMOFRETRIES` | Max consecutive retries when an LLM API call fails transiently (network errors like `fetch failed`, HTTP 408/429/5xx, request timeouts), so a momentary network hiccup or provider blip no longer aborts the whole agent task. A failed call is retried with exponential backoff (1s → 30s cap) up to N times after the first failure (N+1 total attempts); a `{type:'retry'}` event is emitted between attempts so consumers reset partial output. Deterministic client errors (other 4xx) and user aborts (ESC) are NOT retried. Explicit `0` disables retries (exactly one attempt); unset / invalid / negative fall back to the default. | `10` |
 | `HK2_INDEX_PARALLEL` | Parallelism of the KB index parse pool (`/kb init` / `/kb update`). `0` or unset = auto (host CPU count); a positive integer pins the width. | `0` |
 | `HK2_DEBUG` | Print error stacks | - |
 | `HK2_NO_COLOR` | When 1, disable ANSI colors (also honors the standard `NO_COLOR` env var). | - |
