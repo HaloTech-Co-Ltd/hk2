@@ -7,6 +7,7 @@
  * Run:  node --test test/statusbar-plan.test.js
  *----------------------------------------------------------------------*/
 
+import './_tty_env.js';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { StatusBar } from '../lib/agent/statusbar.js';
