@@ -398,3 +398,70 @@ test('openai adapter: consecutive plain user turns pass through untouched', asyn
   assert.equal(body.messages.length, 2);
   assert.equal(body.messages[1].content.includes('and then deploy'), true);
 });
+
+/* ── 6. queued receipt must start on its own line ─────────────────────── */
+/*
+ * Regression: the `✓ queued #N` receipt used to glue onto a pending spinner
+ * frame (`⠋ waiting for model · 0.0s✓ queued #1 ...`) because enqueue()
+ * printed it at the cursor without breaking the spinner's unterminated line.
+ * The fix routes through session.progress.breakLine() — the same pattern the
+ * phase warn sinks use (see progress-indicator-breakline). These tests pin
+ * the visible output shape: receipt on its own line, no blank lines added,
+ * spinner re-claims the next line afterwards.
+ */
+
+import { ProgressIndicator } from '../src/progress.js';
+
+class TtyRecordingStream {
+  constructor() { this.chunks = []; this.isTTY = true; }
+  write(chunk) { this.chunks.push(String(chunk)); }
+}
+
+function visible(s) {
+  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\r/g, '');
+}
+
+test('queued receipt breaks a pending spinner frame and starts on its own line', () => {
+  const stream = new TtyRecordingStream();
+  const progress = new ProgressIndicator(stream);
+  // Simulate a running turn: spinner frame active (midLine=true), receipt writer
+  // at hand — exactly the state enqueue() sees when the user submits mid-run.
+  const session = createSession();
+  session.agentTurnActive = true;
+  session.progress = progress;
+  progress.start('waiting for model');
+
+  // The enqueue() receipt path, verbatim: breakLine before writing.
+  captureMidTaskInput(session, 'temporary instruction');
+  session.progress?.breakLine();
+  stream.write(`\u2713 queued #${session.userInputQueue.length} \u00b7 delivered after the current action\n`);
+  progress._render();          // spinner re-claims the line after the receipt
+  progress.done();
+
+  const out = visible(stream.chunks.join(''));
+  // Not glued onto the spinner timing suffix — glued means NO newline between
+  // them (the exact symptom: `0.0s✓ queued`). The legal form is `0.0s\n✓ queued`.
+  assert.ok(!/0\.0s✓ queued/.test(out), 'receipt must not be glued onto the spinner frame');
+  // The receipt occupies its own line.
+  assert.ok(/^\u2713 queued #1 /m.test(out), 'receipt starts at the beginning of its own line');
+  // No blank-line gaps introduced.
+  assert.ok(!/\n\n/.test(out), 'no blank lines introduced');
+});
+
+test('queued receipt is a no-op break when no spinner frame is pending', () => {
+  const stream = new TtyRecordingStream();
+  const progress = new ProgressIndicator(stream);
+  const session = createSession();
+  session.agentTurnActive = true;
+  session.progress = progress;
+  // No phase active (e.g. turn idling between LLM calls): breakLine is a no-op
+  // and the receipt still lands on a fresh line without extra blanks.
+  captureMidTaskInput(session, 'instruction');
+  const before = stream.chunks.length;
+  session.progress?.breakLine();
+  assert.equal(stream.chunks.length, before, 'breakLine wrote nothing (no pending frame)');
+  stream.write(`\u2713 queued #${session.userInputQueue.length}\n`);
+  const out = visible(stream.chunks.join(''));
+  assert.ok(/^\u2713 queued #1$/m.test(out));
+  assert.ok(!/\n\n/.test(out), 'no blank lines introduced');
+});

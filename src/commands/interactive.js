@@ -96,7 +96,7 @@ import { VERSION } from '../version.js';
  * on first reload) or a project id for `--project=<...>` launches.
  */
 export function createSession(pinnedProjectId = null) {
-  return {
+  const base = {
     project: null,
     pinnedProjectId,
     kbMeta: null,
@@ -190,7 +190,56 @@ export function createSession(pinnedProjectId = null) {
     // True while runAgentTurn is executing (armed at turn start, disarmed in
     // its finally). enqueue() consults this to decide whether to capture.
     agentTurnActive: false,
+    // ── Mid-task instruction input box ──
+    // While agentTurnActive is true the StatusBar reserves one line above
+    // the plan panel / status bar as a persistent input box. The user's
+    // readline buffer (rl.line) is echoed THERE (not at the cursor) because
+    // native echo would be trampled by streaming agent output. `inputEchoOn`
+    // gates the redirect: false during normal turns (idle prompt), true only
+    // while the box should receive typing. Slash commands and in-run menus
+    // (session.consumeNext) temporarily flip it off so their own echo still
+    // lands at the cursor — legacy behaviour preserved.
+    inputEchoOn: false,
+    // Input-box arm/disarm callbacks; installed by interactive() once the
+    // status bar + readline exist. Referenced via optional chaining everywhere
+    // so headless sessions (tests, createSession-only consumers) are unaffected.
+    armInputBox: null,
+    disarmInputBox: null,
+    // The CURRENT turn's ProgressIndicator, published by runAgentTurn so the
+    // enqueue() receipt writer (defined in interactive(), outside the turn's
+    // scope) can break a pending spinner frame before printing — without it
+    // the receipt glues onto `⠋ waiting for model · 0.0s`. Null when idle.
+    progress: null,
   };
+
+  // `consumeNext` accessor: when an in-run menu (plan confirmation /
+  // clarification / y-N confirm) seizes the input WHILE the mid-task input box
+  // is echoing, any unsubmitted draft sitting in readline's buffer must not
+  // prepend itself to the menu answer (readline keeps rl.line across line
+  // events, so the menu would receive "draft" + "1"). On the null -> cb
+  // transition we salvage the draft into the mid-task queue — exactly where
+  // it would have gone had the user pressed Enter — and clear the buffer.
+  // With the box off (idle prompts, headless tests) the setter is a plain
+  // assignment and behaviour is byte-identical to before.
+  let consumeNextCb = null;
+  Object.defineProperty(base, 'consumeNext', {
+    configurable: true,
+    enumerable: true,
+    get: () => consumeNextCb,
+    set: (cb) => {
+      if (cb && !consumeNextCb && base.inputEchoOn && base.rl) {
+        const draft = String(base.rl.line || '');
+        if (draft.trim()) {
+          if (!Array.isArray(base.userInputQueue)) base.userInputQueue = [];
+          base.userInputQueue.push(draft);
+        }
+        base.rl.line = '';
+        base.rl.cursor = 0;
+      }
+      consumeNextCb = cb;
+    },
+  });
+  return base;
 }
 
 export async function interactive(opts = {}) {
@@ -276,6 +325,11 @@ export async function interactive(opts = {}) {
     // one line per step + a header, and the scroll region shrinks to make
     // room. Updated on every statusBar.update() (incl. the 500ms poll).
     planRenderer: () => formatPlanProgressLines(session),
+    // One-line mid-task instruction input box, rendered as the FIRST
+    // reserved row (above the plan panel, below the status line) while an
+    // agent turn runs. [] when idle — the bar then reserves nothing extra,
+    // matching the legacy layout exactly.
+    inputRenderer: () => formatInputBoxLine(session),
   });
   if (session.statusBar.isEnabled()) {
     // Clear the visible screen so the previous session's last lines don't
@@ -323,7 +377,13 @@ export async function interactive(opts = {}) {
     // the whole task finishes. Slash commands keep the legacy behavior.
     if (captureMidTaskInput(session, line)) {
       const n = session.userInputQueue.length;
+      // Break any pending spinner frame / partial line FIRST: the receipt
+      // must start on its own line, not glue onto `⠋ phase · 0.0s`.
+      session.progress?.breakLine();
       process.stderr.write(style.success(`${style.ICON.ok} queued #${n} ${style.dim('· delivered after the current action')}`) + '\n');
+      // The submitted line left the box: clear the reserved input row so it
+      // doesn't keep showing the just-queued text (receipt printed above).
+      session.statusBar?.refreshInputLine();
       return;
     }
     session.queue.push(line);
@@ -358,6 +418,65 @@ export async function interactive(opts = {}) {
   paste.onFlush = (text) => { void enqueue(text); };
   paste.start();
 
+  // ── Mid-task instruction input box: echo redirection ──────────────
+  // While an agent turn runs, the input box is the FIRST reserved StatusBar
+  // row (above the plan panel). readline's native echo writes at the terminal
+  // cursor, where streaming agent output would immediately trample it — so we
+  // suppress native echo and repaint just the input row on every keystroke.
+  // Node routes ALL readline drawing (typed chars, refresh, enter's \r\n,
+  // prompt redraw) through rl._writeToOutput, which makes it a single choke
+  // point. When inputEchoOn is false (idle turns, in-run menus via
+  // session.consumeNext, slash commands) the wrapper is fully transparent —
+  // prompt/echo behaviour is byte-identical to before this feature.
+  const rlOrigWriteToOutput = session.rl._writeToOutput
+    ? session.rl._writeToOutput.bind(session.rl)
+    : null;
+  if (rlOrigWriteToOutput) {
+    session.rl._writeToOutput = function echoRouter(s) {
+      // An in-run menu (plan confirmation / clarification / confirm) owns the
+      // input while session.consumeNext is armed: its prompt echo must land
+      // at the cursor exactly as before this feature.
+      if (session.inputEchoOn && !session.consumeNext) return; // suppressed; box repaints itself
+      rlOrigWriteToOutput(s);
+    };
+  }
+  const refreshInputEcho = () => {
+    if (!session.inputEchoOn || session.consumeNext) return;
+    session.statusBar?.refreshInputLine();
+  };
+
+  // ── Mid-task instruction input box: lifecycle helpers ──────────────
+  // Arm/disarm the box around the agent turn. Arming: turn the echo redirect
+  // on, resize the reserved block (grow 0→1 line), and start echoing the
+  // (usually empty) draft. Disarming: flip echo off FIRST (so post-turn
+  // prompt/echo behaves legacy), drop any unsubmitted draft so it doesn't
+  // leak into the next prompt, then shrink the block (1→0). Both are safe to
+  // call repeatedly; runAgentTurn wires them to its arm/disarm sites.
+  const armInputBox = () => {
+    if (session.inputEchoOn) return;
+    // Only redirect echo when there is a real reserved row to echo into. With
+    // a non-TTY stderr (statusBar disabled — e.g. forceTty over pipes)
+    // suppression would silently eat all readline output with no box shown.
+    if (!session.statusBar?.isEnabled()) return;
+    session.inputEchoOn = true;
+    session.statusBar?.update(); // grow: input row appears above plan/status
+    refreshInputEcho();
+  };
+  const disarmInputBox = () => {
+    if (!session.inputEchoOn) return;
+    session.inputEchoOn = false;
+    if (session.rl && !session.rl.closed) {
+      // Clear the draft so the next idle prompt starts empty. The queued
+      // receipt was already printed by the 'line' handler; anything left was
+      // never submitted.
+      session.rl.line = '';
+      session.rl.cursor = 0;
+    }
+    session.statusBar?.update(); // shrink: input row released back to workspace
+  };
+  session.armInputBox = armInputBox;
+  session.disarmInputBox = disarmInputBox;
+
   // Heuristic fallback for terminals WITHOUT bracketed-paste support (older
   // emulators, some IDE consoles, multiplexers that strip the mode, non-TTY
   // piped input): coalesce a rapid burst of 'line' events into one message.
@@ -369,8 +488,21 @@ export async function interactive(opts = {}) {
   });
   session.ml = ml;
 
+  // Mid-task input box live refresh: every keystroke re-echoes the draft
+  // into the reserved input row. Registered once here (emitKeypressEvents
+  // is already installed by PasteHandler / the ESC interrupt path — the
+  // listener is idempotent anyway) and cheap when the box is off.
+  readline.emitKeypressEvents(session.rl.input);
+  session.rl.input.on('keypress', () => { refreshInputEcho(); });
+
   if (isInteractive) session.rl.prompt();
   session.rl.on('line', (line) => {
+    // Mid-task input box: when the box is echoing, every completed line gets
+    // cleared from the box (the queued-#n receipt prints in its place) before
+    // the normal capture path takes over.
+    if (session.inputEchoOn) {
+      if (session.rl) { session.rl.line = ''; session.rl.cursor = 0; }
+    }
     // If we're mid-paste, buffer the line and wait for paste-end. Pasted
     // content otherwise arrives as one 'line' event per line and each would
     // fire as a separate agent turn.
@@ -1186,6 +1318,25 @@ function formatPlanProgressLines(session) {
     }
   }
   return lines;
+}
+
+/**
+ * The persistent mid-task instruction input box line (0- or 1-element array,
+ * consumed by StatusBar's inputRenderer). Rendered as the FIRST reserved row —
+ * above the plan panel and below the status bar — whenever an agent turn is
+ * running. The user's in-progress draft (readline's rl.line) is echoed here
+ * with a trailing caret glyph, so streaming agent output above can never
+ * disturb the text being typed.
+ *
+ * Exported for unit testing without a live TTY (the StatusBar truncates the
+ * visible width itself, so this returns the untruncated styled string).
+ */
+export function formatInputBoxLine(session) {
+  if (!session || !session.agentTurnActive) return [];
+  const label = style.accent('»') + style.dim(' add instruction ');
+  const draft = String(session.rl?.line ?? '');
+  const caret = style.accent('▏'); // caret marking the in-progress draft
+  return [label + draft + caret];
 }
 
 function formatStatusLine(session) {
@@ -2068,6 +2219,9 @@ async function runCodeReview(session, ctx, { planText, assistantText, resolvePha
 
 async function runAgentTurn(userText, session, ctx, opts = {}) {
   const progress = new ProgressIndicator();
+  // Publish to the session so out-of-turn-scope writers (the enqueue()
+  // mid-task receipt) can breakLine() before printing onto a spinner frame.
+  session.progress = progress;
   session.turnStart = Date.now();
   // Track whether a plan was already active when this turn started, so the
   // end-of-turn Code Review can run on the turn that COMPLETES a multi-turn
@@ -2085,6 +2239,12 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
   // sure no stale queue survives from an earlier aborted turn.
   session.agentTurnActive = true;
   session.userInputQueue = [];
+  // Mid-task instruction input box: appear as soon as the turn starts. It
+  // stays for the whole turn (including across in-run plan menus, where the
+  // menu's own echo temporarily wins via the consumeNext gate) and
+  // disappears on every exit path via the disarm in the finally + the
+  // early-cancel path.
+  session.armInputBox?.();
 
   // ---- Auto context compaction (safe turn boundary) ------------------------
   // Runs before any rewrite/retrieval/agent work so it never interrupts an
@@ -2395,6 +2555,9 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
           // disarm here explicitly — leaving agentTurnActive armed would make
           // enqueue() capture (and never deliver) every subsequent line.
           disarmMidTaskCapture(session);
+          // Input box follows the same early-exit: disappear now, not on the
+          // next turn's arm.
+          session.disarmInputBox?.();
           process.stderr.write(`${style.warning(style.ICON.warn + ' cancelled')}\n`);
           session.phase = 'idle';
           session.turnStart = 0;
@@ -3269,6 +3432,14 @@ async function runAgentTurn(userText, session, ctx, opts = {}) {
     if (leftover.length > 0) {
       process.stderr.write(style.dim(`(queued instruction${leftover.length > 1 ? 's' : ''} passed to a new turn — the task finished before they could be delivered mid-run)`) + '\n');
     }
+    // Input box: the turn is over — the box disappears now. Runs on success,
+    // error, and interrupt paths alike (finally). Disarm flips echo routing
+    // off before shrinking the reserved block, so the post-turn prompt
+    // redraw lands at the cursor as before this feature.
+    session.disarmInputBox?.();
+    // Drop the published indicator reference: the turn is over, no receipt
+    // can be printed anymore (agentTurnActive is already false above).
+    session.progress = null;
     // Snapshot the last measured context size (peak single-call input tokens)
     // for the next turn's auto-compaction threshold check. loopPeakIn/callIn
     // are reset at the start of the next turn, so this is the only point that

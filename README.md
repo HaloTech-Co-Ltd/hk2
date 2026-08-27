@@ -428,7 +428,10 @@ abort).
 
 ### Typing while a task runs
 
-You can keep typing while the agent is working. Plain text entered mid-task is
+While a task runs, a one-line input box (`» add instruction ▏`) is pinned just
+above the plan panel / status bar. What you type is echoed there — the
+streaming agent output above can never disturb your in-progress text. You can
+keep typing while the agent is working. Plain text entered mid-task is
 queued (echoed as `✓ queued #N · delivered after the current action`) and
 injected into the RUNNING conversation at the agent loop's round boundary —
 after the current action (the LLM call plus all of its tool calls) completes,
