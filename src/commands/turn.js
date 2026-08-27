@@ -116,7 +116,8 @@ export async function handleUserLine(line, session, ctx, ui) {
     // project must not silently adopt the global current project — its
     // conversation belongs to the dropped project's codebase (P0 review
     // round 2); attaching one there is an explicit /project set away.
-    if (!session.project && !session.resumedFromOtherProject) {
+    if (!session.project && !session.resumedFromOtherProject
+        && !session.explicitProject && (session.messages?.length || 0) === 0) {
       await reloadAll(session, ctx, { project: true, kb: true, model: false });
     } else if (session.project && !session.kbMeta) {
       const meta = await getKbMeta(session.project.id).catch(() => null);

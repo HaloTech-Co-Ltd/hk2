@@ -82,6 +82,10 @@ export function createSession(pinnedProjectId = null) {
   return {
     project: null,
     pinnedProjectId,
+    // True when the pin came from an EXPLICIT --project/--project-id launch
+    // (not from a bare launch snapshotting the global current). A dead
+    // explicit pin must NEVER silently switch codebases (review round 5).
+    explicitProject: pinnedProjectId !== null && pinnedProjectId !== undefined,
     kbMeta: null,
     rt: null,
     llm: null,
@@ -705,6 +709,9 @@ export function buildBaseCtx(session, io) {
       const target = await setCurrentProject(idOrName);
       if (target) {
         session.pinnedProjectId = target.id;
+        // An explicit /project set is as deliberate as --project: if THAT
+        // project is later dropped, never silently switch to another.
+        session.explicitProject = true;
         session.reloadFlags.project = true;
         session.reloadFlags.kb = true;
         // The effective default model is project-scoped (resolveDefaultModel
@@ -850,13 +857,23 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
       p = await getProject(session.pinnedProjectId);
       if (!p) {
         // Dead pin: the pinned project was dropped (another session ran
-        // /project drop). Without this fallback the session stays
-        // projectless FOREVER — the pin is re-checked on every reload and
-        // never recovers, so the KB gate keeps refusing with 'No project
-        // registered' while /project list shows a healthy current project.
-        // Fall back like a bare launch: resolve the global current and re-pin.
-        p = await getCurrentProject();
-        if (p) session.pinnedProjectId = p.id;
+        // /project drop). Whether adopting the global current is acceptable
+        // depends on the session's PROVENANCE — silently moving an explicit
+        // --project=A launch (or a live conversation) onto project B would
+        // run its tools and KB against the wrong codebase:
+        //   - bare launch with no messages yet: adopt current like a fresh
+        //     boot (the pin was just a snapshot; nothing has happened on it)
+        //   - explicit --project launch, a conversation already in flight,
+        //     or a session resumed from the dropped project: clear the
+        //     project context and say so — attaching is the user's call.
+        const hasConversation = (session.messages?.length || 0) > 0;
+        if (!session.explicitProject && !hasConversation && !session.resumedFromOtherProject) {
+          p = await getCurrentProject();
+          if (p) session.pinnedProjectId = p.id;
+        } else {
+          session.pinnedProjectId = null;
+          ctx?.print?.(`[project] the pinned project is no longer registered — no project attached. Attach one with /project set current <id|name>, or /project init.`);
+        }
       }
     } else {
       p = await getCurrentProject();

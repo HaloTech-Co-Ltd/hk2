@@ -398,3 +398,100 @@ test('HK2_WELCOME pins the welcome tier over the returning-user default', () => 
   assert.ok(src.includes("wantWelcome === 'full' ? false"), 'full forces the logo card');
   assert.ok(src.includes("wantWelcome === 'compact' ? true"), 'compact forces the fact card');
 });
+
+
+/* ----- round 5 ------------------------------------------------------------ */
+
+test('dead pin: a BARE, message-less session adopts the global current (the self-heal stays)', async () => {
+  const home = await import('../lib/config/home.js');
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const { createSession, reloadAll } = await import('../src/commands/session_ctx.js');
+  const dirA = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'r5-a-'));
+  const dirB = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'r5-b-'));
+  const a = await home.registerProject({ sourcePath: dirA, name: 'r5-proj-a' });
+  const b = await home.registerProject({ sourcePath: dirB, name: 'r5-proj-b' });
+  try {
+    await home.setCurrentProject(b.id);
+    const session = createSession(null); // bare launch
+    session.pinnedProjectId = a.id;      // snapshot pointed at A...
+    await home.removeProject(a.id);      // ...which was dropped before reload
+    const printed = [];
+    await reloadAll(session, { print: (x) => printed.push(x) });
+    assert.equal(session.project?.id, b.id, 'empty bare session adopts the current project');
+    assert.ok(printed.length === 0, 'no noisy warning for the benign case');
+  } finally {
+    await home.removeProject(a.id).catch(() => {});
+    await home.removeProject(b.id).catch(() => {});
+  }
+});
+
+test('dead pin: an EXPLICIT --project launch NEVER silently switches codebases', async () => {
+  const home = await import('../lib/config/home.js');
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const { createSession, reloadAll } = await import('../src/commands/session_ctx.js');
+  const dirA = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'r5-c-'));
+  const dirB = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'r5-d-'));
+  const a = await home.registerProject({ sourcePath: dirA, name: 'r5-proj-c' });
+  const b = await home.registerProject({ sourcePath: dirB, name: 'r5-proj-d' });
+  try {
+    await home.setCurrentProject(b.id);
+    const session = createSession(a.id); // explicit --project=r5-proj-c
+    await home.removeProject(a.id);
+    const printed = [];
+    await reloadAll(session, { print: (x) => printed.push(x) });
+    assert.equal(session.project, null, 'no silent switch to project B');
+    assert.equal(session.pinnedProjectId, null, 'the dead pin is cleared');
+    assert.ok(printed.some((x) => x.includes('/project set current')), 'the user is told how to attach');
+  } finally {
+    await home.removeProject(a.id).catch(() => {});
+    await home.removeProject(b.id).catch(() => {});
+  }
+});
+
+test('dead pin: a session WITH a conversation also refuses the silent switch', async () => {
+  const home = await import('../lib/config/home.js');
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const { createSession, reloadAll } = await import('../src/commands/session_ctx.js');
+  const dirA = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'r5-e-'));
+  const dirB = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'r5-f-'));
+  const a = await home.registerProject({ sourcePath: dirA, name: 'r5-proj-e' });
+  const b = await home.registerProject({ sourcePath: dirB, name: 'r5-proj-f' });
+  try {
+    await home.setCurrentProject(b.id);
+    const session = createSession(null); // bare launch...
+    session.messages.push({ role: 'user', content: 'mid-conversation' }); // ...but talking
+    session.pinnedProjectId = a.id;
+    await home.removeProject(a.id);
+    await reloadAll(session, { print: () => {} });
+    assert.equal(session.project, null, 'a live conversation never moves to another codebase');
+  } finally {
+    await home.removeProject(a.id).catch(() => {});
+    await home.removeProject(b.id).catch(() => {});
+  }
+});
+
+test('fullResultLines: BLANK rows count against the 40-line cap', async () => {
+  const { fullResultLines } = await import('../src/commands/tool_card.js');
+  const r = fullResultLines({ ok: true, result: { stdout: '\n'.repeat(60) + 'real' } }, { width: 80 });
+  assert.equal(r.lines.length, 40, 'capped at 40 physical rows, blank or not');
+  assert.equal(r.capped, true);
+});
+
+test('REPL exit hint shares resumeHintAfterExit (no empty-session hint, no stray file)', () => {
+  const src = fs.readFileSync(path.join(here, '..', 'src', 'commands', 'interactive.js'), 'utf8');
+  assert.ok(src.includes('resumeHintAfterExit'), 'the Goodbye hint goes through the shared lifecycle helper');
+});
+
+test('claude import: context window maps EXACT ids only (no glm-5 prefix blanket)', async () => {
+  const { importedContextWindow } = await import('../src/claude_import.js');
+  assert.equal(importedContextWindow('glm-5.3'), 1000000, 'the confirmed id maps');
+  assert.equal(importedContextWindow('glm-5.3-flash'), 200000, 'unconfirmed variants keep the conservative default');
+  assert.equal(importedContextWindow('glm-5'), 200000);
+  assert.equal(importedContextWindow('claude-sonnet-4-6'), 200000);
+});
