@@ -63,7 +63,7 @@
  */
 import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
-  loadProjects, saveProjects,
+  loadProjects, saveProjects, withModels, withProjects,
   normalizePhaseName, supportedPhaseNames,
   setPhaseModelRef, clearPhaseModelRef,
   getProjectDefaultModelRef, setProjectDefaultModelRef, clearProjectDefaultModelRef,
@@ -190,9 +190,7 @@ async function useModel(rest, ctx) {
     return;
   }
   // Fallback for contexts without setModel (e.g. serve / one-shot): persist as default.
-  const data = await loadModels();
-  data.default = ref;
-  await saveModels(data);
+  await withModels((data) => { data.default = ref; });
   ctx.print(`Default set: ${ref}`);
   ctx.noteReloadModels?.();
 }
@@ -224,9 +222,7 @@ async function setDefaultModel(rest, ctx) {
   if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
   const m = (prov.models || []).find(x => x.id === split.model);
   if (!m) { ctx.print(`Model not found: ${ref}`); return; }
-  const data = await loadModels();
-  data.default = ref;
-  await saveModels(data);
+  await withModels((data) => { data.default = ref; });
   ctx.print(`Default set: ${ref}`);
   ctx.noteReloadModels?.();
 }
@@ -361,112 +357,140 @@ async function setModel(rest, ctx) {
     }
   }
 
-  const data = await loadModels();
-  const prov = data.providers[split.provider];
-  if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
-  const entry = (prov.models || []).find(m => m.id === split.model);
-  if (!entry) { ctx.print(`Model not found: ${ref} (use /model add to create it first)`); return; }
-  // Effective model type for option validation: the new --model-type when
-  // given, else the entry's current (already-normalized) stored type.
-  const effectiveModelType = modelType || entry.modelType || DEFAULT_MODEL_TYPE;
-  if (modelOptions) {
-    // Enum validation against the model type's declared feature options
-    // (e.g. glm-5.3 reasoning_effort: max|high|low). Still before any write.
-    const typeErr = validateModelOptionsForType(effectiveModelType, modelOptions);
-    if (typeErr) {
-      ctx.print(`Invalid --model-options: ${typeErr}`);
-      return;
-    }
-  }
-
-  // Optional id rename: /model set <provider>/<old-id> --id=<new-id>.
-  // `id` is the provider/accounting key used in provider/id refs; renaming it
-  // changes the ref. The effective WIRE model code (from `name`, falling back
-  // to the old `id` for legacy records) is preserved across the rename.
+  // Locked read-modify-write (issue #7): the whole load→validate→mutate→save
+  // runs inside the cross-process models.json lock, so a concurrent
+  // /model add|del|set in another hk2 process can't be clobbered by this
+  // full-file write. `outcome` carries what the locked section decided so
+  // the caller below can print / do post-lock side effects.
   let newRef = ref;
   let pinnedName = false;
-  if (flags.id !== undefined) {
-    if (typeof flags.id !== 'string' || !flags.id.trim()) {
-      ctx.print(`Invalid --id: expected --id=<new-model-id>`);
-      return;
+  const outcome = await withModels(async (data) => {
+    const prov = data.providers[split.provider];
+    if (!prov) return { error: `Provider not found: ${split.provider}` };
+    const entry = (prov.models || []).find(m => m.id === split.model);
+    if (!entry) return { error: `Model not found: ${ref} (use /model add to create it first)` };
+    // Effective model type for option validation: the new --model-type when
+    // given, else the entry's current (already-normalized) stored type.
+    const effectiveModelType = modelType || entry.modelType || DEFAULT_MODEL_TYPE;
+    if (modelOptions) {
+      // Enum validation against the model type's declared feature options
+      // (e.g. glm-5.3 reasoning_effort: max|high|low). Still before any write.
+      const typeErr = validateModelOptionsForType(effectiveModelType, modelOptions);
+      if (typeErr) return { error: `Invalid --model-options: ${typeErr}` };
     }
-    const newId = flags.id.trim();
-    if (newId.includes('/')) {
-      ctx.print(`Invalid --id: ${flags.id} (model-id must not contain '/')`);
-      return;
+
+    // Optional id rename: /model set <provider>/<old-id> --id=<new-id>.
+    // `id` is the provider/accounting key used in provider/id refs; renaming it
+    // changes the ref. The effective WIRE model code (from `name`, falling back
+    // to the old `id` for legacy records) is preserved across the rename.
+    if (flags.id !== undefined) {
+      if (typeof flags.id !== 'string' || !flags.id.trim()) {
+        return { error: `Invalid --id: expected --id=<new-model-id>` };
+      }
+      const newId = flags.id.trim();
+      if (newId.includes('/')) {
+        return { error: `Invalid --id: ${flags.id} (model-id must not contain '/')` };
+      }
+      if (newId !== split.model && (prov.models || []).some(m => m.id === newId)) {
+        return { error: `Model already exists: ${split.provider}/${newId} (choose a different --id)` };
+      }
+      // Preserve the effective WIRE model code across the rename.
+      // resolveModelRef falls back to `id` for records that never set `name`, so
+      // renaming those would silently change what is sent to the API (e.g. a
+      // rename to `glm-5.2[1m]` would start sending the bracketed hint). Pin
+      // `name` to the old effective wire code so the rename only changes the
+      // ref key. Records with an explicit name are already pinned by it.
+      if (!(typeof entry.name === 'string' && entry.name)) {
+        entry.name = split.model;
+        return { renamed: `${split.provider}/${newId}`, pinned: true, entry };
+      }
+      return { renamed: `${split.provider}/${newId}`, pinned: false, entry };
     }
-    if (newId !== split.model && (prov.models || []).some(m => m.id === newId)) {
-      ctx.print(`Model already exists: ${split.provider}/${newId} (choose a different --id)`);
-      return;
-    }
-    // Preserve the effective WIRE model code across the rename.
-    // resolveModelRef falls back to `id` for records that never set `name`, so
-    // renaming those would silently change what is sent to the API (e.g. a
-    // rename to `glm-5.2[1m]` would start sending the bracketed hint). Pin
-    // `name` to the old effective wire code so the rename only changes the
-    // ref key. Records with an explicit name are already pinned by it.
-    if (!(typeof entry.name === 'string' && entry.name)) {
-      entry.name = split.model;
-      pinnedName = true;
-    }
-    entry.id = newId;
-    newRef = `${split.provider}/${newId}`;
-    if (data.default === ref) data.default = newRef;
+    return { entry };
+  });
+
+  if (outcome.error) { ctx.print(outcome.error); return; }
+  if (outcome.renamed !== undefined) {
+    // Finish the rename mutation inside a second locked section (the first
+    // already validated uniqueness; keep the mutation atomic with the write).
+    const r = await withModels(async (data) => {
+      const prov = data.providers[split.provider];
+      if (!prov) return null;
+      const entry = (prov.models || []).find(m => m.id === split.model);
+      if (!entry) return null;
+      if (outcome.pinned) entry.name = split.model;
+      entry.id = flags.id.trim();
+      newRef = outcome.renamed;
+      if (data.default === ref) data.default = newRef;
+      return entry;
+    });
+    if (!r) { ctx.print(`Model not found: ${ref} (use /model add to create it first)`); return; }
+    pinnedName = outcome.pinned;
   }
 
-  // Provider-level fields.
-  if (flags.api) prov.api = flags.api;
-  if (flags['base-url'] !== undefined) prov.baseUrl = flags['base-url'];
-  if (flags['api-key'] !== undefined) prov.apiKey = flags['api-key'];
+  // Apply provider/model-level fields in one final locked section.
+  const applied = await withModels(async (data) => {
+    const prov = data.providers[split.provider];
+    if (!prov) return null;
+    const entry = (prov.models || []).find(m => m.id === split.model || m.id === flags.id?.trim?.());
+    if (!entry) return null;
 
-  // Model-level fields.
-  if (flags.name) entry.name = flags.name;
-  if (flags['context-window'] !== undefined) {
-    const n = parseInt(flags['context-window'], 10);
-    if (Number.isFinite(n) && n > 0) entry.contextWindow = n;
-  }
-  if (flags['max-tokens'] !== undefined) {
-    const n = parseInt(flags['max-tokens'], 10);
-    if (Number.isFinite(n) && n > 0) entry.maxTokens = n;
-  }
-  if (flags.temperature !== undefined) {
-    const t = parseFloat(flags.temperature);
-    if (Number.isFinite(t)) entry.temperature = t;
-  }
-  if (flags.reasoning !== undefined) {
-    entry.reasoning = parseBoolFlag(flags.reasoning);
-  }
-  if (modelType) entry.modelType = modelType;
-  // Model-specific options: replace wholesale when the flag is present. An
-  // explicit '{}' clears them (stored as an empty object = no options);
-  // omitting the flag keeps the current value.
-  if (flags['model-options'] !== undefined) entry.modelOptions = modelOptions;
+    // Provider-level fields.
+    if (flags.api) prov.api = flags.api;
+    if (flags['base-url'] !== undefined) prov.baseUrl = flags['base-url'];
+    if (flags['api-key'] !== undefined) prov.apiKey = flags['api-key'];
 
-  await saveModels(data);
+    // Model-level fields.
+    if (flags.name) entry.name = flags.name;
+    if (flags['context-window'] !== undefined) {
+      const n = parseInt(flags['context-window'], 10);
+      if (Number.isFinite(n) && n > 0) entry.contextWindow = n;
+    }
+    if (flags['max-tokens'] !== undefined) {
+      const n = parseInt(flags['max-tokens'], 10);
+      if (Number.isFinite(n) && n > 0) entry.maxTokens = n;
+    }
+    if (flags.temperature !== undefined) {
+      const t = parseFloat(flags.temperature);
+      if (Number.isFinite(t)) entry.temperature = t;
+    }
+    if (flags.reasoning !== undefined) {
+      entry.reasoning = parseBoolFlag(flags.reasoning);
+    }
+    if (modelType) entry.modelType = modelType;
+    // Model-specific options: replace wholesale when the flag is present. An
+    // explicit '{}' clears them (stored as an empty object = no options);
+    // omitting the flag keeps the current value.
+    if (flags['model-options'] !== undefined) entry.modelOptions = modelOptions;
+    return entry;
+  });
+  if (!applied) { ctx.print(`Model not found: ${ref} (use /model add to create it first)`); return; }
+  const entry = applied;
 
   // Keep per-project refs pointing at the old id in sync after a rename, so a
   // pinned phase / project default does not silently fall back to the global
   // default. Rewrites: phaseModels entries AND the top-level defaultModel.
+  // withProjects: locked RMW (issue #7) — same protection as the models side.
   if (newRef !== ref) {
-    const projData = await loadProjects();
     let projChanged = false;
-    for (const p of Object.values(projData.projects || {})) {
-      if (!p || typeof p !== 'object') continue;
-      if (p.phaseModels && typeof p.phaseModels === 'object') {
-        for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
-          if (phaseRef === ref) {
-            p.phaseModels[phase] = newRef;
-            projChanged = true;
+    await withProjects((projData) => {
+      for (const p of Object.values(projData.projects || {})) {
+        if (!p || typeof p !== 'object') continue;
+        if (p.phaseModels && typeof p.phaseModels === 'object') {
+          for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
+            if (phaseRef === ref) {
+              p.phaseModels[phase] = newRef;
+              projChanged = true;
+            }
           }
         }
+        if (p.defaultModel === ref) {
+          p.defaultModel = newRef;
+          projChanged = true;
+        }
       }
-      if (p.defaultModel === ref) {
-        p.defaultModel = newRef;
-        projChanged = true;
-      }
-    }
+    });
     if (projChanged) {
-      await saveProjects(projData);
       // The in-memory session.project still holds the old refs; signal a
       // project reload so overrides resolve the new ref this session
       // (same mechanism /model set-phase uses after editing a phase ref).
@@ -530,48 +554,54 @@ async function addModel(rest, ctx) {
     flags['model-options'] = mo;
   }
 
-  const data = await loadModels();
-  let prov = data.providers[providerName];
-  if (!prov) {
-    prov = {
-      api: flags.api || 'openai',
-      baseUrl: flags['base-url'] || '',
-      apiKey: flags['api-key'] || '',
-      models: [],
-    };
-    data.providers[providerName] = prov;
-  } else {
-    if (flags.api) prov.api = flags.api;
-    if (flags['base-url']) prov.baseUrl = flags['base-url'];
-    if (flags['api-key']) prov.apiKey = flags['api-key'];
-  }
+  // Locked read-modify-write (issue #7): the whole add runs inside the
+  // cross-process models.json lock, so a concurrent /model add|del|set in
+  // another hk2 process can't be clobbered by this full-file write.
+  let setAsDefault = false;
+  await withModels(async (data) => {
+    let prov = data.providers[providerName];
+    if (!prov) {
+      prov = {
+        api: flags.api || 'openai',
+        baseUrl: flags['base-url'] || '',
+        apiKey: flags['api-key'] || '',
+        models: [],
+      };
+      data.providers[providerName] = prov;
+    } else {
+      if (flags.api) prov.api = flags.api;
+      if (flags['base-url']) prov.baseUrl = flags['base-url'];
+      if (flags['api-key']) prov.apiKey = flags['api-key'];
+    }
 
-  let entry = prov.models.find(m => m.id === modelId);
-  if (!entry) {
-    entry = { id: modelId, name: modelId };
-    prov.models.push(entry);
-  }
-  if (flags.name) entry.name = flags.name;
-  if (flags['context-window']) entry.contextWindow = parseInt(flags['context-window'], 10);
-  else if (!entry.contextWindow) entry.contextWindow = 65536;
-  if (flags['max-tokens']) entry.maxTokens = parseInt(flags['max-tokens'], 10);
-  else if (!entry.maxTokens) entry.maxTokens = Math.min(32768, Math.floor((entry.contextWindow || 65536) / 4));
-  if (flags.temperature !== undefined) entry.temperature = parseFloat(flags.temperature);
-  else if (entry.temperature === undefined) entry.temperature = 0.2;
-  if (flags.reasoning !== undefined) entry.reasoning = parseBoolFlag(flags.reasoning);
-  else if (entry.reasoning === undefined) entry.reasoning = modelTypeDefaultReasoning(flags['model-type']) ? true : false;
-  if (flags['model-type']) entry.modelType = flags['model-type'];
-  else if (entry.modelType === undefined) entry.modelType = DEFAULT_MODEL_TYPE;
-  // Model-specific feature options: free-form JSON object, default empty
-  // (no options). The field is left absent when the flag is omitted on a new
-  // entry; resolveModelRef falls back to an empty object for such records.
-  if (flags['model-options']) entry.modelOptions = flags['model-options'];
+    let entry = prov.models.find(m => m.id === modelId);
+    if (!entry) {
+      entry = { id: modelId, name: modelId };
+      prov.models.push(entry);
+    }
+    if (flags.name) entry.name = flags.name;
+    if (flags['context-window']) entry.contextWindow = parseInt(flags['context-window'], 10);
+    else if (!entry.contextWindow) entry.contextWindow = 65536;
+    if (flags['max-tokens']) entry.maxTokens = parseInt(flags['max-tokens'], 10);
+    else if (!entry.maxTokens) entry.maxTokens = Math.min(32768, Math.floor((entry.contextWindow || 65536) / 4));
+    if (flags.temperature !== undefined) entry.temperature = parseFloat(flags.temperature);
+    else if (entry.temperature === undefined) entry.temperature = 0.2;
+    if (flags.reasoning !== undefined) entry.reasoning = parseBoolFlag(flags.reasoning);
+    else if (entry.reasoning === undefined) entry.reasoning = modelTypeDefaultReasoning(flags['model-type']) ? true : false;
+    if (flags['model-type']) entry.modelType = flags['model-type'];
+    else if (entry.modelType === undefined) entry.modelType = DEFAULT_MODEL_TYPE;
+    // Model-specific feature options: free-form JSON object, default empty
+    // (no options). The field is left absent when the flag is omitted on a new
+    // entry; resolveModelRef falls back to an empty object for such records.
+    if (flags['model-options']) entry.modelOptions = flags['model-options'];
 
-  await saveModels(data);
+    if (!data.default) {
+      data.default = `${providerName}/${modelId}`;
+      setAsDefault = true;
+    }
+  });
 
-  if (!data.default) {
-    data.default = `${providerName}/${modelId}`;
-    await saveModels(data);
+  if (setAsDefault) {
     ctx.print(`Added: ${providerName}/${modelId} (set as default)`);
   } else {
     ctx.print(`Added: ${providerName}/${modelId}`);
@@ -584,55 +614,63 @@ async function delModel(rest, ctx) {
   if (!ref) { ctx.print(`Usage: /model del <provider>/<model-id>`); return; }
   const split = splitModelRef(ref);
   if (!split) { ctx.print(`Invalid ref: ${ref}`); return; }
-  const data = await loadModels();
-  const prov = data.providers[split.provider];
-  if (!prov) { ctx.print(`Provider not found: ${split.provider}`); return; }
-  const before = (prov.models || []).length;
-  prov.models = (prov.models || []).filter(m => m.id !== split.model);
-  if (prov.models.length === 0) {
-    delete data.providers[split.provider];
-    ctx.print(`Deleted provider (no models left): ${split.provider}`);
-  } else if (prov.models.length === before) {
-    ctx.print(`Not found: ${ref}`);
-    return;
-  } else {
-    ctx.print(`Deleted: ${ref}`);
+  // Locked read-modify-write (issue #7): delete + default reset run inside
+  // the models.json lock so concurrent writers can't lose this change.
+  let message = null;
+  await withModels((data) => {
+    const prov = data.providers[split.provider];
+    if (!prov) { message = `Provider not found: ${split.provider}`; return; }
+    const before = (prov.models || []).length;
+    prov.models = (prov.models || []).filter(m => m.id !== split.model);
+    if (prov.models.length === 0) {
+      delete data.providers[split.provider];
+      message = `Deleted provider (no models left): ${split.provider}`;
+    } else if (prov.models.length === before) {
+      message = `Not found: ${ref}`;
+      return;
+    } else {
+      message = `Deleted: ${ref}`;
+    }
+    if (data.default === ref) {
+      const remaining = Object.entries(data.providers).flatMap(([p, pr]) => (pr.models || []).map(m => `${p}/${m.id}`));
+      data.default = remaining[0] || null;
+      message += `\n(default reset to: ${data.default || '(none)'})`;
+    }
+  });
+  if (message) {
+    for (const line of message.split('\n')) ctx.print(line);
+    if (message.startsWith('Provider not found') || message.startsWith('Not found')) return;
   }
-  if (data.default === ref) {
-    const remaining = Object.entries(data.providers).flatMap(([p, pr]) => (pr.models || []).map(m => `${p}/${m.id}`));
-    data.default = remaining[0] || null;
-    ctx.print(`(default reset to: ${data.default || '(none)'})`);
-  }
-  await saveModels(data);
   // Drop per-project references to the deleted model (defaultModel and
   // phaseModels) so a project doesn't carry a ref that can never resolve.
   // resolveDefaultModel / resolvePhaseLlm already fall back silently when a
   // ref is stale, but cleaning here keeps /project show honest.
-  const projData = await loadProjects();
+  // withProjects: locked RMW (issue #7).
   let projChanged = false;
   const cleanedProjects = [];
-  for (const p of Object.values(projData.projects || {})) {
-    if (!p || typeof p !== 'object') continue;
-    let touched = false;
-    if (p.defaultModel === ref) {
-      p.defaultModel = null;
-      touched = true;
-    }
-    if (p.phaseModels && typeof p.phaseModels === 'object') {
-      for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
-        if (phaseRef === ref) {
-          delete p.phaseModels[phase];
-          touched = true;
+  await withProjects((projData) => {
+    for (const p of Object.values(projData.projects || {})) {
+      if (!p || typeof p !== 'object') continue;
+      let touched = false;
+      if (p.defaultModel === ref) {
+        p.defaultModel = null;
+        touched = true;
+      }
+      if (p.phaseModels && typeof p.phaseModels === 'object') {
+        for (const [phase, phaseRef] of Object.entries(p.phaseModels)) {
+          if (phaseRef === ref) {
+            delete p.phaseModels[phase];
+            touched = true;
+          }
         }
       }
+      if (touched) {
+        projChanged = true;
+        cleanedProjects.push(p.name || p.id);
+      }
     }
-    if (touched) {
-      projChanged = true;
-      cleanedProjects.push(p.name || p.id);
-    }
-  }
+  });
   if (projChanged) {
-    await saveProjects(projData);
     ctx.print(`(cleared stale references on project(s): ${cleanedProjects.join(', ')})`);
     ctx.noteReloadProject?.();
   }
@@ -676,6 +714,15 @@ async function showModel(ctx) {
   const mcp = await getModelMcpServers(effectiveRef, { resolve: false });
   if (mcp) printMcpServers(ctx, mcp);
   ctx.print(`  contextWindow: ${cfg.maxChars}`);
+  // maxTokens: show BOTH the stored value and what actually goes on the wire
+  // (issue #5: this used to display a stored value that never reached the
+  // request). maxTokens is the explicit ceiling; when unset the adapters
+  // derive max_tokens from the context window estimate.
+  if (cfg.maxTokens) {
+    ctx.print(`  maxTokens: ${cfg.maxTokens} (sent as max_tokens)`);
+  } else {
+    ctx.print(`  maxTokens: (unset - derived from contextWindow: ~${Math.min(32768, Math.max(256, Math.floor(cfg.maxChars / 4)))} tokens for openai-style APIs)`);
+  }
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
   ctx.print(`  temperature: ${cfg.temperature}`);
 }
@@ -807,25 +854,27 @@ async function addMcpServer(rest, ctx) {
     return;
   }
 
-  // Resolve the target model entry; never create providers or models here.
-  const data = await loadModels();
-  const prov = data.providers[refSplit.provider];
-  const entry = (prov && Array.isArray(prov.models)) ? prov.models.find(m => m.id === refSplit.model) : null;
-  if (!entry) {
+  // Resolve + mutate the target model entry inside the models.json lock
+  // (issue #7); never create providers or models here.
+  const savedServer = await withModels((data) => {
+    const prov = data.providers[refSplit.provider];
+    const entry = (prov && Array.isArray(prov.models)) ? prov.models.find(m => m.id === refSplit.model) : null;
+    if (!entry) return null;
+
+    // Append (or replace same-named entry) on the model's mcpServers array.
+    if (!Array.isArray(entry.mcpServers)) entry.mcpServers = [];
+    const server = { type, name: nameRaw, options: opt.options };
+    const existing = entry.mcpServers.findIndex(s => s && s.name === nameRaw);
+    if (existing >= 0) entry.mcpServers[existing] = server;
+    else entry.mcpServers.push(server);
+    return server;
+  });
+  if (!savedServer) {
     ctx.print(`Model not found: ${ref} (use /model add <provider> <model-id> first)`);
     return;
   }
-
-  // Append (or replace same-named entry) on the model's mcpServers array.
-  if (!Array.isArray(entry.mcpServers)) entry.mcpServers = [];
-  const server = { type, name: nameRaw, options: opt.options };
-  const existing = entry.mcpServers.findIndex(s => s && s.name === nameRaw);
-  if (existing >= 0) entry.mcpServers[existing] = server;
-  else entry.mcpServers.push(server);
-
-  await saveModels(data);
   ctx.print(`MCP server added: ${nameRaw} (type=${type}) -> ${ref}`);
-  if (JSON.stringify(server).includes('$APIKEY')) {
+  if (JSON.stringify(savedServer).includes('$APIKEY')) {
     ctx.print(`  ($APIKEY will be substituted with this provider's api key at use time)`);
   }
   ctx.noteReloadModels?.();
