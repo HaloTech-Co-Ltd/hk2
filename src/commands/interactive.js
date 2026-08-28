@@ -86,7 +86,7 @@ export {
   disarmMidTaskCapture, flushMidTaskQueue, buildResumeContext, buildSessionDigest,
 } from './session_ctx.js';
 export {
-  modelTagFor, promptFor, kbBrief, formatPlanProgressLines, finalizePlanProgress,
+  modelTagFor, promptFor, kbBrief, formatPlanProgressLines, finalizePlanProgress, advancePlanStep,
   formatStatusLine, formatUsage, fmtTok, safeParseArgs, cardWidthFor, toolHeader,
   digestLine, plainPlanLines, formatInputBoxLine, inputBoxDockColumn,
 } from './status_format.js';

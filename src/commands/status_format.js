@@ -132,19 +132,92 @@ export function formatPlanProgressLines(session) {
 }
 
 /**
- * End-of-turn plan-progress reconciliation.
+ * Advance the plan-progress state machine one step — the `plan_step` tool's
+ * mutation logic, extracted from turn.js's planStep callback so tests exercise
+ * the REAL implementation instead of a drifting local mirror (the mirror was
+ * how earlier regressions in this area slipped past the suite).
  *
- * The `plan_step` tool clears `session.planProgress` to null the moment the
- * last step is marked done. But a model can finish all the real work and emit
- * its final answer WITHOUT calling `plan_step` on the last step (or at all),
- * leaving the plan block pinned with the final step stuck `in_progress`. This
- * clears the block when every step is already `done`, so the panel never
- * lingers past actual completion. Safe to call when no plan is active.
+ * Contract (Holy: plan-progress-state-machine):
+ *   - Always marks the CURRENT step done, regardless of the step number the
+ *     model passed. Sloppy args (numeric strings, 0-based, ahead-of-current
+ *     "next step" values, re-confirming an already-done earlier step) must
+ *     never strand the in-flight step: trusting the passed index left the
+ *     current step stuck in_progress while the agent had moved on.
+ *   - Defensive downgrade: stale in_progress markers left by earlier
+ *     ahead-of-current calls are reset to pending, then the FIRST non-done
+ *     step becomes the new current (in_progress).
+ *   - When no non-done step remains the plan is complete: planProgress is
+ *     cleared to null (the system-wide completion signal consumed by
+ *     clearTaskState and the Code Review gate).
+ *
+ * Returns the 1-based step index actually marked done, or null when there is
+ * no active plan. Mutates only the planProgress slice of `session`; the
+ * caller refreshes the status bar.
  */
-export function finalizePlanProgress(session) {
+export function advancePlanStep(session, _stepIndex, note) {
+  const p = session.planProgress;
+  if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return null;
+  // The model-supplied step number is deliberately IGNORED for the mutation:
+  // the CURRENT step is always the one marked done. (An earlier revision
+  // parsed/validated it here; it had no effect beyond documentation, so it is
+  // kept out to make the always-mark-current intent unmistakable.)
+  const cur = (typeof p.current === 'number' && p.current >= 0 && p.current < p.steps.length) ? p.current : 0;
+  const markIdx = cur;
+  p.steps[markIdx].status = 'done';
+  if (note) p.steps[markIdx].note = String(note).slice(0, 160);
+  let next = -1;
+  for (let i = 0; i < p.steps.length; i++) {
+    if (p.steps[i].status !== 'done') {
+      if (p.steps[i].status === 'in_progress') p.steps[i].status = 'pending';
+      if (next === -1) next = i;
+    }
+  }
+  if (next === -1) {
+    // All steps done - clear the plan progress block.
+    session.planProgress = null;
+  } else {
+    p.steps[next].status = 'in_progress';
+    p.current = next;
+  }
+  return markIdx + 1;
+}
+
+/**
+ * End-of-turn plan-progress reconciliation — the LAST line of defense that
+ * keeps the panel from lying after a turn ends.
+ *
+ * The panel's in-turn state is driven entirely by the model voluntarily
+ * calling `plan_step`, which fast reasoning models demonstrably skip (zero
+ * calls, partial calls, or all-but-the-final calls). The system's own
+ * end-of-turn logic (clearTaskState, the Code Review gate `planCompleted`)
+ * already treats a NORMAL runLoop return as "task complete" — the panel must
+ * agree with that contract. runLoop's every non-complete exit (stuck
+ * detection, absolute cap, abort) THROWS, so a normal return is exactly the
+ * model's final-text-answer signal.
+ *
+ *   - { turnCompleted: true } (normal-return path ONLY): clear the block
+ *     regardless of individual step statuses. This closes every "task done,
+ *     panel still pinned" variant (skipped / partial / missing plan_step
+ *     calls) and unblocks the Code Review gate in those cases.
+ *   - default / conservative (catch, interrupted, error, stuck paths): clear
+ *     only when every step is already done. A mid-flight plan SURVIVES so the
+ *     interruption-recovery flow ("请继续") can restore the panel and keep
+ *     advancing it (Holy: interruption-recovery-mechanism — the catch path
+ *     must never wipe a live planProgress).
+ *
+ * Trade-off, deliberately accepted: a model that pauses MID-plan to ask the
+ * user a question also returns normally, and its panel closes. The work is
+ * not lost (the confirmed plan lives in the transcript; "continue" resumes
+ * execution) — only the visualization resets, and the alternative (a panel
+ * that keeps showing stale in_progress state after completion) is the
+ * recurring bug this reconciliation exists to kill.
+ *
+ * Safe to call when no plan is active.
+ */
+export function finalizePlanProgress(session, { turnCompleted = false } = {}) {
   const p = session.planProgress;
   if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return;
-  if (p.steps.every(st => st.status === 'done')) {
+  if (turnCompleted || p.steps.every(st => st.status === 'done')) {
     session.planProgress = null;
   }
 }

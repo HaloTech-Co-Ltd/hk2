@@ -15,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { isContinuationCue } from '../src/commands/interactive.js';
-import { buildResumeContext, buildSessionDigest } from '../src/commands/interactive.js';
+import { buildResumeContext, buildSessionDigest, advancePlanStep } from '../src/commands/interactive.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../lib/agent/task_state.js';
 import { buildTools, executeToolCall } from '../lib/agent/tools.js';
 
@@ -290,17 +290,9 @@ test('plan_step advances a restored (reconstituted) planProgress', async () => {
     allowWrite: false,
     planStep: async (step, note) => {
       marked = { step, note };
-      // Mirror the real planStep callback: mark CURRENT done, advance.
-      const p = session.planProgress;
-      const cur = (typeof p.current === 'number') ? p.current : 0;
-      p.steps[cur].status = 'done';
-      let next = -1;
-      for (let i = 0; i < p.steps.length; i++) {
-        if (p.steps[i].status !== 'done') { if (next === -1) next = i; }
-      }
-      if (next === -1) session.planProgress = null;
-      else { p.steps[next].status = 'in_progress'; p.current = next; }
-      return cur + 1;
+      // REAL state machine (status_format.advancePlanStep) — no local mirror;
+      // mirrors drifted from the production logic in past regressions.
+      return advancePlanStep(session, step, note);
     },
   });
   // First plan_step: finishes step B (the in_progress one), advances to C.

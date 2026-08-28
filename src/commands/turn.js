@@ -68,7 +68,7 @@ import {
 } from './session_ctx.js';
 import { getKbMeta } from '../../lib/index/registry.js';
 import {
-  safeParseArgs, finalizePlanProgress, formatPlanProgressLines, formatUsage, fmtTok,
+  safeParseArgs, finalizePlanProgress, advancePlanStep, formatPlanProgressLines, formatUsage, fmtTok,
 } from './status_format.js';
 import {
   envFlag, maybeAutoCompact, maybeOfferKbUpdate, syncConflictingEden, runCodeReview,
@@ -927,46 +927,13 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // Returns the 1-based step actually marked (or null when no plan is
     // active) so the tool result can report it accurately.
     planStep: async (stepIndex, note) => {
-      const p = session.planProgress;
-      if (!p || !Array.isArray(p.steps) || p.steps.length === 0) return null;
-      let idx = -1;
-      if (typeof stepIndex === 'number' && Number.isInteger(stepIndex)) idx = stepIndex - 1;
-      else if (typeof stepIndex === 'string' && /^\d+$/.test(stepIndex.trim())) idx = parseInt(stepIndex, 10) - 1;
-      const cur = (typeof p.current === 'number' && p.current >= 0 && p.current < p.steps.length) ? p.current : 0;
-      // Always treat the CURRENT step as the one just finished, regardless of
-      // what step number the model passed. Fast reasoning models (observed:
-      // deepseek-v4-flash) emit numeric strings, 0-based indices, ahead-of-
-      // current "next step" values, or re-confirm an already-done earlier
-      // step. Trusting the passed idx to mark-done left the *current*
-      // in_progress step stranded: (a) the panel showed a stale in_progress
-      // step while the agent had moved on, and (b) when the current step was
-      // the last one, it never flipped to done so `next` never reached -1 and
-      // the plan block never cleared. Marking cur done guarantees the actual
-      // in-flight step advances and the panel stays in sync with reality.
-      const markIdx = cur;
-      p.steps[markIdx].status = 'done';
-      if (note) p.steps[markIdx].note = String(note).slice(0, 160);
-      // Defensively clear any stale in_progress markers left by earlier
-      // ahead-of-current calls, then advance to the FIRST non-done step.
-      // (Looking only for the first 'pending' step let a wrong-but-valid step
-      // number leave an earlier in_progress step stuck forever, rendering two
-      // '>' rows and blocking the all-done clear.)
-      let next = -1;
-      for (let i = 0; i < p.steps.length; i++) {
-        if (p.steps[i].status !== 'done') {
-          if (p.steps[i].status === 'in_progress') p.steps[i].status = 'pending';
-          if (next === -1) next = i;
-        }
-      }
-      if (next === -1) {
-        // All steps done - clear the plan progress block.
-        session.planProgress = null;
-      } else {
-        p.steps[next].status = 'in_progress';
-        p.current = next;
-      }
-      ui.statusRefresh();
-      return markIdx + 1;
+      // Real state-machine mutation now lives in status_format.advancePlanStep
+      // (exported, single source of truth) — the turn.js inline copy and the
+      // test-suite mirror drifted from it in the past, which is exactly how
+      // "panel stuck after task completion" regressions kept slipping through.
+      const marked = advancePlanStep(session, stepIndex, note);
+      if (marked !== null) ui.statusRefresh();
+      return marked;
     },
     // Knowledge-save approval gate: the agent calls `kb_save_knowledge` to
     // persist learned entries. Holy Space is the source of truth - it MUST
@@ -1366,7 +1333,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
 
     session.phase = 'idle';
     session.turnStart = 0;
-    finalizePlanProgress(session);
+    // turnCompleted: this is the NORMAL-RETURN path — runLoop came back with a
+    // final text answer, which the rest of the end-of-turn logic already
+    // treats as "task complete" (clearTaskState / planCompleted below). The
+    // panel must agree: clear it regardless of leftover step statuses, so a
+    // model that skips some / all of its plan_step calls can never leave a
+    // stale block pinned above the status bar (the recurring "task done, plan
+    // still shows" bug). The catch path below stays conservative.
+    finalizePlanProgress(session, { turnCompleted: true });
     ui.statusRefresh();
     // Task completed normally and (if a plan existed) all steps are done:
     // clear the persisted task state so the next session doesn't resume a
