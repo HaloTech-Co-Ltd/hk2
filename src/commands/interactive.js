@@ -358,6 +358,17 @@ export async function interactive(opts = {}) {
       rlOrigWriteToOutput(s);
     };
   }
+
+  // ── Anti-flicker: repair the reserved block on every readline edit ───
+  // Backspace / ctrl+w / history / mid-line edits all run readline's private
+  // _refreshLine, whose clearScreenDown (\x1b[0J) ERASES PAST the DECSTBM
+  // scroll region and blanks the status bar until the 200ms poll repaints
+  // it — one visible flash per keystroke. patchReadlineRefresh repaints the
+  // reserved block synchronously in the same tick, so the erase and the
+  // repair land in one terminal frame. Fails open on non-patched runtimes.
+  // Installed right AFTER the _writeToOutput wrapper so both private-surface
+  // overrides live together; uninstalled on the same shutdown path.
+  const unpatchRefresh = session.statusBar?.patchReadlineRefresh?.(session.rl) || (() => {});
   const refreshInputEcho = () => {
     if (!session.inputEchoOn || session.consumeNext) return;
     session.statusBar?.refreshInputLine();
@@ -472,6 +483,7 @@ export async function interactive(opts = {}) {
 
   await new Promise((resolve) => { session.exitResolve = resolve; });
 
+  unpatchRefresh();
   paste.stop();
   session.statusBar?.stop();
   if (!session.rl.closed) session.rl.close();
