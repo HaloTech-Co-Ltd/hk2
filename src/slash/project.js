@@ -158,12 +158,24 @@ async function setProject(rest, ctx) {
     return;
   }
   if (key === 'current') {
-    // Switch BOTH the shared global pointer and this session's pin.
+    // Switch BOTH the shared global pointer and this session's pin. When the
+    // target differs from the current project, ctx.setCurrentProject also
+    // finalizes the old conversation on disk and starts a fresh one under the
+    // target project (equivalent to /quit + `hk2 --project=<target>`).
     const switcher = ctx.setCurrentProject || (async (v) => setCurrentProject(v));
     const target = await switcher.call(ctx, val);
     if (!target) { ctx.print(`Not found: ${val}`); return; }
+    if (target.id === cur.id) {
+      // Same project: deliberately a no-op — the live conversation, transcript,
+      // and status state stay exactly as they are.
+      ctx.print(`current = ${target.name} (${target.id}) — already current; nothing changed.`);
+      return;
+    }
     ctx.print(`current = ${target.name} (${target.id})`);
-    // ctx.setCurrentProject already flagged reload; only flag for the fallback.
+    ctx.print(`Session for ${cur.name} saved; a fresh session was started on ${target.name}`);
+    ctx.print(`(equivalent to /quit, then hk2 --project=${target.name})`);
+    // ctx.setCurrentProject already performed the full reload; only flag for
+    // the fallback (no ctx.setCurrentProject, e.g. headless tests).
     if (!ctx.setCurrentProject) ctx.noteReloadProject?.();
     return;
   }

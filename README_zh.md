@@ -310,7 +310,7 @@ TUI 默认折叠思考输出（窗口结束后显示 `Thought for Ns`）；设�
 | `/model help [子命令]` | 显示 `/model` 完整用法；`/model help set` 可下钻到单个子命令 |
 | `/project init --name=... --source=... [--source-root=...]` | 注册新项目 |
 | `/project list` | 列出所有项目 |
-| `/project set current <id\|name>` | 切换当前项目 |
+| `/project set current <id\|name>` | 切换当前项目：把当前会话保存到原项目下，并在目标项目上开启新会话（等同 `/quit` 后 `hk2 --project=<目标>`；模型/KB/底部状态重置）；切到当前已远中的项目为空操作 |
 | `/project set name <new-name>` | 重命名 |
 | `/project show` | 当前项目详情 |
 | `/project drop <id\|name>` | 移除项目（保留知识库） |

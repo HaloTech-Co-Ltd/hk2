@@ -759,17 +759,68 @@ export function buildBaseCtx(session, io) {
     /**
      * Switch this session onto a different project AND update the shared
      * global `current` pointer (so /project show etc. stay consistent).
-     * Migrating the pin means the switch takes effect in THIS session even
-     * if another parallel process later rewrites the global pointer.
+     *
+     * SEMANTICS (/project set current): switching to a DIFFERENT project is
+     * equivalent to /quit followed by `hk2 --project=<target>`:
+     *   - the previous project's conversation is finalized on disk (flush +
+     *     a `project_switch` meta marker) under ITS OWN sessions dir;
+     *   - this session starts FRESH on the target project: messages cleared,
+     *     a NEW transcript created under the target's sessions dir, and the
+     *     bottom status bar state (phase / turnStart / tokens / plan
+     *     progress) reset so nothing from the old context leaks in;
+     *   - reloads run immediately (project/kb/model), so the very next
+     *     prompt already sees the target's KB, permissions, and default
+     *     model.
+     * Switching to the project this session is ALREADY on is a deliberate
+     * no-op: nothing is saved or reset, the live conversation keeps running.
      * Returns the resolved project record, or null if not found.
      */
     setCurrentProject: async (idOrName) => {
       const target = await setCurrentProject(idOrName);
       if (target) {
+        // Same-project "switch" (re-typed command): pure no-op — keep the
+        // live conversation, transcript, and status state exactly as they
+        // are. The global-pointer write above already happened with the
+        // same value, which is harmless.
+        if (target.id === session.pinnedProjectId) return target;
+        // Finalize the previous project's conversation: stamp the transcript
+        // so a later --resume knows how this session ended, then flush the
+        // append chain. The transcript object is dropped right after — the
+        // new project gets a brand-new one from reloadAll's
+        // `!session.transcript` branch below.
+        const prevTranscript = session.transcript;
+        const prevProjectId = session.pinnedProjectId;
+        session.transcript = null;
+        if (prevTranscript) {
+          await prevTranscript.logMeta('project_switch', {
+            from: prevProjectId ?? null,
+            to: target.id,
+          }).catch(() => {});
+          await prevTranscript.flush();
+        }
         session.pinnedProjectId = target.id;
         // An explicit /project set is as deliberate as --project: if THAT
         // project is later dropped, never silently switch to another.
         session.explicitProject = true;
+        // The old project's provenance must not survive the switch.
+        session.resumedFromOtherProject = undefined;
+        // Fresh-session state on the target — the in-memory mirror of a
+        // /quit + relaunch. Everything conversation- or status-related
+        // resets; llm/modelCfg are rebuilt by the model reload below.
+        session.messages = [];
+        session.lastAnswer = null;
+        session.toolCallCount = 0;
+        session.needsSystemPrompt = false;
+        session.lastTask = null;
+        session.planProgress = null;
+        session.hadPlanThisTurn = false;
+        session.lastPlanText = null;
+        session.phase = 'idle';
+        session.turnStart = 0;
+        session.lastContextTokens = 0;
+        session.kbLearnHandledAt = 0;
+        session.startedAt = new Date().toISOString();
+        session.tokens = { callIn: 0, callOut: 0, loopIn: 0, loopOut: 0, loopPeakIn: 0, loopPeakOut: 0, cumIn: 0, cumOut: 0, cacheRead: 0, cacheCreation: 0 };
         session.reloadFlags.project = true;
         session.reloadFlags.kb = true;
         // The effective default model is project-scoped (resolveDefaultModel
@@ -777,6 +828,14 @@ export function buildBaseCtx(session, io) {
         // must also re-resolve the model — unless a session-only override
         // (/model use) is active, which always wins.
         if (!session.sessionModelRef) session.reloadFlags.model = true;
+        // Consume the flags NOW (not after the next user line): reloadAll
+        // resolves the target project, points HK2_PROJECT_SOURCE and the
+        // permission service at its source root, and — transcript being
+        // null — creates the target project's fresh transcript before the
+        // next prompt renders. The status bar repaints from the reset
+        // state above plus the swapped project/model.
+        await flushSessionReloads(session, ctx);
+        session.statusBar?.update();
       }
       return target;
     },

@@ -329,7 +329,7 @@ Type `/help` for the full list, or `/help <command>` (e.g. `/help kb`, `/help kn
 | `/model help [sub]` | Full `/model` usage; `/model help set` drills into one subcommand |
 | `/project init --name=... --source=... [--source-root=...]` | Register a new project |
 | `/project list` | List all projects |
-| `/project set current <id\|name>` | Switch current project |
+| `/project set current <id\|name>` | Switch current project: saves the current session under the old project and starts a fresh session on the target (equivalent to `/quit` then `hk2 --project=<target>`; model/KB/status reset). Switching to the already-current project is a no-op |
 | `/project set name <new-name>` | Rename |
 | `/project show` | Current project details |
 | `/project drop <id\|name>` | Remove a project (KB preserved) |

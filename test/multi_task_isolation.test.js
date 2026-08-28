@@ -25,6 +25,7 @@ import {
   ensureHome, registerProject, setCurrentProject, getCurrentProject,
 } from '../lib/config/home.js';
 import { createSession, buildCtx, reloadAll } from '../src/commands/interactive.js';
+import { SESSIONS_ROOT } from '../lib/config/home.js';
 
 let __seq = 0;
 async function makeSourceDir(name) {
@@ -125,4 +126,81 @@ test('reloadAll does not clobber an existing transcript when re-resolving the pi
   // Second reload (project flag) must NOT replace the transcript.
   await reloadAll(session, ctx, { project: true, kb: false, model: false });
   assert.equal(session.transcript, firstTranscript, 'transcript preserved across reload');
+});
+
+test('/project set current to the SAME project is a no-op — conversation and transcript untouched', async () => {
+  const { a } = await setupTwoProjects();
+  const session = createSession(a.id);
+  const ctx = buildCtx(session);
+  await reloadAll(session, ctx, { project: true, kb: false, model: false });
+  const transcriptBefore = session.transcript;
+  assert.ok(transcriptBefore, 'transcript created on first reload');
+
+  // Simulate a live conversation + non-idle status state.
+  session.messages = [{ role: 'user', content: 'hello' }];
+  session.tokens.loopPeakIn = 1234;
+  session.phase = 'working';
+
+  // Re-typing the same project must change nothing.
+  const target = await ctx.setCurrentProject(a.name);
+  assert.equal(target?.id, a.id, 'same-project switch resolves the project');
+  assert.equal(session.transcript, transcriptBefore, 'transcript object preserved');
+  assert.equal(session.transcript.sessionId, transcriptBefore.sessionId, 'session id preserved');
+  assert.equal(session.messages.length, 1, 'conversation NOT cleared on a same-project switch');
+  assert.equal(session.tokens.loopPeakIn, 1234, 'tokens NOT reset on a same-project switch');
+  assert.equal(session.phase, 'working', 'phase NOT reset on a same-project switch');
+  assert.deepEqual(session.reloadFlags, { project: false, kb: false, model: false }, 'no pending reload flags');
+});
+
+test('/project set current to a DIFFERENT project starts a fresh session (save old, new transcript under new project, reset state)', async () => {
+  const { a, b } = await setupTwoProjects();
+  const session = createSession(a.id);
+  const ctx = buildCtx(session);
+  await reloadAll(session, ctx, { project: true, kb: false, model: false });
+  const oldTranscript = session.transcript;
+  assert.ok(oldTranscript, 'transcript for project A created');
+  assert.equal(oldTranscript.projectId, a.id);
+
+  // Simulate an in-flight conversation on A plus non-idle status state.
+  session.messages = [{ role: 'user', content: 'work on A' }];
+  session.tokens.loopPeakIn = 4321;
+  session.phase = 'working';
+
+  // Switch to B — equivalent to /quit + `hk2 --project=B`.
+  const target = await ctx.setCurrentProject(b.name);
+  assert.equal(target?.id, b.id, 'switch resolved projB');
+  assert.equal(ctx.pinnedProjectId, b.id, 'session pin migrated to B');
+  assert.equal((await getCurrentProject())?.id, b.id, 'global current updated to B');
+
+  // The OLD conversation was finalized on disk under project A, stamped as a
+  // project_switch, before the transcript was swapped.
+  const oldRaw = await fs.readFile(oldTranscript.path, 'utf8');
+  assert.ok(oldRaw.includes('"type":"meta"'), 'meta events present in old transcript');
+  const lines = oldRaw.split('\n').filter(l => l.trim());
+  const metaLines = lines.map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(e => e && e.type === 'meta');
+  const sw = metaLines.find(e => e.key === 'project_switch');
+  assert.ok(sw, 'project_switch meta marker written');
+  assert.equal(sw.value.from, a.id);
+  assert.equal(sw.value.to, b.id);
+
+  // A NEW transcript was created for project B (different file, B's dir).
+  assert.notEqual(session.transcript, oldTranscript, 'transcript object replaced');
+  assert.ok(session.transcript, 'new transcript exists');
+  assert.equal(session.transcript.projectId, b.id, 'new transcript belongs to project B');
+  assert.notEqual(session.transcript.sessionId, oldTranscript.sessionId, 'new session id');
+  assert.ok(session.transcript.path.startsWith(path.join(SESSIONS_ROOT, b.id) + path.sep),
+    `new transcript path under project B's sessions dir (got ${session.transcript.path})`);
+
+  // Fresh-session state: context, status bar state, flags all reset.
+  assert.equal(session.messages.length, 0, 'messages cleared');
+  assert.equal(session.lastAnswer, null);
+  assert.equal(session.lastTask, null);
+  assert.equal(session.planProgress, null);
+  assert.equal(session.phase, 'idle', 'phase reset');
+  assert.equal(session.turnStart, 0, 'turnStart reset');
+  assert.equal(session.tokens.loopPeakIn, 0, 'token counters reset');
+  assert.deepEqual(session.reloadFlags, { project: false, kb: false, model: false }, 'reload flags consumed');
+  assert.equal(session.project?.id, b.id, 'session.project resolved to B');
+  assert.equal(process.env.HK2_PROJECT_SOURCE, b.sourcePath, 'HK2_PROJECT_SOURCE points at B');
 });
