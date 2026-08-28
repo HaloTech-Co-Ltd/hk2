@@ -243,7 +243,9 @@ hk2 ships two interactive front-ends over the same session, slash commands,
 and agent-turn pipeline:
 
 - **Line REPL (default)** — `hk2`. The classic readline prompt
-  (`hk2(project|Eden/N Holy/N|model)>`), status bar, and tool cards.
+  (`hk2(project|Eden/N Holy/N|model)>`), status bar, and tool cards. Tab
+  completes slash commands AND their data arguments (model refs, session
+  ids, project ids — fetched live on Tab).
 - **Inline TUI** — `hk2 --tui` (or `HK2_UI=tui`). A Claude Code-style
   interface: a bordered multi-line input box pinned at the bottom, streaming
   markdown answers and tool-call cards in the terminal's native scrollback,
@@ -263,7 +265,7 @@ TUI keys:
 | ← / →, home / end, ctrl+a / ctrl+e | Cursor movement |
 | ctrl+k / ctrl+u / ctrl+w / alt+backspace | Kill to line end / line start / word before cursor |
 | Tab | Accept the highlighted slash completion |
-| `/` + prefix | Completion menu (derived from the registered commands; ↑↓ select, pageup/pagedown jump 5) |
+| `/` + prefix | Completion menu (derived from the registered commands; ↑↓ select, pageup/pagedown jump 5). Data arguments complete too: `/model use|set|del|set-default|set-phase|add-mcpserver <ref>`, `/session resume|info <id>`, `/resume <id>`, `/project set current|drop <id>` list live model refs / stored sessions / registered projects; `/model set-phase --phase=` completes the phase enum |
 | ctrl+r | Incremental history search: type a substring, ↑↓ (or repeat ctrl+r) cycle matches, enter picks one INTO the box, esc closes |
 | esc / ctrl+g | While a turn runs: interrupt it. Otherwise: close the completion menu / cancel the open modal |
 | ctrl+l | Clear the screen (transcript stays in the scrollback) |

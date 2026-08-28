@@ -54,7 +54,8 @@
  */
 import readline from 'node:readline';
 import { ensureHome } from '../../lib/config/home.js';
-import { dispatchSlash, allSlashCompletionLabels } from '../slash/index.js';
+import { dispatchSlash, allSlashCompletionLabels, slashCompletions } from '../slash/index.js';
+import { dynamicContextKey, fetchDynamicItems } from '../slash/completions.js';
 import { StatusBar } from '../../lib/agent/statusbar.js';
 import { PasteHandler } from '../../lib/agent/paste.js';
 import { MultiLineCollector } from '../../lib/agent/multiline.js';
@@ -168,7 +169,7 @@ export async function interactive(opts = {}) {
     output: process.stderr,
     prompt: promptFor(session),
     terminal: isInteractive,
-    completer: makeCompleter(),
+    completer: makeCompleter(() => session.project?.id),
   });
 
   // Bracketed paste support: detect multi-line pastes and submit them as a
@@ -561,12 +562,30 @@ export function printBanner(session, ctx) {
  * SLASH_COMMANDS + the HELP_TEXT subcommand sections, so the list can never
  * drift from the registered commands. Replaces the former hand-maintained
  * 40-entry array that had already fallen behind the real command set.
+ *
+ * DYNAMIC argument positions (/model use <ref>, /session resume <id>,
+ * /project set current <id>) complete from the live stores: models.json,
+ * the project's sessions dir, projects.json (TTL-cached in
+ * slash/completions.js). readline accepts an async completer (callback
+ * style), so we only pay the IO on Tab, never per keypress.
  */
-function makeCompleter() {
+function makeCompleter(getProjectId) {
   const cmds = allSlashCompletionLabels();
-  return function completer(line) {
+  return async function completer(line, callback) {
+    try {
+      const key = dynamicContextKey(line);
+      if (key) {
+        const items = await fetchDynamicItems(key, { projectId: getProjectId?.() });
+        const { items: labels } = slashCompletions(line, { [key]: items });
+        const hits = labels.map((i) => i.label);
+        return callback(null, [hits.length ? hits : [], line]);
+      }
+    } catch {
+      // Dynamic source failed (unreadable store, ...) — fall through to the
+      // static list rather than breaking Tab.
+    }
     const hits = cmds.filter(c => c.startsWith(line));
-    return [hits.length ? hits : cmds, line];
+    return callback(null, [hits.length ? hits : cmds, line]);
   };
 }
 

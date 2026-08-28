@@ -69,6 +69,7 @@ import { initialState, applyKey, setText, text as boxText, cursorScreen, visible
 import { History, historyPath } from './history.js';
 import { normalizeKey } from './keys.js';
 import { completionMenu, moveSelection, historyMenu } from './completion.js';
+import { dynamicContextKey, fetchDynamicItems, currentDynamicSnapshot } from '../slash/completions.js';
 import { enableBracketedPaste, disableBracketedPaste } from '../../lib/agent/paste.js';
 import { loadTheme } from '../../lib/agent/tool_theme.js';
 import * as style from '../../lib/agent/style.js';
@@ -195,12 +196,30 @@ export async function runTui(opts = {}) {
   let shutDown = false;
 
   // ---- frame + blocks -------------------------------------------------
+  // Dynamic completion candidates: the menu renders SYNCHRONOUSLY on every
+  // keypress, so it reads from the latest snapshot; whenever the input text
+  // changes we fire-and-forget a refresh of whichever data kind the cursor
+  // position needs (models / sessions / projects, TTL-cached) and re-render
+  // once it lands. Until then the menu simply shows the static part (or the
+  // stale snapshot) — never blocking, never throwing.
+  let dynSnap = currentDynamicSnapshot();
+  let dynRefreshing = false;
+  const refreshDynamic = () => {
+    const kind = dynamicContextKey(boxText(box));
+    if (!kind || dynRefreshing) return;
+    dynRefreshing = true;
+    fetchDynamicItems(kind, { projectId: session.project?.id })
+      .then(() => { dynSnap = currentDynamicSnapshot(); })
+      .catch(() => {})
+      .finally(() => { dynRefreshing = false; frame.requestRender(); });
+  };
   const menu = () => (completionDismissed
     ? { items: [], selected: 0, replaceFrom: 0, lines: [], open: false }
     : completionMenu(boxText(box), {
         selected: completionSelected,
         width: boxWidthFor() + 2,
         maxRows: Math.max(3, Math.min(14, (process.stdout.rows || process.stderr.rows || 24) - 10)),
+        dyn: dynSnap,
       }));
   const searchMenu = () => historyMenu(boxText(box), history.entries(), {
     selected: searchSelected,
@@ -641,6 +660,7 @@ export async function runTui(opts = {}) {
     if (boxText(box) !== before) {
       completionSelected = 0;
       completionDismissed = false; // new text re-opens the menu
+      refreshDynamic();           // ...and pull fresh dynamic candidates
     }
     frame.requestRender();
   };

@@ -61,13 +61,15 @@ const HIDE_DESC_W = 44;
  * Build the menu state for the current input line.
  *
  * @param {string} line current input
- * @param {{selected?: number, maxRows?: number, width?: number}} opts
+ * @param {{selected?: number, maxRows?: number, width?: number, dyn?: object}} opts
  *   maxRows — visible LINE budget (each item takes 1–2 lines); 0 = auto
  *   (terminal rows − 10, clamped to 3..14)
+ *   dyn — optional dynamic-candidate snapshot (see slash/completions.js)
+ *   passed straight through to slashCompletions for data argument positions.
  * @returns {{items: Array, selected: number, replaceFrom: number, lines: string[], open: boolean}}
  */
-export function completionMenu(line, { selected = 0, maxRows = 0, width = 0 } = {}) {
-  const { items: rawItems, replaceFrom } = slashCompletions(line);
+export function completionMenu(line, { selected = 0, maxRows = 0, width = 0, dyn } = {}) {
+  const { items: rawItems, replaceFrom } = slashCompletions(line, dyn);
   // Sort for DISPLAY (Claude Code lists commands alphabetically; the
   // registry order stays authoritative everywhere else) and DEDUPE: the
   // same label can arrive from two branches (a family subcommand AND a

@@ -1,6 +1,6 @@
 {
   "name": "hk2",
-  "version": "1.1.102",
+  "version": "1.1.103",
   "description": "Knowledge-base-driven coding agent with per-project KB",
   "type": "module",
   "bin": {

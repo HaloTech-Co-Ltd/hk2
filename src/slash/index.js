@@ -65,6 +65,7 @@ import { cmdSession, resumeDirect } from './session.js';
 import { cmdReview } from './review.js';
 import { cmdTheme } from './theme.js';
 import { printCommandHelp, HELP_TEXT } from './help.js';
+import { dynamicSlot, invalidateDynamicCache } from './completions.js';
 
 export const SLASH_COMMANDS = [
   { name: '/model',   handler: cmdModel,   description: 'Manage models.json (list / use / set-default / set / add / del / show)' },
@@ -137,6 +138,11 @@ export async function dispatchSlash(line, ctx) {
   } catch (err) {
     ctx.print(`Error: ${err.message}`);
     if (process.env.HK2_DEBUG) ctx.print(err.stack);
+  } finally {
+    // Any slash command may have mutated the stores the dynamic completion
+    // sources read (/model add, /project drop, /session new, ...). Drop the
+    // TTL cache so the very next Tab sees fresh data.
+    invalidateDynamicCache();
   }
   return true;
 }
@@ -243,6 +249,11 @@ function helpSubcommands(key) {
   return out.filter(s => (seen.has(s.name) ? false : (seen.add(s.name), true)));
 }
 
+/** Prefix tokens up to (excluding) the fragment, with trailing space. */
+function prefixTo(tokens, upto) {
+  return tokens.slice(0, upto).join(' ') + ' ';
+}
+
 /** HELP_TEXT keys that appear as a subcommand row of `key` (nested topics, e.g. kb → knowledge, code). */
 function nestedTopics(key) {
   const subs = helpSubcommands(key);
@@ -252,12 +263,17 @@ function nestedTopics(key) {
 /**
  * Structured completions for the (partial) input `line`.
  *
+ * @param {string} line
+ * @param {object} [dyn] dynamic candidates keyed by data kind, each an array
+ *   of {ref|id|name, desc} records from completions.js — see dynamicSlot.
+ *   Omit for the legacy static-only behavior (dynamic argument positions
+ *   then offer no items, exactly as before this parameter existed).
  * @returns {{items: Array<{label: string, description: string}>, replaceFrom: number}}
  *   items — candidate completions (label = full replacement text, e.g.
  *   "/kb knowledge learn"); replaceFrom — index in `line` where the label
  *   replaces from (the start of the token being completed).
  */
-export function slashCompletions(line) {
+export function slashCompletions(line, dyn) {
   if (typeof line !== 'string' || !line.startsWith('/')) return { items: [], replaceFrom: 0 };
   const tokens = line.split(/\s+/);
   const fragment = tokens[tokens.length - 1] || '';
@@ -271,6 +287,38 @@ export function slashCompletions(line) {
       replaceFrom,
     };
   }
+  // ---- dynamic argument positions (models / sessions / projects) ----
+  // Before falling into the static nested-topic machinery, check whether
+  // the cursor token is a DATA argument. When it is, the static helpers
+  // would either invent subcommands (wrong) or return empty (the old
+  // behavior); instead the injected `dyn` snapshot supplies the real
+  // candidates. Pass no snapshot → keeps returning empty (legacy).
+  const slot = dynamicSlot(tokens);
+  if (slot) {
+    const pool = dyn?.[slot.kind];
+    if (!Array.isArray(pool)) return { items: [], replaceFrom };
+    const prefix = tokens.slice(0, slot.index).join(' ') + ' ';
+    // Matching: a fragment matches the full ref ('openai/gpt…') OR the bare
+    // model id / session id after the slash ('gpt…') — users remember the
+    // model name far more often than the provider prefix.
+    const matches = (c) => {
+      const token = String(c.ref ?? c.id ?? c.name ?? '');
+      if (token.startsWith(fragment)) return true;
+      if (slot.kind === 'models') {
+        const slash = token.lastIndexOf('/');
+        if (slash > 0 && token.slice(slash + 1).startsWith(fragment)) return true;
+      }
+      return false;
+    };
+    const items = pool
+      .filter(matches)
+      .map((c) => ({
+        label: prefix + (c.ref ?? c.id ?? c.name),
+        description: String(c.desc ?? ''),
+      }));
+    return { items, replaceFrom };
+  }
+
   const family = tokens[0];
   const key = family.slice(1);
   if (tokens.length === 2) {
@@ -303,6 +351,17 @@ export function slashCompletions(line) {
     return { items, replaceFrom };
   }
   if (tokens.length === 3) {
+    // /model set-phase --phase=<name> ...: complete the phase enum inline.
+    // (The ref position is handled above via dynamicSlot.)
+    if (family === '/model' && tokens[1] === 'set-phase' && fragment.startsWith('--phase=')) {
+      const typed = fragment.slice('--phase='.length);
+      return {
+        items: ['rewrite-query', 'request-assess', 'plan-review', 'code-review']
+          .filter((p) => p.startsWith(typed))
+          .map((p) => ({ label: `${prefixTo(tokens, tokens.length - 1)}--phase=${p}`, description: 'agent phase' })),
+        replaceFrom,
+      };
+    }
     const topic = tokens[1];
     if (HELP_TEXT[topic] && helpSubcommands(key).some(s => s.name === topic)) {
       return {

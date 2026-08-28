@@ -233,7 +233,9 @@ hk2
 hk2 提供两个交互前端，共享同一套会话、slash 命令与 agent 回合管线：
 
 - **行式 REPL（默认）** — `hk2`。经典 readline 提示符
-  （`hk2(项目|Eden/N Holy/N|模型)>`）、状态栏与工具卡片。
+  （`hk2(项目|Eden/N Holy/N|模型)>`）、状态栏与工具卡片。Tab 可补全
+  slash 命令及其数据参数（模型引用、会话 id、项目 id —— 按下 Tab 时
+  实时读取）。
 - **内联 TUI** — `hk2 --tui`（或 `HK2_UI=tui`）。Claude Code 风格的界面：
   底部固定带边框的多行输入框、终端原生回滚区里的流式 markdown 回答与
   工具卡片、实时状态行、slash 命令补全、方向键确认弹窗。需要 TTY 终端；
@@ -251,7 +253,7 @@ TUI 按键：
 | ← / →、home / end、ctrl+a / ctrl+e | 光标移动 |
 | ctrl+k / ctrl+u / ctrl+w / alt+退格 | 删到行尾 / 行首 / 光标前一个词 |
 | Tab | 采纳高亮的 slash 补全项 |
-| `/` + 前缀 | 补全菜单（从已注册命令派生；↑↓ 选择，pageup/pagedown 翻 5 项） |
+| `/` + 前缀 | 补全菜单（从已注册命令派生；↑↓ 选择，pageup/pagedown 翻 5 项）。数据参数位也支持补全：`/model use|set|del|set-default|set-phase|add-mcpserver <ref>`、`/session resume|info <id>`、`/resume <id>`、`/project set current|drop <id>` 列出实时模型引用 / 已存会话 / 已注册项目；`/model set-phase --phase=` 补全阶段枚举 |
 | ctrl+r | 历史增量搜索：输入子串过滤，↑↓（或连按 ctrl+r）循环匹配，enter 把选中项填回输入框，esc 关闭 |
 | esc / ctrl+g | 回合运行中：中断回合。否则：关闭补全菜单 / 取消当前弹窗 |
 | ctrl+l | 清屏（对话记录保留在终端回滚里） |
