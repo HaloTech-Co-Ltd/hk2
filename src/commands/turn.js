@@ -56,6 +56,7 @@ import { getMcpTools } from '../../lib/agent/mcp.js';
 import { runLoop } from '../../lib/agent/loop.js';
 import { buildKbStats, fallbackKind, classifyRead } from '../../lib/agent/kb_stats.js';
 import { buildSystemPrompt } from '../../lib/agent/system_prompt.js';
+import { buildPermissionPromptSummary } from '../../lib/config/setting.js';
 import { reviewPlan } from '../../lib/agent/plan_review.js';
 import { createVerdictFilter } from '../../lib/agent/code_review.js';
 import { buildRequestGraph, renderRequestGraph } from '../../lib/agent/graph.js';
@@ -1003,12 +1004,20 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         supremeCodes = (await readSupremeCode(session.project.id))?.codes || [];
       } catch { supremeCodes = undefined; }
     }
+    // Permission sandbox summary — read from the same singleton the tools
+    // enforce with, so the prompt reflects the actually-effective rules.
+    // Failures degrade to "no section" (never block a turn on this).
+    let permissionSummary;
+    try {
+      permissionSummary = (await buildPermissionPromptSummary())?.text;
+    } catch { permissionSummary = undefined; }
     const sysPrompt = buildSystemPrompt({
       project: session.project,
       tools,
       cwd: process.cwd(),
       graphText,
       supremeCodes,
+      permissionSummary,
     });
     if (session.messages.length === 0) {
       session.messages.push({ role: 'system', content: sysPrompt });
