@@ -521,7 +521,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         sessionLlm: session.llm,
         warn: (m) => { ui.progress.breakLine(); ctx.print(m); },
         run: (llmForRewrite) => rewriteQuery(llmForRewrite, userText, {
-          timeoutMs: 15000,
+          // Default resolved from HK2_LLMAPI_TIMEOUT_MS_SIMPLE inside
+          // rewriteQuery (lib/llm/timeout.js); no hardcoded value here so the
+          // env var stays the single source of truth.
         }),
       });
       rewritePhaseRun = rewriteRun;
@@ -647,7 +649,8 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         sessionLlm: session.llm,
         warn: (m) => { ui.progress.breakLine(); ctx.print(m); },
         run: (llmForAssess) => assessRequest(llmForAssess, userText, {
-          timeoutMs: 15000,
+          // timeoutMs intentionally omitted: default resolved from
+          // HK2_LLMAPI_TIMEOUT_MS_SIMPLE inside assessRequest.
           signal: abortCtrl.signal,
           context: ctxLines.join('\n'),
           sessionContext: sessionDigest,
@@ -712,14 +715,16 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
         // Pass-2 stays SKIPPED when pass-1 skipped the phase
         // (HK2_ENABLE_PHASEMODEL_FALLBACK=0): re-probing the dead model would
-        // just repeat the warning and pay the 15s timeout again.
+        // just repeat the warning and pay the rewrite timeout again
+        // (HK2_LLMAPI_TIMEOUT_MS_SIMPLE, default 300s).
         if (!rewritePhaseRun?.skipped) {
           // Reuse the model that actually produced pass-1's outcome (the
           // phase model, or the session model after a fallback) so the
           // post-clarification pass stays consistent with pass-1.
           const llmForRewrite = rewritePhaseRun?.llm || rewriteLlm || session.llm;
+          // timeoutMs intentionally omitted: default resolved from
+          // HK2_LLMAPI_TIMEOUT_MS_SIMPLE inside rewriteQuery.
           rewrite = await rewriteQuery(llmForRewrite, userText, {
-            timeoutMs: 15000,
             clarification,
           });
           await session.transcript?.logMeta('rewrite', {

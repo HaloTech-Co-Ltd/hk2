@@ -609,6 +609,7 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划调用超时（毫秒）。慢速供应商（大文件映射上的推理模型）可能超过默认 300 秒。单次运行可用 `--plan-timeout-ms=N` 覆盖。 | `300000` |
 | `HK2_LLMAPI_TIMEOUT_MS` | 所有 LLM API 请求（chat completions / messages，流式与非流式）的默认超时（毫秒）。解析优先级：单次调用 `opts.timeoutMs` > 每模型 `config.timeout`（解析时始终从同一变量盖戳）> 本环境变量默认值。显式 `0` 表示无超时（不启动中止定时器——plan-review / code-review 阶段依赖此行为）。未设置 / 非法 / 负数回退到默认值。 | `3600000`（3600 秒） |
+| `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` | 轻量单次 LLM 阶段的超时（毫秒）：查询重写（`rewriting query`）与请求清晰度评估（`assessing request`），包括轮次开始的两趟调用与 `kb_search` 工具的内联重写。由 `rewriteQuery` / `assessRequest` 内部的 `llmApiTimeoutMsSimple()`（lib/llm/timeout.js）解析；单次调用传入 `opts.timeoutMs` 仍优先。显式 `0` 表示无超时。未设置 / 非法 / 负数回退到默认值。此前硬编码为 15000ms（15 秒）。 | `300000`（300 秒） |
 | `HK2_WELCOME` | TUI 欢迎卡档位：`full` 在终端宽度允许（≥88 列）时显示带 logo 与提示面板的完整卡，较窄终端仍自动降级为单栏/两行；`compact` 跳过完整 logo 卡但极窄终端仍用两行摘要；`auto`（默认）首启完整、老用户与矮屏（<30 行）紧凑。 | `auto` |
 | `HK2_LLMAPI_NUMOFRETRIES` | LLM API 调用发生瞬时故障（网络错误如 `fetch failed`、HTTP 408/429/5xx、请求超时）时的最大连续重试次数，避免网络闪断或供应商短暂故障直接中止整个代理任务。失败后按指数退避（1s 起、封顶 30s）最多重试 N 次（总计 N+1 次尝试）；尝试间会发出 `{type:'retry'}` 事件，消费方据此丢弃已累积的半截输出。确定性客户端错误（其他 4xx）与用户中止（ESC）不重试。显式 `0` 表示禁用重试（仅尝试一次）；未设置 / 非法 / 负数回退默认值。 | `10` |
 | `HK2_INDEX_PARALLEL` | KB 索引解析池的并行度（`/kb init` / `/kb update`）。`0` 或未设置 = 自动（取当前系统 CPU 数）；正整数 N 则固定为 N。 | `0` |
