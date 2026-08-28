@@ -49,6 +49,39 @@ test('input line alone reserves one row above the status line', () => {
   assert.equal(bar._planLineCount, 0);
 });
 
+test('regression (first instruction after boot): grow keeps the saved continuation, adjusted by the reflow', () => {
+  // Boot: banner + idle prompt sit near the TOP of the workspace; after the
+  // user submits the first instruction the real continuation is the fresh row
+  // right under the echoed line — far ABOVE the workspace bottom. armInputBox
+  // saves it into the DECSC slot (\x1b7), then update() grows the block 0->1
+  // and SU-scrolls the workspace by 1. The grow tail must ADJUST the slot by
+  // the reflow amount (DECRC + CUU1 + DECSC), not hard-reset it to the new
+  // workspace bottom: the reset left the first "✓ rewriting query" phase line
+  // rendering at the bottom (right above "» add instruction ▏") with a large
+  // blank gap between it and the echoed instruction above.
+  let inputOn = false;
+  const { bar, writes, all } = makeBar({ input: () => (inputOn ? ['» ▏'] : []) });
+  bar.setInputCursorFn(() => 5); // dock column provider (interactive.js wiring)
+  bar.update(); // no box, no plan -> workspace region 1..23, no dock yet
+  writes.length = 0;
+  inputOn = true; // first turn arms the box: grow 0 -> 1
+  bar.rawWrite('\x1b7'); // armInputBox saves the real continuation into the slot
+  bar.update();
+  const w = all();
+  // The reflow happened in the OLD region BEFORE the new region was set.
+  const suIdx = w.indexOf('\x1b[1S');
+  assert.ok(suIdx >= 0, 'grow emits a scroll-up reflow of the OLD region');
+  assert.ok(w.includes('\x1b[1;22r'), 'new (smaller) region established');
+  assert.ok(w.indexOf('\x1b[1;22r') > suIdx, 'SU happens BEFORE the new region is set');
+  // Docked tail: restore the saved slot, adjust it UP by the reflow (1),
+  // re-save, then re-dock. NO hard reset to the workspace bottom.
+  assert.ok(w.includes('\x1b8\x1b[1A\x1b7'), 'slot adjusted by the reflow amount, not reset');
+  assert.ok(!w.includes('\x1b[22;1H\x1b7'), 'no hard reset of the slot to the workspace bottom');
+  // After the tail, the write-router's next \x1b8 resumes at the adjusted
+  // slot: the first spinner/phase line lands right under the instruction
+  // echo, with no fabricated blank gap.
+});
+
 test('input line renders ABOVE the plan panel (input row = firstRow, plan beneath, status last)', () => {
   const { bar, all } = makeBar({
     input: () => ['» instruction ▏'],
@@ -121,7 +154,7 @@ test('turn boundary: grow 0->1 after a submitted prompt scrolls the prompt line 
   assert.ok(w.indexOf('\x1b[1;22r') > suIdx, 'SU happens BEFORE the new region is set');
   assert.ok(w.includes('\x1b[1;23r'), 'OLD region explicitly re-established first');
   assert.ok(w.indexOf('\x1b[1;23r') < suIdx, 'old region set before the SU');
-  assert.ok(w.includes('\x1b[22;1H'), 'cursor parked at the new workspace bottom');
+  assert.ok(w.includes('\x1b[22;1H'), 'cursor parked at the new workspace bottom (undocked grow)');
 });
 
 test('refreshInputLine rewrites ONLY the input row and restores the cursor', () => {
@@ -404,6 +437,10 @@ test('grow/shrink with dock: re-saves the stale slot then re-docks', () => {
   bar.update();
   const w = all();
   assert.ok(w.includes('\x1b7\x1b[22;5H'), 'geometry change re-saves slot then re-docks (row 22 after grow)');
+  // And the re-saved slot is the ADJUSTED continuation (restore + CUU1 + save),
+  // not a hard reset: the \x1b7 right before the park must be preceded by the
+  // reflow adjustment.
+  assert.ok(/\x1b8\x1b\[1A\x1b7\x1b\[22;5H$/.test(w), 'dock tail = DECRC + CUU(reflow) + DECSC + park');
 });
 
 /* ---------- write-router protocol (interactive.js wiring) ---------- */
