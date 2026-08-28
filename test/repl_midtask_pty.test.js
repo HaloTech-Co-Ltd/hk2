@@ -12,7 +12,9 @@
  * type a second line → the `queued #1` receipt must print (and the box row
  * clear) → the stream finishes → /quit exits cleanly.
  *
- * Skipped when `script` is unavailable. Run: node --test test/repl_midtask_pty.test.js
+ * Runs via test/_pty_runner.js: util-linux `script -qec` on Linux, system
+ * `expect` on macOS (BSD script has no -c and rejects pipe stdin).
+ * Skipped when neither backend is available. Run: node --test test/repl_midtask_pty.test.js
  *----------------------------------------------------------------------*/
 import './_tty_env.js';
 
@@ -23,9 +25,9 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn, spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { ptyAvailable, spawnPty } from './_pty_runner.js';
 
 const HOME = fsSync.mkdtempSync(path.join(os.tmpdir(), 'hk2-midtask-pty-'));
 process.env.HK2_HOME = HOME;
@@ -37,7 +39,7 @@ const { buildIndex } = await import('../lib/index/indexer.js');
 const here = path.dirname(new URL(import.meta.url).pathname);
 const CLI = path.join(here, '..', 'bin', 'hk2');
 
-const hasScript = spawnSync('which', ['script'], { stdio: 'ignore' }).status === 0;
+const hasScript = ptyAvailable(); // util-linux script OR macOS expect
 
 /** Mock OpenAI-style SSE server whose first response STALLS 2.5s. */
 function mockLlmServer() {
@@ -81,36 +83,34 @@ test('pty: mid-task instruction box appears during a turn; queued receipt prints
 
   try {
     const out = await new Promise((resolve, reject) => {
-      const child = spawn('script', [
-        '-qec',
+      const { child } = spawnPty(
         `stty rows 30 cols 100 2>/dev/null; exec node ${JSON.stringify(CLI)}`,
-        '/dev/null',
-      ], {
-        cwd: src,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          HK2_ENABLE_QUERYREWRITE: '0',
-          HK2_ENABLE_REQUEST_ASSESS: '0',
-          HK2_AUTOIMPORT_CLAUDE: '0',
+        {
+          cwd: src,
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+            HK2_ENABLE_QUERYREWRITE: '0',
+            HK2_ENABLE_REQUEST_ASSESS: '0',
+            HK2_AUTOIMPORT_CLAUDE: '0',
+          },
+          // Boot → first message → (turn stalls on the mock) second line → quit.
+          // Generous waits: under `node --test` the machine is busier than a bare
+          // shell, and the whole point is what's on screen DURING the stall.
+          keys: [
+            [2500, 'hello there\r'],
+            [5500, 'mid-task note\r'],   // inside the 2.5s stall window
+            [10000, '/quit\r'],
+            [13000, '/quit\r'],          // in case a prompt consumed the first
+          ],
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      );
       let buf = '';
       const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`pty timed out; output tail: ${buf.slice(-400)}`)); }, 30000);
       child.stdout.on('data', (b) => { buf += b.toString(); });
       child.stderr.on('data', (b) => { buf += b.toString(); });
       child.on('error', (err) => { clearTimeout(timer); reject(err); });
       child.on('close', () => { clearTimeout(timer); resolve(buf); });
-
-      // Boot → first message → (turn stalls on the mock) second line → quit.
-      // Generous waits: under `node --test` the machine is busier than a bare
-      // shell, and the whole point is what's on screen DURING the stall.
-      const send = (s) => child.stdin.write(s);
-      setTimeout(() => send('hello there\r'), 2500);
-      setTimeout(() => send('mid-task note\r'), 5500);   // inside the 2.5s stall window
-      setTimeout(() => send('/quit\r'), 10000);
-      setTimeout(() => send('/quit\r'), 13000);          // in case a prompt consumed the first
     });
 
     // Assert on ANSI-STRIPPED text: the box label is two styled spans, so
@@ -146,34 +146,32 @@ test('pty parity: the SAME scenario on the TUI front-end (message → mid-task q
 
   try {
     const out = await new Promise((resolve, reject) => {
-      const child = spawn('script', [
-        '-qec',
+      const { child } = spawnPty(
         `stty rows 30 cols 100 2>/dev/null; exec node ${JSON.stringify(CLI)} --tui`,
-        '/dev/null',
-      ], {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          HK2_ENABLE_QUERYREWRITE: '0',
-          HK2_ENABLE_REQUEST_ASSESS: '0',
-          HK2_AUTOIMPORT_CLAUDE: '0',
-          HK2_HOME: HOME,
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+            HK2_ENABLE_QUERYREWRITE: '0',
+            HK2_ENABLE_REQUEST_ASSESS: '0',
+            HK2_AUTOIMPORT_CLAUDE: '0',
+            HK2_HOME: HOME,
+          },
+          keys: [
+            [2500, 'hello there\r'],
+            [5500, 'mid-task note\r'],  // inside the stall window
+            [10000, '/quit\r'],
+            [13000, '/quit\r'],
+          ],
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      );
       let buf = '';
       const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`pty timed out; tail: ${buf.slice(-400)}`)); }, 30000);
       child.stdout.on('data', (b) => { buf += b.toString(); });
       child.stderr.on('data', (b) => { buf += b.toString(); });
       child.on('error', (err) => { clearTimeout(timer); reject(err); });
       child.on('close', (code) => { clearTimeout(timer); resolve({ buf, code }); });
-
-      const send = (s) => child.stdin.write(s);
-      setTimeout(() => send('hello there\r'), 2500);
-      setTimeout(() => send('mid-task note\r'), 5500);  // inside the stall window
-      setTimeout(() => send('/quit\r'), 10000);
-      setTimeout(() => send('/quit\r'), 13000);
     });
 
     const plain = out.buf.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
