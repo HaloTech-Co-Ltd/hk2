@@ -253,7 +253,7 @@ TUI 按键：
 | ← / →、home / end、ctrl+a / ctrl+e | 光标移动 |
 | ctrl+k / ctrl+u / ctrl+w / alt+退格 | 删到行尾 / 行首 / 光标前一个词 |
 | Tab | 采纳高亮的 slash 补全项 |
-| `/` + 前缀 | 补全菜单（从已注册命令派生；↑↓ 选择，pageup/pagedown 翻 5 项）。数据参数位也支持补全：`/model use|set|del|set-default|set-phase|add-mcpserver <ref>`、`/session resume|info <id>`、`/resume <id>`、`/project set current|drop <id>` 列出实时模型引用 / 已存会话 / 已注册项目；`/model set-phase --phase=` 补全阶段枚举 |
+| `/` + 前缀 | REPL 也支持实时补全菜单（输入即出现，无需 Tab；↑↓ 选择，pageup/pagedown 翻 5 项，Tab/Enter 采纳，唯一精确匹配时 Enter 直接提交，esc 关闭直到输入再次变化）。从已注册命令派生；数据参数位也支持补全：`/model use|set|del|set-default|set-phase|add-mcpserver <ref>`、`/session resume|info <id>`、`/resume <id>`、`/project set current|drop <id>` 列出实时模型引用 / 已存会话 / 已注册项目；`/model set-phase --phase=` 补全阶段枚举。`HK2_REPL_HINTS=0` 可恢复无提示的朴素提示符 |
 | ctrl+r | 历史增量搜索：输入子串过滤，↑↓（或连按 ctrl+r）循环匹配，enter 把选中项填回输入框，esc 关闭 |
 | esc / ctrl+g | 回合运行中：中断回合。否则：关闭补全菜单 / 取消当前弹窗 |
 | ctrl+l | 清屏（对话记录保留在终端回滚里） |

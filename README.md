@@ -265,7 +265,7 @@ TUI keys:
 | ← / →, home / end, ctrl+a / ctrl+e | Cursor movement |
 | ctrl+k / ctrl+u / ctrl+w / alt+backspace | Kill to line end / line start / word before cursor |
 | Tab | Accept the highlighted slash completion |
-| `/` + prefix | Completion menu (derived from the registered commands; ↑↓ select, pageup/pagedown jump 5). Data arguments complete too: `/model use|set|del|set-default|set-phase|add-mcpserver <ref>`, `/session resume|info <id>`, `/resume <id>`, `/project set current|drop <id>` list live model refs / stored sessions / registered projects; `/model set-phase --phase=` completes the phase enum |
+| `/` + prefix | LIVE completion menu in the REPL too (opens as you type, no Tab needed; ↑↓ select, pageup/pagedown jump 5, Tab/Enter accept, Enter on a unique exact match submits, esc closes until the text changes). Derived from the registered commands; data arguments complete too: `/model use|set|del|set-default|set-phase|add-mcpserver <ref>`, `/session resume|info <id>`, `/resume <id>`, `/project set current|drop <id>` list live model refs / stored sessions / registered projects; `/model set-phase --phase=` completes the phase enum. `HK2_REPL_HINTS=0` restores the plain prompt |
 | ctrl+r | Incremental history search: type a substring, ↑↓ (or repeat ctrl+r) cycle matches, enter picks one INTO the box, esc closes |
 | esc / ctrl+g | While a turn runs: interrupt it. Otherwise: close the completion menu / cancel the open modal |
 | ctrl+l | Clear the screen (transcript stays in the scrollback) |

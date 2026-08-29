@@ -75,6 +75,7 @@ import {
 } from './status_format.js';
 import { runTurn } from './turn.js';
 import { makeReplUi } from './repl_ui.js';
+import { createReplHints } from './repl_hints.js';
 
 // Re-export the shared modules' public surface under the historical
 // interactive.js names — the test suite (and later the TUI front-end) imports
@@ -432,6 +433,21 @@ export async function interactive(opts = {}) {
   // handler the sole authority (idle Ctrl+C still exits there).
   session.rl.on('SIGINT', () => {});
 
+  // Live slash-command hint menu: opens as soon as the user types '/',
+  // re-filters on every keystroke, ↑/↓/pgup/pgdn navigate, Tab/Enter
+  // accept, Esc closes (same semantics as the TUI completion menu). Must be
+  // installed AFTER the StatusBar is started so its draws land above the
+  // status line, and BEFORE the first prompt so the very first '/' works.
+  // TTY-only (non-interactive piped input has no keypress stream).
+  const replHints = isInteractive
+    ? createReplHints({
+        rl: session.rl,
+        session,
+        stream: process.stderr,
+        getProjectId: () => session.project?.id,
+      })
+    : null;
+
   if (isInteractive) session.rl.prompt();
   session.rl.on('line', (line) => {
     // Mid-task input box: when the box is echoing, every completed line is
@@ -484,6 +500,7 @@ export async function interactive(opts = {}) {
   await new Promise((resolve) => { session.exitResolve = resolve; });
 
   unpatchRefresh();
+  replHints?.dispose();
   paste.stop();
   session.statusBar?.stop();
   if (!session.rl.closed) session.rl.close();
