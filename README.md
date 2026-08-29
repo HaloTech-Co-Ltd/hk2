@@ -527,6 +527,8 @@ mid-run, it is handed to a fresh turn right after — nothing you type is lost.
 ├── models.json                       # Multi-provider model registry
 ├── projects.json                     # Project registry + current pointer
 ├── setting.json                      # Global filesystem-permission baseline (optional)
+├── settings/
+│   └── <project-id>/setting.json     # Managed per-project permission overrides
 ├── kb/
 │   └── <projectId>/                  # Per-project KB
 │       ├── meta.json                 # KB metadata
@@ -564,10 +566,10 @@ hk2 restricts every path-touching agent tool (`read`/`write`/`edit`/`find`/`grep
 - Permission modes mirror the filesystem: `r` = read file / list dir, `w` = create/modify/delete, `x` = execute (bash commands referencing the path).
 - A rule on a directory covers **everything inside it** (like dir permission bits); a rule on a file covers just that file.
 
-Two layers, merged (see `setting.example.json` at the repo root):
+Two layers, merged (see `setting.example.json` at the repo root). **Both live under `HK2_HOME` — deliberately outside the agent-writable project tree, so the model can never rewrite the rules that bound its own sandbox** (a `setting.json` inside the project root is NOT loaded; it only produces a load-time migration hint):
 
 - `~/.hk2/setting.json` — global baseline
-- `<project-root>/setting.json` — per-project override; **wins** over global on the same target
+- `~/.hk2/settings/<project-id>/setting.json` — per-project override; **wins** over global on the same target. The project id is taken from `HK2_PROJECT_ID` (set automatically in interactive mode) or resolved from `projects.json` by source path; an unregistered project simply has no project layer.
 
 ```json
 {
@@ -582,6 +584,10 @@ Two layers, merged (see `setting.example.json` at the repo root):
 
 Rule resolution: **longest matching prefix wins**; on equal prefixes the project layer beats the global layer, and `deny` beats `allow` within a layer. An `allow` rule listing only `r` means **read-only** — it does not fall back to the permissive inside-project default, so explicit rules fully determine the mode set for their target.
 Relative paths resolve against the project root. `~` expands to the user home. A trailing `/**` is accepted and equivalent to the bare directory (rules are always recursive).
+
+> **Migration note:** before this layout existed, the per-project file was `<project-root>/setting.json`. That location is ignored now — move your rules to `~/.hk2/settings/<project-id>/setting.json` (or merge them into the global file). The ignored-legacy-file warning printed at load time names both paths.
+
+**The permission configuration is agent read-only.** Even when an `allow` rule covers `HK2_HOME`, write access to `~/.hk2/setting.json` and anything under `~/.hk2/settings/` is hard-denied for the agent — only the human user edits the sandbox definition.
 
 `bash` enforcement is **best-effort**: the command is scanned for explicit absolute / `../`-style paths, slash-bearing relative operands (resolved against the command's effective base directory, tracked through `cd` sequences), and executed targets (interpreter operands like `bash script.sh` / `node x.js`, or a directly invoked absolute binary). Executed targets require `x`; data operands require `r` (read-only commands) or `w` (mutating commands like `rm`/`mv`/redirects). A shell is Turing-complete, so this is a guardrail against accidental damage rather than a hard sandbox; the dedicated file tools above are the hardened path.
 
@@ -666,6 +672,7 @@ reject `glm-4.7[1m]`.
 | `HK2_KB_DIR` | Override KB root | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` |
 | `HK2_PROJECT_SOURCE` | Project source root for tool sandbox (set automatically in interactive mode) | - |
+| `HK2_PROJECT_ID` | Project id used to locate the managed per-project permission file `$HK2_HOME/settings/<id>/setting.json` (set automatically in interactive mode; falls back to a `projects.json` source-path lookup) | - |
 | `HK2_PREFIX` | Install prefix used by `install.sh` for the `hk2` symlink | `/usr/local` |
 | `HK2_INSTALL_DIR` | Self-contained copy location used by `install.sh` (defaults to `HK2_HOME`, i.e. `~/.hk2`) | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | When 1, hk2 uses an LLM call to rewrite each user query to English function names + keywords before BM25 retrieval (both at turn start and on each `kb_search` tool call). | `1` |

@@ -418,7 +418,12 @@ export async function resumeSessionInto(session, sessionId) {
       session.project = owner;
       session.rt = null;
       session.kbMeta = null;
-      if (owner.sourcePath) process.env.HK2_PROJECT_SOURCE = owner.sourcePath;
+      if (owner.sourcePath) {
+        process.env.HK2_PROJECT_SOURCE = owner.sourcePath;
+        // Keep the permission system's managed per-project layer
+        // ($HK2_HOME/settings/<id>/) pointing at the OWNER project.
+        process.env.HK2_PROJECT_ID = owner.id;
+      }
       try { session.rt = await getRuntime(pid); session.kbMeta = await getKbMeta(pid); }
       catch { session.rt = null; }
     } else {
@@ -427,6 +432,7 @@ export async function resumeSessionInto(session, sessionId) {
       session.rt = null;
       session.kbMeta = null;
       delete process.env.HK2_PROJECT_SOURCE;
+      delete process.env.HK2_PROJECT_ID;
     }
     resetPermissionService();
     if (session.reloadFlags) {
@@ -999,6 +1005,10 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
     session.project = p;
     if (session.project && session.project.sourcePath) {
       process.env.HK2_PROJECT_SOURCE = session.project.sourcePath;
+      // Managed per-project permission layer lives at
+      // $HK2_HOME/settings/<project-id>/setting.json — publish the id so
+      // loadPermissionRules finds it without a registry lookup.
+      process.env.HK2_PROJECT_ID = session.project.id;
       // The permission singleton captured the PREVIOUS project root (and its
       // setting.json rules) at first use; drop it so the next check re-reads
       // the new project's rules and defaults. Without this, a /project switch
@@ -1009,6 +1019,7 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
       // No project resolved: drop any HK2_PROJECT_SOURCE inherited from the
       // launching shell so the permission roots shrink back to cwd only.
       delete process.env.HK2_PROJECT_SOURCE;
+      delete process.env.HK2_PROJECT_ID;
       resetPermissionService();
     }
     if (session.project && !session.transcript) {

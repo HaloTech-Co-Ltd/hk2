@@ -3,6 +3,10 @@
  *
  * Uses mkdtemp projects so no real user config is touched. HK2_HOME is
  * pointed at a temp dir and HK2_PROJECT_SOURCE/cwd at a temp project.
+ * Since the privilege-escalation fix, the per-project layer lives at
+ * $HK2_HOME/settings/<project-id>/setting.json (HK2_PROJECT_ID or the
+ * projects.json reverse lookup identifies the project); a setting.json
+ * inside the project root is IGNORED (agent-writable → untrusted).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,23 +18,34 @@ function tmp() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'hk2-perm-'));
 }
 
-async function setupEnv({ homeRules, projectRules } = {}) {
+async function setupEnv({ homeRules, projectRules, projectId = 'test-proj' } = {}) {
   const home = await tmp();
   const src = await tmp();
   process.env.HK2_HOME = home;
   process.env.HK2_PROJECT_SOURCE = src;
+  process.env.HK2_PROJECT_ID = projectId;
   if (homeRules) {
     await fs.writeFile(path.join(home, 'setting.json'), JSON.stringify({ permissions: homeRules }, null, 2));
   }
   if (projectRules) {
-    await fs.writeFile(path.join(src, 'setting.json'), JSON.stringify({ permissions: projectRules }, null, 2));
+    await fs.mkdir(path.join(home, 'settings', projectId), { recursive: true });
+    await fs.writeFile(path.join(home, 'settings', projectId, 'setting.json'), JSON.stringify({ permissions: projectRules }, null, 2));
   }
-  return { home, src };
+  return { home, src, pid: projectId };
+}
+
+/** Managed per-project setting.json path for an env returned by setupEnv. */
+const managedSetting = (env) => path.join(env.home, 'settings', env.pid, 'setting.json');
+
+async function writeManaged(env, permissions) {
+  await fs.mkdir(path.dirname(managedSetting(env)), { recursive: true });
+  await fs.writeFile(managedSetting(env), JSON.stringify({ permissions }));
 }
 
 async function cleanup({ home, src }) {
   delete process.env.HK2_HOME;
   delete process.env.HK2_PROJECT_SOURCE;
+  delete process.env.HK2_PROJECT_ID;
   await fs.rm(home, { recursive: true, force: true }).catch(() => {});
   await fs.rm(src, { recursive: true, force: true }).catch(() => {});
 }
@@ -209,9 +224,7 @@ test('executed targets require x; deny:x blocks interpreter invocation (Issue 3)
     assert.equal(checkCommandPermission(rules, `node ${path.join(env.src, 'x.js')}`).ok, true);
 
     // deny:x on the script → invocation denied, but reading it stays fine
-    await fs.writeFile(path.join(env.src, 'setting.json'), JSON.stringify({
-      permissions: [{ path: script, deny: 'x' }],
-    }));
+    await writeManaged(env, [{ path: script, deny: 'x' }]);
     const { rules: rules2 } = await loadPermissionRules({});
     const denied = checkCommandPermission(rules2, `bash ${script}`);
     assert.equal(denied.ok, false, 'deny:x must block bash script.sh');
@@ -286,8 +299,8 @@ test('PermissionService lazy-load + tool-level integration (read/write on outsid
     const svc = getPermissionService();
     const r1 = await svc.check(path.join(outside, 'f.txt'), 'w');
     assert.equal(r1.ok, false);
-    // Now grant via a project setting.json and reload
-    await fs.writeFile(path.join(env.src, 'setting.json'), JSON.stringify({ permissions: [{ path: outside, allow: 'w' }] }));
+    // Now grant via the MANAGED project setting.json and reload
+    await writeManaged(env, [{ path: outside, allow: 'w' }]);
     await svc.reload();
     const r2 = await svc.check(path.join(outside, 'f.txt'), 'w');
     assert.equal(r2.ok, true);
@@ -357,8 +370,10 @@ test('project switch refreshes the permission singleton (reloadAll contract)', a
   const outside = await tmp();
   process.env.HK2_HOME = home;
   process.env.HK2_PROJECT_SOURCE = projA;
+  process.env.HK2_PROJECT_ID = 'switch-a';
   try {
-    await fs.writeFile(path.join(projB, 'setting.json'), JSON.stringify({
+    await fs.mkdir(path.join(home, 'settings', 'switch-b'), { recursive: true });
+    await fs.writeFile(path.join(home, 'settings', 'switch-b', 'setting.json'), JSON.stringify({
       permissions: [{ path: outside, allow: 'rw' }],
     }));
     const { getPermissionService, resetPermissionService } = await import('../lib/config/setting.js');
@@ -368,14 +383,16 @@ test('project switch refreshes the permission singleton (reloadAll contract)', a
     assert.equal(before.ok, false, 'projA has no rules → outside path denied');
     // simulate what reloadAll does after /project switch
     process.env.HK2_PROJECT_SOURCE = projB;
+    process.env.HK2_PROJECT_ID = 'switch-b';
     resetPermissionService();
     const svc2 = getPermissionService();
     const after = await svc2.check(path.join(outside, 'f.txt'), 'w');
-    assert.equal(after.ok, true, 'projB rules must apply after switch+reset');
+    assert.equal(after.ok, true, 'projB managed rules must apply after switch+reset');
     assert.equal(svc2.projectRoot, projB, 'singleton re-pins the new project root');
   } finally {
     delete process.env.HK2_HOME;
     delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
     for (const d of [home, projA, projB, outside]) {
       await fs.rm(d, { recursive: true, force: true }).catch(() => {});
     }
@@ -388,7 +405,8 @@ test('project switch refreshes the permission singleton (reloadAll contract)', a
 /* ------------------------------------------------------------------ */
 
 /** Build a temp project with a denied `secrets/` subtree + allowed siblings,
- * wire HK2_* env, reset the permission singleton, and return live tools. */
+ * wire HK2_* env (managed project layer), reset the permission singleton,
+ * and return live tools. */
 async function buildBypassEnv() {
   const base = await tmp();
   const proj = path.join(base, 'proj');
@@ -396,11 +414,14 @@ async function buildBypassEnv() {
   await fs.mkdir(secrets, { recursive: true });
   await fs.writeFile(path.join(secrets, 'key.js'), 'const TOPSECRET = 1;\n');
   await fs.writeFile(path.join(proj, 'app.js'), 'const ok = 1;\n');
-  await fs.writeFile(path.join(proj, 'setting.json'), JSON.stringify({
+  const home = path.join(base, 'home');
+  await fs.mkdir(path.join(home, 'settings', 'bypass-proj'), { recursive: true });
+  await fs.writeFile(path.join(home, 'settings', 'bypass-proj', 'setting.json'), JSON.stringify({
     permissions: [{ path: 'secrets', deny: 'rwx' }],
   }));
-  process.env.HK2_HOME = path.join(base, 'home');
+  process.env.HK2_HOME = home;
   process.env.HK2_PROJECT_SOURCE = proj;
+  process.env.HK2_PROJECT_ID = 'bypass-proj';
   const { resetPermissionService } = await import('../lib/config/setting.js');
   resetPermissionService();
   const { buildTools } = await import('../lib/agent/tools.js');
@@ -409,6 +430,7 @@ async function buildBypassEnv() {
   return { base, proj, secrets, by, cleanup: async () => {
     delete process.env.HK2_HOME;
     delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
     await fs.rm(base, { recursive: true, force: true }).catch(() => {});
   } };
 }
@@ -529,11 +551,14 @@ async function buildKbEnv() {
     '/** doc for okFn */\nexport function okFn() { return "PUBLIC-BODY"; }\n');
   await fs.writeFile(path.join(secrets, 'leaker.js'),
     '/** doc for superSecretFn */\nexport function superSecretFn() { return "TOPSECRET-BODY"; }\n');
-  await fs.writeFile(path.join(proj, 'setting.json'), JSON.stringify({
+  const home = path.join(base, 'home');
+  await fs.mkdir(path.join(home, 'settings', 'kb-proj'), { recursive: true });
+  await fs.writeFile(path.join(home, 'settings', 'kb-proj', 'setting.json'), JSON.stringify({
     permissions: [{ path: 'secrets', deny: 'rwx' }],
   }));
-  process.env.HK2_HOME = path.join(base, 'home');
+  process.env.HK2_HOME = home;
   process.env.HK2_PROJECT_SOURCE = proj;
+  process.env.HK2_PROJECT_ID = 'kb-proj';
   const { resetPermissionService } = await import('../lib/config/setting.js');
   resetPermissionService();
 
@@ -568,6 +593,7 @@ async function buildKbEnv() {
     cleanup: async () => {
       delete process.env.HK2_HOME;
       delete process.env.HK2_PROJECT_SOURCE;
+      delete process.env.HK2_PROJECT_ID;
       await fs.rm(base, { recursive: true, force: true }).catch(() => {});
     },
   };
@@ -673,11 +699,11 @@ test('P1-fix: resolve(apply) re-checks via checkReal (symlink swap after staging
   const proj = path.join(base, 'proj');
   await fs.mkdir(proj, { recursive: true });
   await fs.writeFile(path.join(proj, 'a.js'), 'const x = 1;\n');
-  await fs.writeFile(path.join(proj, 'setting.json'), JSON.stringify({ permissions: [] }));
   const outsideVictim = path.join(base, 'victim.txt');
   await fs.writeFile(outsideVictim, 'VICTIM\n');
   process.env.HK2_HOME = path.join(base, 'home');
   process.env.HK2_PROJECT_SOURCE = proj;
+  process.env.HK2_PROJECT_ID = 'resolve-proj';
   try {
     const { resetPermissionService } = await import('../lib/config/setting.js');
     resetPermissionService();
@@ -699,6 +725,7 @@ test('P1-fix: resolve(apply) re-checks via checkReal (symlink swap after staging
   } finally {
     delete process.env.HK2_HOME;
     delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
     await fs.rm(base, { recursive: true, force: true }).catch(() => {});
   }
 });
@@ -751,6 +778,172 @@ test('no project resolved → stale HK2_PROJECT_SOURCE dropped (reloadAll contra
   } finally {
     delete process.env.HK2_HOME;
     delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
     await fs.rm(base, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Privilege-escalation regression suite (the agent must never be    */
+/* able to grant itself permissions by writing setting.json inside   */
+/* its own writable project root).                                   */
+/* ------------------------------------------------------------------ */
+
+test('ESCALATION: agent-written project-root setting.json cannot neutralize a global deny', async () => {
+  const outside = await tmp(); // stands in for e.g. a secrets dir
+  const env = await setupEnv({
+    homeRules: [{ path: outside, deny: 'rwx' }],
+  });
+  try {
+    // The "attack": the agent (default rwx inside the project root) writes
+    // its own allow rules — an equal-prefix override of the global deny,
+    // a blanket root allow, and a home-wide allow.
+    await fs.writeFile(path.join(env.src, 'setting.json'), JSON.stringify({
+      permissions: [
+        { path: outside, allow: 'rwx' },
+        { path: '/', allow: 'rwx' },
+        { path: '~', allow: 'rwx' },
+      ],
+    }));
+    const { getPermissionService, resetPermissionService, loadPermissionRules } = await import('../lib/config/setting.js');
+    resetPermissionService();
+    const svc = getPermissionService();
+    // The attacker file is NOT loaded: the global deny still rules.
+    const read = await svc.check(path.join(outside, 'secret.key'), 'r');
+    assert.equal(read.ok, false, 'global deny must survive an agent-written project setting.json');
+    assert.match(read.reason, /global/);
+    // And the load surfaces a migration hint naming the ignored file.
+    const { errors } = await loadPermissionRules({});
+    assert.ok(errors.some(e => e.includes('no longer loaded')),
+      'legacy project-root setting.json must produce an explicit ignored-error');
+  } finally {
+    await cleanup(env);
+    await fs.rm(outside, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('ESCALATION: agent cannot write the managed settings area even when a rule allows HK2_HOME', async () => {
+  const home = await tmp();
+  const src = await tmp();
+  process.env.HK2_HOME = home;
+  process.env.HK2_PROJECT_SOURCE = src;
+  process.env.HK2_PROJECT_ID = 'dip-proj';
+  try {
+    // Even a (user-approved) global allow over the whole HK2_HOME...
+    await fs.writeFile(path.join(home, 'setting.json'), JSON.stringify({
+      permissions: [{ path: home, allow: 'rwx' }],
+    }));
+    const managed = path.join(home, 'settings', 'dip-proj', 'setting.json');
+    await fs.mkdir(path.dirname(managed), { recursive: true });
+    await fs.writeFile(managed, JSON.stringify({ permissions: [{ path: 'secrets', deny: 'r' }] }));
+    const { getPermissionService, resetPermissionService } = await import('../lib/config/setting.js');
+    resetPermissionService();
+    const svc = getPermissionService();
+    // ...writes into the permission store stay hard-denied (defense in depth).
+    const w = await svc.checkReal(managed, 'w');
+    assert.equal(w.ok, false, 'write to managed setting.json must be denied even under an allow rule');
+    assert.match(w.reason, /agent read-only/);
+    // The global setting.json itself is equally protected.
+    const gw = await svc.checkReal(path.join(home, 'setting.json'), 'w');
+    assert.equal(gw.ok, false, 'write to global setting.json must be denied even under an allow rule');
+    // Reading the rules stays allowed (the prompt summary needs it).
+    const r = await svc.check(managed, 'r');
+    assert.equal(r.ok, true, 'reading the managed rules stays allowed');
+  } finally {
+    delete process.env.HK2_HOME;
+    delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(src, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('ESCALATION: write tool + bash redirection into the settings area are denied', async () => {
+  const home = await tmp();
+  const src = await tmp();
+  process.env.HK2_HOME = home;
+  process.env.HK2_PROJECT_SOURCE = src;
+  process.env.HK2_PROJECT_ID = 'tool-proj';
+  try {
+    await fs.writeFile(path.join(home, 'setting.json'), JSON.stringify({
+      permissions: [{ path: home, allow: 'rwx' }],
+    }));
+    const managed = path.join(home, 'settings', 'tool-proj', 'setting.json');
+    await fs.mkdir(path.dirname(managed), { recursive: true });
+    await fs.writeFile(managed, JSON.stringify({ permissions: [] }));
+    const { resetPermissionService } = await import('../lib/config/setting.js');
+    resetPermissionService();
+    const { buildTools } = await import('../lib/agent/tools.js');
+    const tools = buildTools(null, {});
+    const write = tools.find(t => t.name === 'write');
+    const w1 = await write.execute({ path: managed, content: '{"permissions":[]}' });
+    assert.equal(Boolean(w1.error), true, 'write tool must refuse the managed setting.json');
+    assert.match(w1.error, /agent read-only/);
+    const w2 = await write.execute({ path: path.join(home, 'setting.json'), content: '{}' });
+    assert.equal(Boolean(w2.error), true, 'write tool must refuse the global setting.json');
+    // bash redirection to the config is caught by command scanning (mutating → needs w)
+    const bash = tools.find(t => t.name === 'bash');
+    const b = await bash.execute({ command: `echo '{}' > ${managed}` });
+    assert.equal(Boolean(b.error), true, 'bash redirect into managed setting.json must be denied');
+  } finally {
+    delete process.env.HK2_HOME;
+    delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(src, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('project id resolution: env id preferred; registry fallback; unsafe ids rejected', async () => {
+  const outside = await tmp();
+  const home = await tmp();
+  const src = await tmp();
+  process.env.HK2_HOME = home;
+  process.env.HK2_PROJECT_SOURCE = src;
+  try {
+    const { loadPermissionRules, checkPermission, getProjectId } = await import('../lib/config/setting.js');
+    const mk = (pid) => path.join(home, 'settings', pid, 'setting.json');
+
+    // 1. env id wins
+    process.env.HK2_PROJECT_ID = 'id-env';
+    await fs.mkdir(path.dirname(mk('id-env')), { recursive: true });
+    await fs.writeFile(mk('id-env'), JSON.stringify({ permissions: [{ path: outside, allow: 'r' }] }));
+    assert.equal(await getProjectId(), 'id-env');
+    let { rules } = await loadPermissionRules({});
+    assert.equal(checkPermission(rules, path.join(outside, 'f'), 'r').ok, true, 'env-id managed rules apply');
+
+    // 2. registry fallback when the env id is absent
+    delete process.env.HK2_PROJECT_ID;
+    await fs.writeFile(path.join(home, 'projects.json'), JSON.stringify({
+      current: 'reg-9f2c',
+      projects: { 'reg-9f2c': { id: 'reg-9f2c', sourcePath: src } },
+    }));
+    await fs.mkdir(path.dirname(mk('reg-9f2c')), { recursive: true });
+    await fs.writeFile(mk('reg-9f2c'), JSON.stringify({ permissions: [{ path: outside, allow: 'r' }] }));
+    assert.equal(await getProjectId(), 'reg-9f2c', 'reverse lookup by sourcePath');
+    ({ rules } = await loadPermissionRules({}));
+    assert.equal(checkPermission(rules, path.join(outside, 'f'), 'r').ok, true, 'registry-resolved managed rules apply');
+
+    // 3. traversal-shaped env ids are SKIPPED (never used as a path
+    //    segment) — the trusted registry fallback still resolves.
+    process.env.HK2_PROJECT_ID = '../../etc';
+    assert.equal(await getProjectId(), 'reg-9f2c', 'unsafe env id skipped, registry fallback applies');
+
+    // 4. no env id + no registry match → null → no project layer.
+    delete process.env.HK2_PROJECT_ID;
+    await fs.writeFile(path.join(home, 'projects.json'), JSON.stringify({
+      current: null,
+      projects: { 'other': { id: 'other', sourcePath: path.join(home, 'elsewhere') } },
+    }));
+    assert.equal(await getProjectId(), null, 'unregistered project → no managed layer');
+    ({ rules } = await loadPermissionRules({}));
+    assert.equal(rules.length, 0, 'unregistered project loads no project-layer rules');
+  } finally {
+    delete process.env.HK2_HOME;
+    delete process.env.HK2_PROJECT_SOURCE;
+    delete process.env.HK2_PROJECT_ID;
+    await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(src, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(outside, { recursive: true, force: true }).catch(() => {});
   }
 });

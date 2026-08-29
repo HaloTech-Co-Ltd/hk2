@@ -462,6 +462,8 @@ streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 ├── models.json                       # 多提供商模型注册表
 ├── projects.json                     # 项目注册表 + 当前指针
 ├── setting.json                      # 全局文件系统权限基线（可选）
+├── settings/
+│   └── <project-id>/setting.json     # 托管的项目级权限覆盖
 ├── kb/
 │   └── <projectId>/                  # 每个项目的知识库
 │       ├── meta.json                 # 知识库元数据
@@ -499,10 +501,10 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 - 权限位与文件系统一致：`r` = 读文件/列目录，`w` = 创建/修改/删除，`x` = 执行（bash 命令引用该路径）。
 - 目录上的规则覆盖**其下所有内容**（同目录权限位语义）；文件上的规则只覆盖该文件。
 
-两层配置合并生效（仓库根目录有 `setting.example.json` 可参考）：
+两层配置合并生效（仓库根目录有 `setting.example.json` 可参考）。**两层均位于 `HK2_HOME` 下——刻意放在智能体可写的项目树之外，模型永远无法改写约束自己沙箱的规则**（项目根内的 `setting.json` 不会被加载，只会产生一条加载时的迁移提示）：
 
 - `~/.hk2/setting.json` —— 全局基线
-- `<项目根>/setting.json` —— 项目级覆盖；同一目标上**优先于**全局
+- `~/.hk2/settings/<project-id>/setting.json` —— 项目级覆盖；同一目标上**优先于**全局。project-id 取自 `HK2_PROJECT_ID`（交互模式下自动设置）或按 source 路径从 `projects.json` 反查；未注册的项目没有项目层
 
 ```json
 {
@@ -516,6 +518,10 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 ```
 
 规则解析：**最长前缀匹配优先**；同前缀时项目层压过全局层，同层内 `deny` 压过 `allow`。`allow: "r"` 意味着**只读**——不会回退到项目内的宽松默认，显式规则完全决定目标的权限位。相对路径相对项目根解析；`~` 展开为用户主目录；尾部 `/**` 等价于目录本身（规则始终递归）。
+
+> **迁移说明：** 该布局出现前，项目级文件位于 `<项目根>/setting.json`。该位置现在会被忽略——请把规则移到 `~/.hk2/settings/<project-id>/setting.json`（或合并进全局文件）。加载时打印的忽略告警会同时给出两个路径。
+
+**权限配置对智能体只读。** 即使某条 `allow` 规则覆盖了 `HK2_HOME`，对 `~/.hk2/setting.json` 与 `~/.hk2/settings/` 下任意内容的写操作也会被硬拒绝——只有用户本人才能编辑沙箱定义。
 
 `bash` 约束是**尽力而为**：扫描命令中显式出现的绝对路径 / `../` 形式路径、含斜杠的相对操作数（按命令的有效基目录解析——通过 `cd` 序列跟踪），以及被执行目标（如 `bash script.sh` / `node x.js` 这类解释器调用操作数，或直接调用的绝对路径可执行文件）。被执行目标要求 `x`；数据操作数按只读命令验 `r`、变更类命令（`rm`/`mv`/重定向等）验 `w`。shell 是图灵完备的，因此这是防误伤护栏而非硬沙箱；上述专用文件工具才是强化路径。
 
@@ -593,6 +599,7 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 | `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
 | `HK2_PROJECT_SOURCE` | 工具沙箱的项目源码根（交互模式下自动设置） | - |
+| `HK2_PROJECT_ID` | 用于定位托管项目级权限文件 `$HK2_HOME/settings/<id>/setting.json` 的项目 id（交互模式下自动设置；缺省时按 source 路径反查 `projects.json`） | - |
 | `HK2_PREFIX` | `install.sh` 用于放置 `hk2` 符号链接的安装前缀 | `/usr/local` |
 | `HK2_INSTALL_DIR` | `install.sh` 创建的自包含副本位置（默认为 `HK2_HOME`，即 `~/.hk2`） | `~/.hk2` |
 | `HK2_ENABLE_QUERYREWRITE` | 为 1 时，hk2 会在 BM25 检索前（每轮开始及每次 `kb_search` 工具调用时）用一次 LLM 调用将用户查询重写为英文函数名 + 关键词。 | `1` |

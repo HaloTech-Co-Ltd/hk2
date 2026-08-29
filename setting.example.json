@@ -1,5 +1,5 @@
 {
-  "$comment": "Example hk2 filesystem-permission config. Copy to ~/.hk2/setting.json (global baseline) and/or <project-root>/setting.json (per-project override; wins on conflict). ALL paths are DENIED unless (a) inside the current project root(s), or (b) explicitly allowed here. Every rule covers its target path AND everything below it (directory semantics, like filesystem permission bits).",
+  "$comment": "Example hk2 filesystem-permission config. Copy to ~/.hk2/setting.json (global baseline) and/or ~/.hk2/settings/<project-id>/setting.json (per-project override; wins on conflict). BOTH files live under HK2_HOME — outside the agent-writable project tree — so the model cannot rewrite its own sandbox; a setting.json inside the project root is ignored. ALL paths are DENIED unless (a) inside the current project root(s), or (b) explicitly allowed here. Every rule covers its target path AND everything below it (directory semantics, like filesystem permission bits). Relative paths resolve against the project root. The permission config itself is agent read-only (writes to ~/.hk2/setting.json and ~/.hk2/settings/** are always denied, even under an allow rule).",
   "permissions": [
     { "path": "/tmp/scratch", "allow": "rw" },
     { "path": "~/Documents/notes/**", "allow": "r" },
