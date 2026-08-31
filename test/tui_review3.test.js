@@ -491,7 +491,8 @@ test('REPL exit hint shares resumeHintAfterExit (no empty-session hint, no stray
 test('claude import: context window maps EXACT ids only (no glm-5 prefix blanket)', async () => {
   const { importedContextWindow } = await import('../src/claude_import.js');
   assert.equal(importedContextWindow('glm-5.3'), 1000000, 'the confirmed id maps');
-  assert.equal(importedContextWindow('glm-5.3-flash'), 200000, 'unconfirmed variants keep the conservative default');
+  assert.equal(importedContextWindow('glm-5.3-flash'), 1000000, 'confirmed flash variant maps too');
+  assert.equal(importedContextWindow('glm-5.3-air'), 200000, 'unconfirmed variants keep the conservative default');
   assert.equal(importedContextWindow('glm-5'), 200000);
   assert.equal(importedContextWindow('claude-sonnet-4-6'), 200000);
 });

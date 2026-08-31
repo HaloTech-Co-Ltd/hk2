@@ -41,7 +41,7 @@ test('supported model types are an exact, generic-terminated set', () => {
   assert.ok(types.includes('generic'), 'generic is present');
   assert.equal(new Set(types).size, types.length, 'no duplicates');
   // Spot-check a few vendors so a typo in the list is caught early.
-  for (const t of ['claude-fable-5', 'gpt-5.6-sol', 'deepseek-v4-pro', 'qwen-3.8-max', 'glm-5-turbo', 'kimi-k3']) {
+  for (const t of ['claude-fable-5', 'gpt-5.6-sol', 'deepseek-v4-pro', 'qwen-3.8-max', 'glm-5.3-flash', 'glm-5-turbo', 'kimi-k3']) {
     assert.ok(types.includes(t), `${t} is supported`);
   }
   assert.equal(DEFAULT_MODEL_TYPE, 'generic');
@@ -50,6 +50,7 @@ test('supported model types are an exact, generic-terminated set', () => {
 test('normalizeModelType is case-insensitive and rejects unknown values', () => {
   assert.equal(normalizeModelType('gpt-5.6-sol'), 'gpt-5.6-sol');
   assert.equal(normalizeModelType('GLM-5.2'), 'glm-5.2');
+  assert.equal(normalizeModelType('GLM-5.3-Flash'), 'glm-5.3-flash');
   assert.equal(normalizeModelType(' generic '), 'generic');
   assert.equal(normalizeModelType('bogus'), null);
   assert.equal(normalizeModelType(''), null);

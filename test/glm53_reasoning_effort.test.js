@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
- * glm-5.3 reasoning_effort regression tests.
+ * glm-5.3 / glm-5.3-flash (BigModel) reasoning_effort regression tests.
  *
- * Model type glm-5.3 (BigModel) declares model-specific features
- * (MODEL_TYPE_FEATURES in lib/config/home.js):
+ * Model types glm-5.3 and glm-5.3-flash (BigModel) declare model-specific
+ * features (MODEL_TYPE_FEATURES in lib/config/home.js):
  *   - reasoning defaults to ON (deep-reasoning model)
  *   - option `reasoning_effort` ∈ { max (default/recommended), high, low }
  *
@@ -12,7 +12,8 @@
  *   2. CLI: /model add|set reject invalid effort values; glm-5.3 add
  *      defaults reasoning on
  *   3. adapter wire mapping: applyModelTypeFeatures / streamOpenAI inject
- *      thinking:{type:'enabled'} + reasoning_effort ONLY for glm-5.3
+ *      thinking:{type:'enabled'} + reasoning_effort ONLY for the glm-5.3
+ *      family (glm-5.3 / glm-5.3-flash)
  *   4. client: LLMClient forwards modelType/modelOptions to the adapter
  *
  * Run:  node --test test/glm53_reasoning_effort.test.js
@@ -61,6 +62,16 @@ test('glm-5.3 declares reasoning_effort (max/high/low, default max) and default 
   assert.equal(modelTypeDefaultReasoning('generic'), false);
   assert.equal(modelTypeFeatures('glm-5.2'), null, 'no feature block for other types');
   assert.equal(modelTypeFeatures('GLM-5.3').options.reasoning_effort.default, 'max', 'case-insensitive');
+});
+
+test('glm-5.3-flash declares the same feature set as glm-5.3', () => {
+  const feats = modelTypeFeatures('glm-5.3-flash');
+  assert.ok(feats, 'glm-5.3-flash has declared features');
+  assert.deepEqual(feats.options.reasoning_effort.values, ['max', 'high', 'low']);
+  assert.equal(feats.options.reasoning_effort.default, 'max');
+  assert.equal(modelTypeDefaultReasoning('glm-5.3-flash'), true, 'flash also defaults reasoning on');
+  assert.equal(effectiveModelOptions('glm-5.3-flash', { reasoning_effort: 'HIGH' }).reasoning_effort, 'high', 'case-normalized');
+  assert.equal(validateModelOptionsForType('glm-5.3-flash', { reasoning_effort: 'medium' })?.includes('reasoning_effort must be one of'), true, 'enum validation applies');
 });
 
 test('effectiveModelOptions fills the default and normalizes case for glm-5.3', () => {
@@ -144,6 +155,13 @@ test('/model add --model-type=glm-5.3 defaults reasoning on and validates reason
   const { providers: p4 } = await loadModels();
   assert.equal((p4.bigmodel.models || []).some(m => m.id === 'bad'), false, 'invalid add stores nothing');
 
+  // glm-5.3-flash add also defaults reasoning on.
+  await dispatchSlash('/model add bigmodel flash --model-type=glm-5.3-flash', ctx);
+  const { providers: p6 } = await loadModels();
+  const flash = p6.bigmodel.models.find(m => m.id === 'flash');
+  assert.equal(flash.reasoning, true, 'glm-5.3-flash add defaults reasoning on');
+  assert.equal(flash.modelType, 'glm-5.3-flash');
+
   // set --model-options validated against the STORED type when --model-type is absent.
   prints.length = 0;
   await dispatchSlash(`/model add bigmodel ok2 --model-type=glm-5.3`, ctx);
@@ -176,6 +194,12 @@ test('applyModelTypeFeatures maps glm-5.3 to thinking + reasoning_effort (and on
   const other = {};
   applyModelTypeFeatures(other, { modelType: 'glm-5.2', modelOptions: { reasoning_effort: 'low' }, enableReasoning: true });
   assert.deepEqual(other, {}, 'non-glm-5.3 types are untouched');
+
+  // glm-5.3-flash shares the same wire mapping.
+  const flash = {};
+  applyModelTypeFeatures(flash, { modelType: 'glm-5.3-flash', modelOptions: { reasoning_effort: 'low' }, enableReasoning: true });
+  assert.deepEqual(flash.thinking, { type: 'enabled' }, 'flash gets the thinking block');
+  assert.equal(flash.reasoning_effort, 'low');
 });
 
 function makeSseResp(chunks) {
@@ -235,6 +259,10 @@ test('streamOpenAI sends thinking + reasoning_effort for glm-5.3 end to end', as
   const plain = await captureStreamBody({ ...base, model: 'gpt-4o', modelType: 'gpt-5.5', modelOptions: {} });
   assert.equal('thinking' in plain, false, 'other types get no thinking block');
   assert.equal('reasoning_effort' in plain, false, 'other types get no effort field');
+
+  const flash = await captureStreamBody({ ...base, model: 'glm-5.3-flash', modelType: 'glm-5.3-flash', modelOptions: {} });
+  assert.deepEqual(flash.thinking, { type: 'enabled' }, 'flash gets the thinking block end to end');
+  assert.equal(flash.reasoning_effort, 'max', 'flash defaults to max');
 });
 
 test('LLMClient forwards modelType/modelOptions to the OpenAI adapter', async () => {
@@ -350,6 +378,11 @@ test('streamAnthropic sends thinking + reasoning_effort for glm-5.3 (anthropic-c
   const off = await captureAnthropicBody({ ...base, modelType: 'glm-5.3', modelOptions: { reasoning_effort: 'low' }, enableReasoning: false });
   assert.equal('thinking' in off, false);
   assert.equal('reasoning_effort' in off, false);
+
+  // glm-5.3-flash on the anthropic-compatible endpoint: same mapping.
+  const flash = await captureAnthropicBody({ ...base, model: 'glm-5.3-flash', modelType: 'glm-5.3-flash', modelOptions: {} });
+  assert.equal(flash.reasoning_effort, 'max', 'flash defaults to max');
+  assert.ok(flash.thinking, 'flash keeps the thinking block');
 
   // Other model types: unchanged body (no effort field).
   const other = await captureAnthropicBody({ ...base, model: 'glm-5.2', modelType: 'glm-5.2', modelOptions: {} });

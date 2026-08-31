@@ -127,14 +127,17 @@ test('import picks the REAL context window for known model ids (glm-5.x → 1M)'
       ANTHROPIC_AUTH_TOKEN: 't',
       ANTHROPIC_BASE_URL: 'https://x/',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-5.3',
-      ANTHROPIC_DEFAULT_OPUS_MODEL: 'unknown-model-x',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.3-flash',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'unknown-model-x',
     },
   });
   const r = await autoImportClaudeModel({ homeDir: claudeHome });
   assert.equal(r.imported, true);
   const data = await loadModels();
   const glm = data.providers.claude.models.find((m) => m.id === 'glm-5.3');
+  const flash = data.providers.claude.models.find((m) => m.id === 'glm-5.3-flash');
   const unknown = data.providers.claude.models.find((m) => m.id === 'unknown-model-x');
   assert.equal(glm.contextWindow, 1000000, 'known id gets its real window');
+  assert.equal(flash.contextWindow, 1000000, 'flash variant also known → 1M');
   assert.equal(unknown.contextWindow, 200000, 'unknown id keeps the conservative default');
 });

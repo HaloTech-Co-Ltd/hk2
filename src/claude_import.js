@@ -85,9 +85,10 @@ const DEFAULT_CONTEXT_WINDOW = 200000;
 // Unlisted ids keep the conservative default; fix any entry with
 // /model set claude/<id> --context-window=<N>.
 const KNOWN_CONTEXT_WINDOWS = new Map([
-  // BigModel GLM-5.3: 1M context (user-confirmed on the anthropic-compatible
-  // endpoint).
+  // BigModel GLM-5.3 / GLM-5.3-flash: 1M context (user-confirmed on the
+  // anthropic-compatible endpoint).
   ['glm-5.3', 1000000],
+  ['glm-5.3-flash', 1000000],
 ]);
 
 export function importedContextWindow(id) {
