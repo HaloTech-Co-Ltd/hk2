@@ -123,9 +123,9 @@ test('llmApiNumOfRetries: default 10, explicit 0, positive N, invalid → defaul
   process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
     assert.equal(llmApiNumOfRetries(), 0);
     process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
-  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
-  // makes the retry loop reachable for them (the default-off policy itself
-  // is pinned in the classification test above).
+  // These loop-mechanics tests drive unknown-outcome failures; the explicit
+  // '1' keeps the retry loop reachable regardless of the default (the
+  // default-on policy itself is pinned in the classification test above).
   process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
     assert.equal(llmApiNumOfRetries(), 3);
     process.env.HK2_LLMAPI_NUMOFRETRIES = '-2';
@@ -142,40 +142,43 @@ test('llmApiNumOfRetries: default 10, explicit 0, positive N, invalid → defaul
 
 // ---------- error classification ----------
 
-test('isRetryableLlmError: outcome-safe always; unknown-outcome opt-in; client errors never', () => {
+test('isRetryableLlmError: outcome-safe always; unknown-outcome default-on (0 opts out); client errors never', () => {
   // Outcome-safe: the request never left, or was refused before execution.
   assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ECONNREFUSED)')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI request failed: getaddrinfo ENOTFOUND (ENOTFOUND)')), true);
   // Connect-phase failures: the TCP handshake never completed, so the
-  // request never left the client — outcome-safe even with the unknown-post
-  // opt-in off (OS-level connect timeout / host-unreachable).
+  // request never left the client — outcome-safe even when unknown-outcome
+  // retries are disabled (OS-level connect timeout / host-unreachable).
   assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ETIMEDOUT/connect)')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI request failed: fetch failed (EHOSTUNREACH/connect)')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI 429: rate limited')), true);
   assert.equal(isRetryableLlmError(new Error('OpenAI 408: request timeout')), true);
   // Unknown outcome: mid-flight transport failures and 5xx (the gateway may
-  // speak for an upstream that already RAN the request). NOT retried by
-  // default — duplicate requests / duplicate billing are worse than a
-  // failed turn (merged semantics from the TUI branch review rounds).
+  // speak for an upstream that already RAN the request). Retried by DEFAULT
+  // since v1.1.113: a transient nginx 502 aborting the whole agent turn is
+  // worse for an interactive CLI than the rare duplicate request behind the
+  // retry. HK2_LLM_RETRY_UNKNOWN_POST=0 opts out for billing-sensitive setups.
   const prev = process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   try {
-    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), false, 'bare fetch failed = unknown');
-    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ETIMEDOUT)')), false, 'legacy bare ETIMEDOUT (no syscall) = unknown');
-    assert.equal(isRetryableLlmError(new Error('OpenAI request failed: fetch failed (ETIMEDOUT/read)')), false, 'read-phase ETIMEDOUT = unknown');
-    assert.equal(isRetryableLlmError(new Error('OpenAI request failed: read ECONNRESET (ECONNRESET)')), false, 'mid-flight reset = unknown');
-    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: timeout')), false, 'timeout after send = unknown');
-    assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), false, '5xx = unknown');
-    assert.equal(isRetryableLlmError(new Error('OpenAI 502: bad gateway')), false, '5xx = unknown');
-    assert.equal(isRetryableLlmError(new Error('OpenAI 500: internal')), false, '5xx = unknown');
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), true, 'bare fetch failed = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed (ETIMEDOUT)')), true, 'legacy bare ETIMEDOUT (no syscall) = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('OpenAI request failed: fetch failed (ETIMEDOUT/read)')), true, 'read-phase ETIMEDOUT = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('OpenAI request failed: read ECONNRESET (ECONNRESET)')), true, 'mid-flight reset = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: timeout')), true, 'timeout after send = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), true, '5xx = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('Anthropic 502: <html>\n<head><title>502 Bad Gateway</title></head>')), true, 'nginx 502 html body = unknown, retried by default (reported issue)');
+    assert.equal(isRetryableLlmError(new Error('OpenAI 502: bad gateway')), true, '5xx = unknown, retried by default');
+    assert.equal(isRetryableLlmError(new Error('OpenAI 500: internal')), true, '5xx = unknown, retried by default');
   } finally {
     if (prev !== undefined) process.env.HK2_LLM_RETRY_UNKNOWN_POST = prev;
   }
-  // ...and opted in explicitly.
-  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
+  // ...and opted OUT explicitly (billing-sensitive setups).
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '0';
   try {
-    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), true);
-    assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), true);
+    assert.equal(isRetryableLlmError(new Error('Anthropic request failed: fetch failed')), false);
+    assert.equal(isRetryableLlmError(new Error('Anthropic 503: overloaded')), false);
+    assert.equal(isRetryableLlmError(new Error('OpenAI 502: bad gateway')), false);
   } finally {
     if (prev === undefined) delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
     else process.env.HK2_LLM_RETRY_UNKNOWN_POST = prev;
@@ -203,9 +206,9 @@ test('stream: transient fetch failure is retried; retry event emitted; attempt-2
   const restoreT = fastTimers();
   const sf = scriptedFetch(['fail', 'attempt-two']);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
-  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
-  // makes the retry loop reachable for them (the default-off policy itself
-  // is pinned in the classification test above).
+  // These loop-mechanics tests drive unknown-outcome failures; the explicit
+  // '1' keeps the retry loop reachable regardless of the default (the
+  // default-on policy itself is pinned in the classification test above).
   process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const evts = await collect(makeClient().stream(MSGS, { timeoutMs: 0 }));
@@ -376,9 +379,9 @@ test('complete: openai non-streaming path retries transient failures', async () 
     };
   };
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
-  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
-  // makes the retry loop reachable for them (the default-off policy itself
-  // is pinned in the classification test above).
+  // These loop-mechanics tests drive unknown-outcome failures; the explicit
+  // '1' keeps the retry loop reachable regardless of the default (the
+  // default-on policy itself is pinned in the classification test above).
   process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const out = await makeClient().complete(MSGS, { timeoutMs: 0 });
@@ -447,9 +450,9 @@ test('complete: anthropic path resets accumulated text on mid-stream failure + r
     return anthropicStreamResponse('RETRY-OK');
   };
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
-  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
-  // makes the retry loop reachable for them (the default-off policy itself
-  // is pinned in the classification test above).
+  // These loop-mechanics tests drive unknown-outcome failures; the explicit
+  // '1' keeps the retry loop reachable regardless of the default (the
+  // default-on policy itself is pinned in the classification test above).
   process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     const out = await makeAnthropicClient().complete(MSGS, { timeoutMs: 0 });
@@ -467,9 +470,9 @@ test('complete: 401 is not retried', async () => {
   const restoreT = fastTimers();
   const sf = scriptedFetch([401]);
   process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
-  // These loop-mechanics tests drive unknown-outcome failures; the opt-in
-  // makes the retry loop reachable for them (the default-off policy itself
-  // is pinned in the classification test above).
+  // These loop-mechanics tests drive unknown-outcome failures; the explicit
+  // '1' keeps the retry loop reachable regardless of the default (the
+  // default-on policy itself is pinned in the classification test above).
   process.env.HK2_LLM_RETRY_UNKNOWN_POST = '1';
   try {
     await assert.rejects(
@@ -594,5 +597,79 @@ test('complete: openai transport failures are wrapped + retried under the DEFAUL
     globalThis.fetch = original;
     restoreT();
     delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  }
+});
+
+// ---------- 5xx / unknown-outcome retry default flip (v1.1.113) ----------
+
+/**
+ * Reproduces the reported issue: "Error: Anthropic 502: <html>...nginx..."
+ * aborted the model call with ZERO retries. Root cause: v1.1.97 classified
+ * 5xx as unknown-outcome and gated retries behind HK2_LLM_RETRY_UNKNOWN_POST=1
+ * (default off), while the module docs still promised "5xx -> retry" — the
+ * policy default flipped to ON in v1.1.113, so an nginx 502 must now retry
+ * under the DEFAULT environment and recover when attempt 2 succeeds.
+ */
+test('stream: anthropic nginx 502 is retried and recovers under the DEFAULT policy', async () => {
+  const restoreT = fastTimers();
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      // Exact reported shape: non-ok Response carrying an nginx 502 html body.
+      return {
+        ok: false,
+        status: 502,
+        text: async () => '<html>\n<head><title>502 Bad Gateway</title></head>\n<body>\n<center><h1>502 Bad Gateway</h1></center>\n<hr><center>nginx/1.24.0 (Ubuntu)</center>\n</body>\n</html>',
+      };
+    }
+    return anthropicStreamResponse('recovered-after-502');
+  };
+  // Default policy: env unset — 5xx / unknown-outcome failures ARE retried.
+  delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
+  process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  try {
+    const out = await makeAnthropicClient().complete(MSGS, { timeoutMs: 0 });
+    assert.equal(out, 'recovered-after-502');
+    assert.equal(calls, 2, 'exactly one retry after the 502');
+  } finally {
+    globalThis.fetch = original;
+    restoreT();
+    delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+  }
+});
+
+/**
+ * The opt-OUT side of the same flip: with HK2_LLM_RETRY_UNKNOWN_POST=0 the
+ * unknown-outcome classes (5xx, mid-flight transport) fail on the first
+ * attempt — preserved for billing-sensitive setups that accept dead turns
+ * over duplicate requests.
+ */
+test('stream: HK2_LLM_RETRY_UNKNOWN_POST=0 opts out — 502 fails fast', async () => {
+  const restoreT = fastTimers();
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return {
+      ok: false,
+      status: 502,
+      text: async () => '<html><title>502 Bad Gateway</title></html>',
+    };
+  };
+  process.env.HK2_LLM_RETRY_UNKNOWN_POST = '0';
+  process.env.HK2_LLMAPI_NUMOFRETRIES = '3';
+  try {
+    await assert.rejects(
+      makeAnthropicClient().complete(MSGS, { timeoutMs: 0 }),
+      /Anthropic 502:/,
+    );
+    assert.equal(calls, 1, 'opted out: single attempt, no retry');
+  } finally {
+    globalThis.fetch = original;
+    restoreT();
+    delete process.env.HK2_LLMAPI_NUMOFRETRIES;
+    delete process.env.HK2_LLM_RETRY_UNKNOWN_POST;
   }
 });

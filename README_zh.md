@@ -594,7 +594,7 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 |---|---|---|
 | `HK2_HOME` | 覆盖 `~/.hk2` 位置 | `~/.hk2` |
 | `HK2_AUTOIMPORT_CLAUDE` | 设 0 禁用首启时从 Claude Code 的 `~/.claude/settings.json` 自动导入模型（仅 TUI） | 开 |
-| `HK2_LLM_RETRY_UNKNOWN_POST` | 结果未知的 LLM 请求失败默认不重试，避免重复请求与重复计费：发送后的传输层失败（被重置 / 请求已发出后的读、写阶段超时），以及 HTTP 500/502/503/504（反向代理可能在上游已完成推理后才返回这些状态码）。设 `1` 显式开启。连接建立失败（连接被拒 / DNS 解析失败 / undici 建连超时 / 建连阶段 `ETIMEDOUT`，错误消息中以 `(CODE)` 或 `(CODE/connect)` 呈现）与 HTTP 408/429（执行前被拒绝）属于结果安全类，始终重试，次数受 `HK2_LLMAPI_NUMOFRETRIES` 约束。 | `0` |
+| `HK2_LLM_RETRY_UNKNOWN_POST` | 结果未知的 LLM 请求失败（发送后的传输层失败：被重置 / 请求已发出后的读、写阶段超时；以及 HTTP 500/502/503/504 —— 反向代理可能在上游已完成推理后才返回这些状态码）默认重试：对交互式 CLI 而言，瞬时的 nginx 502 导致整轮任务报废，比重试背后的偶发重复请求更糟糕。设 `0` 显式关闭（担忧重复请求 / 重复计费时；提供商无幂等键，分类是唯一护栏）。连接建立失败（连接被拒 / DNS 解析失败 / undici 建连超时 / 建连阶段 `ETIMEDOUT`，错误消息中以 `(CODE)` 或 `(CODE/connect)` 呈现）与 HTTP 408/429（执行前被拒绝）属于结果安全类，始终重试。所有重试次数受 `HK2_LLMAPI_NUMOFRETRIES` 约束。 | `1` |
 | `HK2_UI` | 交互前端：`tui` 选择 Claude Code 风格内联 TUI，`repl`（默认）经典行式 REPL。`--tui` / `--repl` 旗标优先。 | `repl` |
 | `HK2_KB_DIR` | 覆盖知识库根目录 | `$HK2_HOME/kb` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` |
