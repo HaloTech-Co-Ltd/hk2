@@ -173,7 +173,6 @@ async function setProject(rest, ctx) {
     }
     ctx.print(`current = ${target.name} (${target.id})`);
     ctx.print(`Session for ${cur.name} saved; a fresh session was started on ${target.name}`);
-    ctx.print(`(equivalent to /quit, then hk2 --project=${target.name})`);
     // ctx.setCurrentProject already performed the full reload; only flag for
     // the fallback (no ctx.setCurrentProject, e.g. headless tests).
     if (!ctx.setCurrentProject) ctx.noteReloadProject?.();
