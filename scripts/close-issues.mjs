@@ -11,8 +11,6 @@
  * in code, tests, or config). Requires repo scope (or fine-grained token
  * with issues:write on HaloTech-Co-Ltd/hk2).
  */
-import { spawnSync } from 'node:child_process';
-
 const REPO = 'HaloTech-Co-Ltd/hk2';
 const dryRun = process.argv.includes('--dry-run');
 const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -94,17 +92,18 @@ async function post(issue, body) {
     console.log(`\n===== #${issue} (dry run) =====\n${body}\n`);
     return;
   }
-  const r = spawnSync('curl', [
-    '-sS', '-X', 'POST',
-    '-H', `Authorization: Bearer ${token}`,
-    '-H', 'Accept: application/vnd.github+json',
-    'https://api.github.com/repos/HaloTech-Co-Ltd/hk2/issues/' + issue + '/comments',
-    '-H', 'Content-Type: application/json',
-    '-d', JSON.stringify({ body }),
-  ], { encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`comment #${issue} failed: ${r.stderr}`);
-  const parsed = JSON.parse(r.stdout);
-  if (!parsed.id) throw new Error(`comment #${issue} failed: ${r.stdout.slice(0, 300)}`);
+  const res = await fetch(`https://api.github.com/repos/${REPO}/issues/${issue}/comments`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ body }),
+  });
+  const text = await res.text();
+  const parsed = JSON.parse(text);
+  if (!res.ok || !parsed.id) throw new Error(`comment #${issue} failed: ${text.slice(0, 300)}`);
   console.log(`commented #${issue}: ${parsed.html_url}`);
 }
 
@@ -113,17 +112,18 @@ async function close(issue) {
     console.log(`close #${issue}: would set state=closed (completed)`);
     return;
   }
-  const r = spawnSync('curl', [
-    '-sS', '-X', 'PATCH',
-    '-H', `Authorization: Bearer ${token}`,
-    '-H', 'Accept: application/vnd.github+json',
-    'https://api.github.com/repos/HaloTech-Co-Ltd/hk2/issues/' + issue,
-    '-H', 'Content-Type: application/json',
-    '-d', JSON.stringify({ state: 'closed', state_reason: 'completed' }),
-  ], { encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`close #${issue} failed: ${r.stderr}`);
-  const parsed = JSON.parse(r.stdout);
-  if (parsed.state !== 'closed') throw new Error(`close #${issue} failed: ${r.stdout.slice(0, 300)}`);
+  const res = await fetch(`https://api.github.com/repos/${REPO}/issues/${issue}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ state: 'closed', state_reason: 'completed' }),
+  });
+  const text = await res.text();
+  const parsed = JSON.parse(text);
+  if (!res.ok || parsed.state !== 'closed') throw new Error(`close #${issue} failed: ${text.slice(0, 300)}`);
   console.log(`closed #${issue} (completed)`);
 }
 
