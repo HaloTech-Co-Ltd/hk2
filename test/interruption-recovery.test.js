@@ -275,7 +275,51 @@ test('buildSessionDigest: caps turn length so a huge answer cannot blow up the d
   };
   const digest = buildSessionDigest(session, 'continue');
   const line = digest.split('\n').find(l => l.includes('User:')) || '';
-  assert.ok(line.length <= 260, `turn line should be capped, got ${line.length}`);
+  // Recent turns get an adaptive 480-char budget (P0-2) — the cap still
+  // bounds a huge turn, it just keeps head+tail instead of head-only.
+  assert.ok(line.length <= 500, `turn line should be capped, got ${line.length}`);
+  assert.ok(line.includes('…'), 'long line is truncated with an ellipsis');
+});
+
+test('buildSessionDigest: long turn keeps the TAIL (decision-critical closing survives)', () => {
+  // The assistant's "输入下一步即可开始" invitation lives at the END of a
+  // long message; the old head-only truncation cut it off entirely.
+  const long = '背景分析。'.repeat(200) + '综上所述，计划已制定，输入下一步即可开始。';
+  const session = {
+    lastTask: null,
+    planProgress: null,
+    messages: [{ role: 'assistant', content: long }],
+  };
+  const digest = buildSessionDigest(session, '执行下一步');
+  assert.ok(digest.includes('输入下一步即可开始'), 'the closing invitation survives truncation');
+});
+
+test('buildSessionDigest: renders the assistant\'s latest closing tail as its own section', () => {
+  const session = {
+    lastTask: null,
+    planProgress: null,
+    messages: [
+      { role: 'user', content: '分析一下' },
+      { role: 'assistant', content: '开头是很长的分析。'.repeat(80) + '\n\n计划已制定：\n1. 步骤一\n2. 步骤二\n\n输入下一步即可开始。' },
+    ],
+  };
+  const digest = buildSessionDigest(session, '执行下一步');
+  assert.match(digest, /The assistant's most recent message ended with:/);
+  assert.ok(digest.includes('输入下一步即可开始'), 'the closing tail section carries the invitation');
+  assert.ok(digest.includes('步骤一'), 'the tail section keeps the plan options');
+});
+
+test('buildSessionDigest: continuation flag is rendered when passed', () => {
+  const session = {
+    lastTask: { userRequest: 'do the thing' },
+    planProgress: null,
+    messages: [],
+  };
+  const digest = buildSessionDigest(session, '继续', { continuation: true });
+  assert.match(digest, /matched a continuation cue/);
+  // Without the flag the line is absent.
+  const digest2 = buildSessionDigest(session, '继续');
+  assert.equal(digest2.includes('matched a continuation cue'), false);
 });
 
 /* ----- plan_step still advances a RESTORED planProgress ----- */

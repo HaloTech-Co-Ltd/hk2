@@ -205,12 +205,15 @@ test('assessRequest forwards retrieved context as an extra user message', async 
     },
   };
   await assessRequest(llm, 'do the thing', { context: 'found symbol foo in bar.js' });
+  // P0-3 order: system, user(KB context), user(query LAST).
   assert.equal(seenMessages.length, 3);
-  assert.ok(seenMessages[2].content.includes('Retrieved knowledge-base context'));
-  assert.ok(seenMessages[2].content.includes('found symbol foo in bar.js'));
+  assert.ok(seenMessages[1].content.includes('Retrieved knowledge-base context'));
+  assert.ok(seenMessages[1].content.includes('found symbol foo in bar.js'));
+  assert.ok(seenMessages[2].content.includes("The user's request to assess"));
+  assert.ok(seenMessages[2].content.includes('do the thing'));
 });
 
-test('assessRequest forwards session context as an extra user message (before KB context)', async () => {
+test('assessRequest forwards session context BEFORE KB context, query LAST (P0-3 order)', async () => {
   let seenMessages = null;
   const llm = {
     stream: async function* (messages) {
@@ -222,11 +225,13 @@ test('assessRequest forwards session context as an extra user message (before KB
     sessionContext: 'In-flight task: refactor the plan-progress module',
     context: 'Summary: matched buildResumeContext',
   });
-  // 4 messages: system, user(query), user(session context), user(KB context).
+  // 4 messages: system, user(session context), user(KB context), user(query).
   assert.equal(seenMessages.length, 4);
-  assert.ok(seenMessages[2].content.includes('Current session context'));
-  assert.ok(seenMessages[2].content.includes('refactor the plan-progress module'));
-  assert.ok(seenMessages[3].content.includes('Retrieved knowledge-base context'));
+  assert.ok(seenMessages[1].content.includes('Current session context'));
+  assert.ok(seenMessages[1].content.includes('refactor the plan-progress module'));
+  assert.ok(seenMessages[2].content.includes('Retrieved knowledge-base context'));
+  assert.ok(seenMessages[3].content.includes("The user's request to assess"));
+  assert.ok(seenMessages[3].content.includes('fix it'));
 });
 
 test('assessRequest omits empty/whitespace session context', async () => {
@@ -239,4 +244,82 @@ test('assessRequest omits empty/whitespace session context', async () => {
   };
   await assessRequest(llm, 'fix it', { sessionContext: '   \n  ' });
   assert.equal(seenMessages.length, 2, 'no session-context message when digest is empty');
+});
+
+test('assessRequest parses followup/confidence/reason and downgrades low-confidence unclear (P0-3)', async () => {
+  // Full verdict with the new fields round-trips.
+  const ok = fakeLlm(JSON.stringify({
+    clear: true, followup: true, confidence: 0.95,
+    reason: 'session context pins the referent',
+  }));
+  let out = await assessRequest(ok, '执行下一步');
+  assert.equal(out.clear, true);
+  assert.equal(out.followup, true);
+  assert.equal(out.confidence, 0.95);
+  assert.equal(out.reason, 'session context pins the referent');
+
+  // High-confidence unclear survives.
+  const sure = fakeLlm(JSON.stringify({
+    clear: false, confidence: 0.93,
+    unclear: ['which module?'],
+    interpretations: ['module A', 'module B'],
+  }));
+  out = await assessRequest(sure, 'fix the module');
+  assert.equal(out.clear, false);
+  assert.equal(out.confidence, 0.93);
+
+  // Low-confidence unclear is DOWNGRADED to clear (burden-of-proof asymmetry).
+  const unsure = fakeLlm(JSON.stringify({
+    clear: false, confidence: 0.5,
+    unclear: ['which module?'],
+    interpretations: ['module A', 'module B'],
+  }));
+  out = await assessRequest(unsure, 'fix the module');
+  assert.equal(out.clear, true, 'low-confidence unclear must not interrupt the user');
+  assert.match(out.reason, /low confidence/);
+
+  // Missing confidence defaults to 1 (trust the verdict).
+  const noco = fakeLlm(JSON.stringify({
+    clear: false, unclear: ['which module?'], interpretations: ['module A', 'module B'],
+  }));
+  out = await assessRequest(noco, 'fix the module');
+  assert.equal(out.clear, false);
+});
+
+test('assessRequest honors HK2_ASSESS_MIN_CONFIDENCE threshold override (P0-3)', async () => {
+  const prev = process.env.HK2_ASSESS_MIN_CONFIDENCE;
+  try {
+    process.env.HK2_ASSESS_MIN_CONFIDENCE = '0.3';
+    const unsure = fakeLlm(JSON.stringify({
+      clear: false, confidence: 0.5,
+      unclear: ['which module?'], interpretations: ['module A', 'module B'],
+    }));
+    const out = await assessRequest(unsure, 'fix the module');
+    assert.equal(out.clear, false, '0.5 confidence survives a 0.3 threshold');
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ASSESS_MIN_CONFIDENCE;
+    else process.env.HK2_ASSESS_MIN_CONFIDENCE = prev;
+  }
+});
+
+test('assessRequest: HK2_ASSESS_REASONING=1 enables reasoning on the call (P2)', async () => {
+  let seenOpts = null;
+  const llm = {
+    stream: async function* (_messages, opts) {
+      seenOpts = opts;
+      yield { type: 'delta', text: JSON.stringify({ clear: true }) };
+    },
+  };
+  const prev = process.env.HK2_ASSESS_REASONING;
+  try {
+    delete process.env.HK2_ASSESS_REASONING;
+    await assessRequest(llm, 'do it');
+    assert.equal(seenOpts.enableReasoning, false, 'reasoning off by default');
+    process.env.HK2_ASSESS_REASONING = '1';
+    await assessRequest(llm, 'do it');
+    assert.equal(seenOpts.enableReasoning, true, 'HK2_ASSESS_REASONING=1 turns it on');
+  } finally {
+    if (prev === undefined) delete process.env.HK2_ASSESS_REASONING;
+    else process.env.HK2_ASSESS_REASONING = prev;
+  }
 });

@@ -1126,6 +1126,64 @@ export function isContinuationCue(text) {
 }
 
 /**
+ * P1 follow-up fast lane (deterministic, HIGH-PRECISION only).
+ *
+ * Detects inputs that are CERTAINLY conversational follow-ups so the whole
+ * pre-agent pipeline (query rewrite → KB retrieval → clarity assessment)
+ * can be skipped: a follow-up's retrieval is noise by construction (the
+ * referent lives in the conversation, not in the codebase), and the main
+ * agent — which sees the FULL history — can always kb_search on demand.
+ *
+ * Precision over recall: every rule here must be safe to fire on its own,
+ * without an LLM check. When in doubt, return null and let the normal
+ * pipeline (with the P0-hardened assessor) handle it.
+ *
+ * Returns a string naming the matched rule (for the audit log), or null.
+ */
+export function detectFollowupFast(text, session) {
+  if (!text || typeof text !== 'string') return null;
+  const t = text.trim();
+  if (!t) return null;
+
+  // Rule 1: continuation cue (the existing high-precision regex).
+  if (isContinuationCue(t)) return 'continuation-cue';
+
+  // Rule 2: bare confirmation words (including Chinese), optionally with
+  // trailing punctuation. These are only ever answers to something the
+  // assistant asked/proposed.
+  if (/^(好的|好嘞|好吧|可以|行|嗯|嗯嗯|要|是的|对|同意|没问题|开始吧|就这么办|就这么做|同意了)[。!！~～\s]*$/i.test(t)
+    || /^(sure|alright|sounds good|agreed|do it|go for it|start|begin)[.!?\s]*$/i.test(t)) {
+    return 'confirmation-word';
+  }
+
+  // Rule 3: bare number / short option pick — ONLY when the assistant's last
+  // message ends with a numbered menu (its tail shows numbered options).
+  const lastAsst = [...(session?.messages || [])]
+    .reverse()
+    .find(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim());
+  if (lastAsst) {
+    const tail = lastAsst.content.slice(-800);
+    const hasNumberedMenu = /(^|\n)\s*[1-9][0-9]*[.)、]\s+\S/.test(tail);
+    if (hasNumberedMenu && /^(?:[1-9][0-9]*|选项\s*[1-9][0-9]*|option\s*[1-9][0-9]*)[.\s]*$/i.test(t)) {
+      return 'menu-choice';
+    }
+  }
+
+  // Rule 4: plan-advance directive — ONLY when a plan is actually active.
+  // "执行下一步 / 开始执行 / 按计划推进" with a live planProgress can only
+  // mean "advance the active plan".
+  if (session?.planProgress && Array.isArray(session.planProgress.steps)
+      && session.planProgress.steps.length > 0) {
+    if (/^(执行|开始|开始执行|推进|按计划|按计划执行|按计划推进|执行下一步|下一步|开始下一步|先做第一步|做下一步|继续执行|逐步执行)[下去的吧。!！\s]*$/i.test(t)
+      || /^step\s*[1-9][0-9]*$/i.test(t)) {
+      return 'plan-advance';
+    }
+  }
+
+  return null;
+}
+
+/**
  * Mid-task input capture: called from enqueue() for every line arriving while
  * an agent turn is running. Returns true when the line was captured as an
  * in-task instruction (pushed onto session.userInputQueue, to be delivered at
@@ -1232,14 +1290,25 @@ Do NOT restart from scratch or re-confirm the plan. Continue the in-flight work:
  * down what they refer to, instead of triggering a pointless clarification
  * menu. Exported for unit testing.
  */
-export function buildSessionDigest(session, currentRequest) {
+export function buildSessionDigest(session, currentRequest, opts = {}) {
   if (!session) return '';
   const lines = [];
 
-  // 1) In-flight task. On a fresh (non-continuation) turn the pipeline has
-  // just set lastTask.userRequest = currentRequest, which carries no extra
-  // information — skip it then. On a continuation it holds the ORIGINAL task
-  // request, which is exactly what the assessor needs.
+  // Continuation flag (P0-2): when the pipeline already classified this input
+  // as a continuation cue, say so explicitly — the assessor should not even
+  // consider "this is a brand-new task" readings for it.
+  if (opts.continuation) {
+    lines.push('Input classification: the user\'s line matched a continuation cue (it advances the in-flight task below).');
+  }
+
+  // 1) In-flight task. P0-1 deferred commit: the digest is built BEFORE
+  // commitFreshTaskIfPending runs, so on a fresh (non-continuation) turn
+  // lastTask still holds the PREVIOUS task's request — which is
+  // intentionally included here: a prompt that LOOKS like a new task but is
+  // actually a follow-up the cue regex missed ("执行下一步") is judged with
+  // the real task context. The dedup below only skips the line when the
+  // requests are literally the same (the user re-sent the identical text,
+  // where repeating it would carry no extra information).
   const taskReq = session.lastTask && session.lastTask.userRequest;
   const taskLine = digestLine(taskReq);
   const curLine = digestLine(currentRequest);
@@ -1254,17 +1323,36 @@ export function buildSessionDigest(session, currentRequest) {
     lines.push(...plan);
   }
 
+  // 2.5) Assistant's latest closing proposal (P0-2). The single strongest
+  // signal for judging a terse follow-up is how the LAST assistant message
+  // ENDED — the question it asked, the options it offered, the "type X to
+  // start" invitation. Extract the tail of the most recent string-content
+  // assistant message with a GENEROUS budget (tail-biased) so it survives
+  // intact instead of being flattened into one 240-char line.
+  const lastAsst = [...(session.messages || [])]
+    .reverse()
+    .find(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim());
+  if (lastAsst) {
+    const tail = lastAsst.content.trim().slice(-600);
+    lines.push('The assistant\'s most recent message ended with:');
+    lines.push(digestLine(tail, 640));
+  }
+
   // 3) Recent conversation turns. At assessment time the current request has
   // NOT been pushed yet, so this is strictly PRIOR conversation. Only string
   // contents are usable (assistant tool-call turns may carry structured
   // content); system messages (e.g. the resume injection) are excluded.
-  const turns = (session.messages || [])
-    .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
-    .slice(-6)
-    .map(m => {
-      const who = m.role === 'user' ? 'User' : 'Assistant';
-      return `  ${who}: ${digestLine(m.content)}`;
-    });
+  // Adaptive budget (P0-2): the most recent 2 turns get a larger cap because
+  // they carry the referent for a follow-up; older turns keep the compact
+  // cap.
+  const usable = (session.messages || [])
+    .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim());
+  const recent = usable.slice(-6);
+  const turns = recent.map((m, i) => {
+    const who = m.role === 'user' ? 'User' : 'Assistant';
+    const isRecent = i >= recent.length - 2;
+    return `  ${who}: ${digestLine(m.content, isRecent ? 480 : 240)}`;
+  });
   if (turns.length > 0) {
     lines.push('Recent conversation (oldest first, before this request):');
     lines.push(...turns);

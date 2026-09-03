@@ -379,11 +379,21 @@ export function toolHeader(name, args, token, { full = false } = {}) {
  * One-line squeeze for session digests: collapse all whitespace (including
  * newlines) and cap the length so a single long turn cannot blow up the
  * assessment prompt.
+ *
+ * TAIL-PRESERVING truncation (P0-2): the decision-critical part of a message
+ * is almost always at its END ("输入下一步即可开始", the question the
+ * assistant asked, the numbered options it offered). The old head-only
+ * slice systematically cut exactly that part off, so the assessor never saw
+ * the signal that would have disambiguated the follow-up. When the text
+ * exceeds the cap we keep head + tail halves instead.
  */
 export function digestLine(text, max = 240) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
-  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+  if (s.length <= max) return s;
+  const head = Math.max(1, Math.floor((max - 1) / 2));
+  const tail = Math.max(1, max - 1 - head);
+  return s.slice(0, head) + '…' + s.slice(s.length - tail);
 }
 
 /**

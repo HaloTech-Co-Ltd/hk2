@@ -65,7 +65,7 @@ import * as style from '../../lib/agent/style.js';
 import { saveTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 import {
   buildResumeContext, buildSessionDigest, buildMidTaskInjection, disarmMidTaskCapture,
-  isContinuationCue, reloadAll,
+  isContinuationCue, detectFollowupFast, reloadAll,
 } from './session_ctx.js';
 import { getKbMeta } from '../../lib/index/registry.js';
 import {
@@ -147,15 +147,16 @@ export async function handleUserLine(line, session, ctx, ui) {
     return;
   }
 
-  // Plan-progress lifecycle: a fresh prompt that is not a short
-  // continuation (yes/ok/continue/go/next/done/请继续/继续/接着) starts a new
-  // task, so any stale plan block from a previous task is cleared. Multi-turn
-  // continuation of an in-progress plan keeps the block.
+  // Plan-progress lifecycle: the classification (continuation vs fresh task)
+  // is computed here, but the plan block is NO LONGER cleared eagerly.
+  // Clearing used to happen BEFORE the turn pipeline ran, which destroyed the
+  // very context the request-clarity assessor needs: a prompt like "执行下一
+  // 步" is not matched by the continuation-cue list, so the old code wiped
+  // planProgress and overwrote session.lastTask, and the assessor then judged
+  // a follow-up that had lost all of its task context as "unclear". The clear
+  // now happens INSIDE runTurn, after the assessment phase has consumed the
+  // session digest (see the plan/lastTask finalization comment there).
   const isContinuation = isContinuationCue(trimmed);
-  if (session.planProgress && !isContinuation) {
-    session.planProgress = null;
-    ui.statusRefresh();
-  }
   await runTurn(trimmed, session, ctx, ui, { continuation: isContinuation });
 }
 
@@ -329,7 +330,10 @@ async function confirmClarification(assessment, ui) {
     if (free.cancelled) return null;
     return free.text || null;
   }
-  return assessment.interpretations[choice.index];
+  // Wrap the chosen interpretation with its index so the caller can audit
+  // WHICH option the user picked (index 0 = the recommended one). The
+  // leading marker is stripped before the text is used as a clarification.
+  return { text: assessment.interpretations[choice.index], pickedIndex: choice.index };
 }
 
 /**
@@ -364,7 +368,48 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // Track whether a plan was already active when this turn started, so the
   // end-of-turn Code Review can run on the turn that COMPLETES a multi-turn
   // plan (not only the turn that first confirmed the plan via the plan tool).
-  const planActiveAtStart = !!session.planProgress;
+  // Semantics preserved from the pre-deferred-clear world: a plan counts as
+  // "active at start" only when this input is a CONTINUATION of the task that
+  // owns it. A fresh-task input arriving with a stale block from the previous
+  // task does NOT count (the stale block is retired at the digest-build
+  // boundary below) — otherwise the new task's final turn would fire the
+  // Code Review gate for a plan it never worked on.
+  const planActiveAtStart = opts.continuation ? !!session.planProgress : false;
+  // Deferred plan/lastTask lifecycle: the OLD code cleared planProgress (in
+  // handleUserLine) and overwrote session.lastTask (below) BEFORE the clarity
+  // assessment ran, so a misclassified follow-up ("执行下一步") lost its task
+  // context and was judged unclear on pure noise. Now BOTH decisions wait
+  // until the assessor has consumed the session digest:
+  //   - planAction: 'keep' | 'clear' — whether the stale plan block survives
+  //     into this turn's agent loop. Starts as 'keep' (assume continuation);
+  //     set to 'clear' below when the input is NOT a continuation cue AND the
+  //     assessment phase has had its chance to read the digest (or is off / a
+  //     clear verdict came back), then applied before the agent loop builds
+  //     its system prompt.
+  //   - lastTask commit: the fresh-task snapshot waits until after
+  //     buildSessionDigest so the digest still sees the ORIGINAL request.
+  let planAction = 'keep';
+  // Commit the deferred fresh-task transition (idempotent — guarded by
+  // planAction so both call sites firing on the same turn commit exactly
+  // once):
+  //   - planAction 'clear' → retire any stale plan block from the PREVIOUS
+  //     task (the cue classification said this input starts a new task);
+  //   - always → point session.lastTask at THIS request so a later
+  //     interruption (ESC / error / crash) resumes the right thing.
+  // Called (a) right after buildSessionDigest inside the assessment phase
+  // and (b) at the pass-2 boundary for turns where assessment never ran.
+  const commitFreshTaskIfPending = () => {
+    if (planAction !== 'clear') return;
+    planAction = 'committed';
+    if (session.planProgress) {
+      session.planProgress = null;
+      ui.statusRefresh();
+    }
+    session.lastTask = {
+      userRequest: userText,
+      capturedAt: new Date().toISOString(),
+    };
+  };
   session.hadPlanThisTurn = false;
   // Per-turn Holy-over-Eden conflict list: reset at the TOP of the turn (before
   // pass-1 graph retrieval populates it), consumed at end of turn by
@@ -413,16 +458,25 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   if (opts.continuation && session.lastTask) {
     const resumeMsg = buildResumeContext(session);
     if (resumeMsg) session.messages.push({ role: 'system', content: resumeMsg });
-  } else {
-    // Fresh task: snapshot the request + current plan progress so a future
-    // interruption can be recovered. The planProgress text is re-derived lazily
-    // on recovery (it may have advanced since), but capturing the request now
-    // is essential because the interruption may happen before the plan tool
-    // ever fires.
+    // Continuation with an in-flight task: the live plan block (if any) is
+    // deliberately kept — planAction stays 'keep'.
+  } else if (opts.continuation) {
+    // Continuation cue with NO task to resume (fresh session, or the previous
+    // task finalized and cleared lastTask): nothing to defer — there is no
+    // in-flight request whose digest view we need to protect, and the plan
+    // block is kept per the cue classification. Snapshot this request now,
+    // exactly like the old top-of-turn assignment did.
     session.lastTask = {
       userRequest: userText,
       capturedAt: new Date().toISOString(),
     };
+  } else {
+    // Fresh task by cue classification. The lastTask snapshot + stale-plan
+    // retirement are DEFERRED: buildSessionDigest (pass 1.5) must still see
+    // the ORIGINAL request so follow-ups the cue regex missed ("执行下一
+    // 步") are judged with the real task context. The commit happens at the
+    // digest-build site (or the pass-2 boundary when assessment never ran).
+    planAction = 'clear';
   }
 
   // Phase ordering: the LLM query rewrite (when enabled) runs before KB
@@ -450,6 +504,23 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // rewrite, so the same phase never probes a dead endpoint twice per turn
   // (and never repeats its warnings).
   let rewritePhaseRun = null;
+
+  // P1 follow-up fast lane (deterministic, high-precision). When the input is
+  // CERTAINLY a conversational follow-up (continuation cue, bare confirmation,
+  // menu choice, plan-advance directive), skip the entire pre-agent pipeline:
+  // a follow-up's KB retrieval is noise by construction, and the main agent
+  // sees the FULL conversation and can kb_search on demand. The fast lane is
+  // gated by HK2_ENABLE_FOLLOWUP_FASTLANE (default 1) so it can be turned off
+  // for A/B comparison.
+  const fastLane = enableRewrite && envFlag('HK2_ENABLE_FOLLOWUP_FASTLANE', 1)
+    ? detectFollowupFast(userText, session)
+    : null;
+  if (fastLane) {
+    await session.transcript?.logMeta('followupFastLane', { rule: fastLane, input: userText.slice(0, 160) });
+    // Follow-up turns start straight on the model wait (no rewrite, no KB
+    // retrieval, no assessment — the referent lives in the conversation).
+    ui.spinnerStart('waiting for model');
+  }
 
   // Resolve a per-phase model override for the rewrite phase. When the current
   // project has configured /model set-phase --phase=rewrite-query <ref>, the
@@ -494,17 +565,21 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
 
   // Start the spinner on the FIRST piece of real work: the rewrite (when
   // enabled), else KB retrieval — or straight to the model when no KB is
-  // loaded (chat works without one; there is nothing to retrieve).
-  if (enableRewrite && session.llm) {
-    ui.spinnerStart('rewriting query');
-  } else if (session.rt) {
-    ui.spinnerStart('retrieving KB');
-  } else {
-    ui.spinnerStart('waiting for model');
+  // loaded (chat works without one; there is nothing to retrieve). The
+  // fast-lane follow-up already started its own 'waiting for model' spinner
+  // above and must not restart it here.
+  if (!fastLane) {
+    if (enableRewrite && session.llm) {
+      ui.spinnerStart('rewriting query');
+    } else if (session.rt) {
+      ui.spinnerStart('retrieving KB');
+    } else {
+      ui.spinnerStart('waiting for model');
+    }
   }
 
   // --- Pass 1: rewrite (raw user text, no clarification yet) ---------------
-  if (enableRewrite && session.llm) {
+  if (enableRewrite && session.llm && !fastLane) {
     ui.phase('rewriting query');
     try {
       const { rewriteQuery } = await import('../../lib/retrieval/rewrite_query.js');
@@ -559,7 +634,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   let graphText = '';
   let graphSummary = '';
   let graph = null;
-  if (session.rt) {
+  if (session.rt && !fastLane) {
   ui.phase('retrieving KB');
   try {
     graph = await buildRequestGraph(session.rt, userText, {
@@ -619,7 +694,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // candidate interpretations as a menu; the user's confirmation then drives
   // a second rewrite and a re-retrieve. One bounded round.
   let clarification = null;
-  if (canAssess && graph) {
+  if (canAssess && graph && !fastLane) {
     ui.phase('assessing request');
     try {
       const { assessRequest } = await import('../../lib/retrieval/rewrite_query.js');
@@ -638,8 +713,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       }
       // Session task context (in-flight task / plan progress / recent turns)
       // so follow-ups that are terse in isolation but unambiguous given the
-      // conversation are not flagged unclear.
-      const sessionDigest = buildSessionDigest(session, userText);
+      // conversation are not flagged unclear. This is the point of no return
+      // for the deferred fresh-task transition: from here on, lastTask must
+      // point at THIS request (a later interruption must resume it), and the
+      // stale plan block (when the cue classification said "fresh") can be
+      // retired. When the assessor is disabled the transition happens below
+      // without this block, so every path commits exactly once.
+      const sessionDigest = buildSessionDigest(session, userText, { continuation: !!opts.continuation });
+      commitFreshTaskIfPending();
       // Same HK2_ENABLE_PHASEMODEL_FALLBACK policy as the rewrite phase, but
       // evaluated INDEPENDENTLY: the request-assess override may be a
       // different model that is alive when the rewrite model is dead (or
@@ -664,9 +745,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       if (assessment) {
         await session.transcript?.logMeta('assess', {
           clear: assessment.clear,
+          followup: assessment.followup,
+          confidence: assessment.confidence,
+          reason: assessment.reason,
           unclear: assessment.unclear,
           interpretations: assessment.interpretations,
           hadSessionContext: !!sessionDigest,
+          sessionContextChars: sessionDigest ? sessionDigest.length : 0,
+          continuation: !!opts.continuation,
           phaseModelRef: assessLlm && !assessRun.usedFallback
             ? (getPhaseModelRef(session.project, 'request-assess') || null)
             : null,
@@ -675,8 +761,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       }
       if (assessment && !assessment.clear) {
         ui.progress.pause();
-        clarification = await confirmClarification(assessment, ui);
-        if (clarification === null) {
+        const picked = await confirmClarification(assessment, ui);
+        if (picked === null) {
+          clarification = null;
           // User cancelled the clarification prompt (Ctrl+D / rl close /
           // modal dismiss): abort the whole turn cleanly, mirroring
           // plan-cancel handling. Still run the Eden sync: pass-1 already
@@ -696,8 +783,22 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
           session.turnStart = 0;
           ui.statusRefresh();
           return;
+        } else {
+          // Shape from confirmClarification: { text, pickedIndex } (menu pick)
+          // or a bare string (free text). Normalize + audit: picking the
+          // recommended first option while a plan/task context existed is a
+          // strong suspect-FALSE-POSITIVE signal — the menu probably
+          // interrupted a follow-up the context already disambiguated.
+          clarification = typeof picked === 'string' ? picked : picked.text;
+          const pickedIndex = typeof picked === 'object' && picked !== null ? picked.pickedIndex : null;
+          const hadTaskContext = !!(sessionDigest && sessionDigest.trim());
+          await session.transcript?.logMeta('clarify', {
+            clarification,
+            pickedIndex,
+            pickedRecommended: pickedIndex === 0,
+            suspectFalsePositive: pickedIndex === 0 && hadTaskContext,
+          });
         }
-        await session.transcript?.logMeta('clarify', { clarification });
       }
     } catch (err) {
       // Assessment is best-effort: on any failure, fall through to the
@@ -705,6 +806,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       ctx.print(`[warn] request assessment failed, skipping: ${err.message}`);
     }
   }
+
+  // Deferred fresh-task transition: a fast-lane follow-up ALWAYS counts as a
+  // continuation of the in-flight task — the plan block and lastTask stay as
+  // they are. Otherwise commit at the pass-2 boundary as before.
+  if (!fastLane) commitFreshTaskIfPending();
 
   // --- Pass 2 (only when the user supplied a clarification) ----------------
   // Re-run the rewrite with the confirmed interpretation, then re-retrieve so
