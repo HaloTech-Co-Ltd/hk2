@@ -1,0 +1,115 @@
+# 安装
+
+[English](../../en/getting-started/installation.md) | 简体中文
+
+本页覆盖安装 hk2 所需的一切：环境要求、两条安装路径（`install.sh` 与
+`npm link`）、安装器的数据保留行为、可选的 PDF/Word 解析、安装验证与卸载。
+
+## 环境要求
+
+- Node.js **>= 18**（推荐 Node 20 LTS，以获得最佳的 Tree-sitter 原生兼容性）
+- 运行 `npm install` 构建 Tree-sitter 原生绑定（14 个语言包）
+
+> **Tree-sitter 兼容性提示**：过新的 Node 版本（如 Node 25+）在某些平台上
+> 可能与预编译的 Tree-sitter 二进制存在 N-API / V8 ABI 不匹配。若
+> `/kb init` 日志出现 `tree-sitter parse failed`，hk2 会透明地回退到基于
+> 正则的解析器——符号覆盖率会略低，但系统功能完全正常。如需最高精度，
+> 请在 Node 20 LTS 上安装，或运行 `npm rebuild` 从源码重新编译。
+
+hk2 未发布到 npm，请从源码安装。
+
+## 方式 A——install.sh（推荐）
+
+```bash
+git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
+./install.sh
+```
+
+`install.sh` 在 `~/.hk2` 创建一份源码树的自包含副本，把 `hk2` 符号链接加入
+PATH（默认 `/usr/local/bin/hk2`），并运行 `npm install --omit=optional`
+构建 Tree-sitter 原生绑定。
+
+### 重装时保留用户数据
+
+`~/.hk2` 同时承担两个角色：它既是**配置 / 数据主目录**（`HK2_HOME`——
+`models.json`、`projects.json`、`theme.json`、`kb/`、`sessions/`、
+`logs/`），也是源码副本的默认**安装目录**。重新安装时**保留用户数据**：
+安装器会把这些数据项移到一边，刷新代码树，再移回来（用户数据优先于新版本
+树中的同名条目）。传入 `--preserve-data=off` 可恢复旧的擦除行为。
+
+如果你已有检出并正在开发 hk2 本身，建议改用方式 B（`npm link`），或通过
+`HK2_INSTALL_DIR` 把源码副本放到配置主目录之外。
+
+### 安装器参数
+
+| 参数 | 作用 |
+|---|---|
+| `--prefix=<path>` | `hk2` 符号链接的安装前缀（默认 `/usr/local`；也可通过 `HK2_PREFIX` 环境变量设置） |
+| `--install-dir=<path>` | 自包含源码副本的位置（默认 `~/.hk2`；也可通过 `HK2_INSTALL_DIR` 设置） |
+| `--no-npm-install` | 跳过 `npm install`——hk2 运行时使用基于正则的解析器 |
+| `--preserve-data=off` | 旧行为：重装时**不**保留用户数据——安装目录被擦除 |
+
+`--prefix=value` 与 `--prefix value` 两种形式均可，`--install-dir` 同理。
+
+```bash
+./install.sh --prefix=$HOME/.local
+./install.sh --prefix /usr/local          # 等同于默认值
+HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # 将源码副本置于配置主目录之外
+./install.sh --no-npm-install             # 跳过 Tree-sitter（正则回退）
+./install.sh --preserve-data=off          # 旧版擦除：重装时不保留用户数据
+```
+
+### 可选的 PDF / Word 解析
+
+`pdf-parse`（PDF）与 `mammoth`（Word `.docx`）是可选依赖——安装器默认跳过
+它们以保持基础安装轻量。启用方法：
+
+```bash
+cd ~/.hk2 && npm install                  # 安装 pdf-parse + mammoth
+```
+
+旧版 Office 二进制（`.doc`、`.pptx`、`.ppt`）以无依赖方式提取；只有 PDF
+与 `.docx` 需要可选包。
+
+## 方式 B——npm link（面向开发者）
+
+创建指向当前工作树的符号链接。如果你正在修改 hk2 本身并希望改动立即生效，
+建议采用此方式。
+
+```bash
+git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
+npm install
+npm link
+```
+
+卸载：`npm unlink -g hk2`（或 `npm run uninstall:global`）。
+
+## 验证
+
+```bash
+hk2 --help
+hk2 --version
+```
+
+`hk2 --help` 会打印版本、CLI 用法、斜杠命令族与配置位置。能看到输出即说明
+启动器与 Node 运行时均正常。
+
+## 卸载
+
+移除符号链接与源码副本。由于 `~/.hk2` 同时存放你的配置与知识库，直接删除
+整个目录会一并清除它们——请先备份 `models.json`、`projects.json` 与 `kb/`，
+或仅移除启动器：
+
+```bash
+rm -f /usr/local/bin/hk2                  # 移除启动器
+rm -rf ~/.hk2/node_modules ~/.hk2/bin     # 移除已安装的源码副本，保留配置与知识库
+```
+
+要连同样式、项目、会话与知识库一并删除：`rm -rf ~/.hk2`（先备份需要保留
+的内容）。
+
+## 相关文档
+
+- [快速开始](quick-start.md)——第一个项目、第一个知识库、第一个提问
+- [配置](../reference/configuration.md)——`HK2_HOME` 里有什么
+- [问题排查](../guides/troubleshooting.md)——Tree-sitter ABI 问题与回退
