@@ -64,6 +64,7 @@ import { cmdKb } from './kb.js';
 import { cmdSession, resumeDirect } from './session.js';
 import { cmdReview } from './review.js';
 import { cmdTheme } from './theme.js';
+import { cmdRemember, cmdForget } from './remember.js';
 import { printCommandHelp, HELP_TEXT } from './help.js';
 import { dynamicSlot, invalidateDynamicCache } from './completions.js';
 
@@ -77,6 +78,8 @@ export const SLASH_COMMANDS = [
   { name: '/theme',   handler: cmdTheme,   description: 'Customize tool-card border colors (list / set / reset / preview / title-follow)' },
   { name: '/clear',   handler: cmdClear,   description: 'Clear the current conversation context' },
   { name: '/compact', handler: cmdCompact, description: 'Summarize prior conversation into a short brief' },
+  { name: '/remember', handler: cmdRemember, description: 'Record a session fact (always in scope, survives compaction) — list with no args' },
+  { name: '/forget',  handler: cmdForget,  description: 'Remove session fact(s): /forget <substring>, or all with confirmation' },
   { name: '/help',    handler: cmdHelp,    description: 'Show this help' },
   { name: '/quit',    handler: cmdQuit,    description: 'Exit (same as Ctrl+D)' },
   { name: '/exit',    handler: cmdQuit,    description: 'Exit (same as /quit)' },

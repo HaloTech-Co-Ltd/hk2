@@ -343,6 +343,8 @@ TUI 默认折叠思考输出（窗口结束后显示 `Thought for Ns`）；设�
 | `/theme title-follow [on\|off]` | 切换顶边标题跟随边框颜色（而非固定 muted 色调） |
 | `/clear` | 清空对话上下文 |
 | `/compact` | 摘要压缩早期消息 |
+| `/remember [事实]` | 记录会话事实（环境信息、约束、偏好），整个会话始终在上下文内且免于压缩；无参数时列出已记录的事实。智能体有对应的 `remember` 工具，压缩时也会自动抽取事实。`--project`/`-p` 会同时把事实追加到项目级 Eden 条目 `env-facts`（跨会话、可被 kb_search_knowledge 检索） |
+| `/forget [子串]` | 删除匹配子串的会话事实，或（确认后）删除全部 |
 | `/help` `/quit` `/exit` | 帮助 / 退出 |
 
 ## 代理工具
@@ -614,7 +616,7 @@ hk2 对所有触碰路径的智能体工具（`read`/`write`/`edit`/`find`/`grep
 | `HK2_ENABLE_AUTO_LEARN` | 为 1 时，hk2 会静默地让模型从刚结束的对话中抽取一条可复用知识条目并存入 Eden 空间。无论此标志如何，Holy 空间始终提示 y/N。 | `0` |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 设为正整数分钟数时，若本会话任务的知识捕获在该时间窗口内已被处理（代理通过 `kb_save_knowledge` 保存/拒绝、已回答的轮末提案、或抽取模型的跳过），则跳过轮末的 `[kb learn]` 追问。该锚点通过会话记录在 `--resume` 后恢复。当代理本轮已通过 `kb_save_knowledge` 保存知识时，无论此变量如何都跳过 `[kb learn]`。 | `0`（关闭） |
 | `HK2_KB_LEARN_VALIDATE` | 为 1 时，轮末 `[kb learn]` 写盘前会先对照现有 KB 条目校验（id/标题/关键词预筛 + 一次语义 LLM 判定）：含义基本一致的内容直接跳过（避免重复学习）；相近条目通过合并 intro 原地更新；直接冲突时——与 Holy 冲突必须由用户裁决，与 Eden 冲突以校验器的判定结果为准执行并打印理由；在相近条目旁边新建时也会打印不更新原条目的理由。校验是尽力而为：任何失败都降级为普通新条目流程。 | `1` |
-| `HK2_ENABLE_AUTOCOMPACT` | 为 1 时，当已使用的上下文长度达到模型上下文窗口的 `HK2_AUTOCOMPACT_PCTUSED`% 后，hk2 会在下一轮开始时自动压缩历史对话。压缩会原样保留最近 4 轮 user/assistant，并将其之前的对话（含工具结果）用 LLM 总结为一条 system 消息；LLM 失败时回退为朴素截断。仅在轮次边界触发，绝不中断正在进行的动作。 | `0` |
+| `HK2_ENABLE_AUTOCOMPACT` | 为 1 时（默认开），当已使用的上下文长度达到模型上下文窗口的 `HK2_AUTOCOMPACT_PCTUSED`% 后，hk2 会在下一轮开始时自动压缩历史对话。压缩会原样保留最近 4 轮 user/assistant，并将其之前的对话（含工具结果）用 LLM 总结为一条 system 消息；LLM 失败时回退为朴素截断。仅在轮次边界触发，绝不中断正在进行的动作。在对话被总结掉之前，用户陈述的持久事实会先被抽取进会话事实层（见 `/remember`），且摘要器输入同时保留对话的头部与尾部——开头陈述的事实逐字进入摘要，自动压缩不再丢失它们。 | `1` |
 | `HK2_AUTOCOMPACT_PCTUSED` | 1-100 的整数，上下文使用率触发阈值。仅当已使用的上下文长度 ≥ `模型上下文窗口 × HK2_AUTOCOMPACT_PCTUSED / 100` 时才触发自动压缩。 | `90` |
 | `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划调用超时（毫秒）。慢速供应商（大文件映射上的推理模型）可能超过默认 300 秒。单次运行可用 `--plan-timeout-ms=N` 覆盖。 | `300000` |

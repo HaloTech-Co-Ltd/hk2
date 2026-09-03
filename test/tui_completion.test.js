@@ -56,9 +56,14 @@ test('completionMenu: long descriptions wrap onto continuation lines aligned und
 test('completionMenu: line-budget window keeps the selected item visible', () => {
   const m = completionMenu('/ ', { width: 100, maxRows: 4, selected: 0 });
   assert.ok(m.lines.length <= 5, 'windowed to the budget (+overflow row)');
-  // Items are sorted alphabetically; 12 commands now (M27 added /resume),
-  // index 10 is /session — the window must scroll to keep it visible.
-  const m2 = completionMenu('/ ', { width: 100, maxRows: 4, selected: 10 });
+  // Items are sorted alphabetically. Compute the index of /session dynamically
+  // (the command set grows over time — /remember & /forget were added after
+  // this test's original 12-command hardcode) so the window-scroll assertion
+  // targets the right item regardless.
+  const labels = m.items.map(i => i.label);
+  const sessionIdx = labels.indexOf('/session');
+  assert.ok(sessionIdx > 0, '/session present in the command list');
+  const m2 = completionMenu('/ ', { width: 100, maxRows: 4, selected: sessionIdx });
   assert.ok(m2.lines.some(l => l.includes('/session')), 'window scrolled to keep the selected item visible');
 });
 

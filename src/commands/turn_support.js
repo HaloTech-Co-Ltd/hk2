@@ -221,13 +221,21 @@ export async function summarizeConversation(llm, messages) {
     parts.push(`${m.role.toUpperCase()}: ${body}`);
   }
   const raw = parts.join('\n\n');
-  // Cap the summarizer input so the summary call itself stays well within the
-  // model context window (keep the most recent, most relevant tail).
-  const input = raw.length > 48000 ? raw.slice(raw.length - 48000) : raw;
+  // P1-1: head+tail split instead of tail-only. The conversation OPENING is
+  // where the user states the goal and the environment facts (addresses,
+  // versions, constraints); a tail-only window silently dropped exactly that
+  // from the summarizer's INPUT — the summary could not preserve what it
+  // never saw. 16k head + 32k tail keeps both the opening facts and the
+  // recent decisions within the 48k budget.
+  const HEAD = 16000, TAIL = 32000;
+  let input = raw;
+  if (raw.length > HEAD + TAIL) {
+    input = raw.slice(0, HEAD) + '\n\n[...middle elided by the compaction input window...]\n\n' + raw.slice(raw.length - TAIL);
+  }
   const summary = await llm.complete([
     {
       role: 'system',
-      content: 'You are a context-compaction assistant for an AI coding agent. Produce a dense, faithful summary that preserves everything the agent needs to continue: the user\'s goal, decisions made, completed work, files changed and their paths, code locations, constraints, errors and fixes, and any pending plan steps. Do not invent facts; if a detail is unclear, say "unclear".',
+      content: 'You are a context-compaction assistant for an AI coding agent. Produce a dense, faithful summary that preserves everything the agent needs to continue: the user\'s goal, decisions made, completed work, files changed and their paths, code locations, constraints, errors and fixes, and any pending plan steps. FACTUAL VALUES MUST SURVIVE VERBATIM: any concrete value the user stated (addresses, hosts, ports, version numbers, identifiers, paths, account names, quantitative constraints) must be copied into the summary character-for-character, never paraphrased or rounded. Do not invent facts; if a detail is unclear, say "unclear".',
     },
     {
       role: 'user',
@@ -240,6 +248,66 @@ export async function summarizeConversation(llm, messages) {
     timeoutMs: 60000,
   });
   return (summary || '').trim();
+}
+
+/**
+ * Extract durable user-stated FACTS from messages about to be compacted away
+ * (P0-2 channel 3, the fallback that catches facts the user never explicitly
+ * asked to remember). One small LLM call, strict JSON, fail-open: any error,
+ * timeout, or unparseable output returns [] — extraction must never block or
+ * break compaction. Content-agnostic by design: the prompt lists CATEGORIES
+ * (endpoints/addresses, ports, versions, identifiers, constraints,
+ * preferences), not specific formats, so it generalizes beyond any single
+ * example.
+ */
+async function extractCompactedFacts(llm, messages) {
+  if (!llm) return [];
+  try {
+    const parts = [];
+    for (const m of messages) {
+      if (m.role !== 'user' && m.role !== 'assistant') continue;
+      const body = typeof m.content === 'string' ? m.content : '';
+      if (!body.trim()) continue;
+      parts.push(`${m.role.toUpperCase()}: ${body.slice(0, 2000)}`);
+    }
+    if (parts.length === 0) return [];
+    // P1-1 parity: head+tail split instead of tail-only. The conversation
+    // OPENING is where the user states environment facts; a tail-only window
+    // dropped exactly that from the extractor's INPUT — the same head-loss
+    // defect the summarizer's input window just lost. 8k head + 16k tail
+    // within the same 24k budget.
+    const joined = parts.join('\n\n');
+    const EX_HEAD = 8000, EX_TAIL = 16000;
+    let scan = joined;
+    if (joined.length > EX_HEAD + EX_TAIL) {
+      scan = joined.slice(0, EX_HEAD) + '\n\n[...middle elided by the fact-extraction input window...]\n\n' + joined.slice(joined.length - EX_TAIL);
+    }
+    const raw = await llm.complete([
+      {
+        role: 'system',
+        content: 'You extract durable FACTS stated by the user in a conversation that is about to be summarized away. Facts are short, self-contained, and useful for the REST of the session: environment endpoints / addresses / ports, version numbers, account or machine names (never secrets themselves), deployment constraints, naming conventions, explicit user preferences. Do NOT extract: task steps, transient questions, code findings, or anything already obvious from the current context. Return strict JSON only: {"facts": string[]}, at most 12 facts, each <= 300 chars. If there are none, return {"facts": []}.',
+      },
+      {
+        role: 'user',
+        content: `Conversation to scan:\n\n${scan}`,
+      },
+    ], {
+      maxChars: 4000,
+      temperature: 0.1,
+      enableReasoning: false,
+      timeoutMs: 30000,
+    });
+    const text = (raw || '').trim();
+    const m = text.match(/\{[\s\S]*\}/);
+    const parsed = m ? JSON.parse(m[0]) : null;
+    if (!parsed || !Array.isArray(parsed.facts)) return [];
+    return parsed.facts
+      .filter(f => typeof f === 'string' && f.trim())
+      .map(f => f.trim().slice(0, 500))
+      .slice(0, 12);
+  } catch {
+    return []; // fail-open: compaction proceeds regardless
+  }
 }
 
 /**
@@ -259,6 +327,28 @@ export async function compactMessages(session) {
   const keep = 4;   // keep the last 4 user/assistant turns verbatim
   const toCompact = conversation.slice(0, conversation.length - keep);
   const kept = conversation.slice(conversation.length - keep);
+
+  // P0-2 channel 3: before these turns are summarized away, extract durable
+  // user-stated facts into the session facts store so they survive
+  // independent of the summary. Best-effort: extraction failures are
+  // swallowed inside extractCompactedFacts and compaction proceeds. The
+  // facts go to the store keyed by the CURRENT transcript session; the
+  // standing "## Session facts" message is refreshed by the next turn's
+  // ensure pass (this path runs pre-turn, before the injection site).
+  try {
+    const facts = await extractCompactedFacts(session.llm, toCompact);
+    if (facts.length > 0 && session.project?.id && session.transcript?.sessionId) {
+      const { addSessionFact } = await import('../../lib/agent/session_facts.js');
+      let added = 0;
+      for (const f of facts) {
+        const out = await addSessionFact(session.project.id, session.transcript.sessionId, f, { source: 'compact-extract' });
+        if (Array.isArray(out) && out.length > 0 && added < out.length) added = out.length;
+      }
+      if (added > 0) {
+        await session.transcript?.logMeta('session_facts_extracted', { count: added, source: 'compact-extract' });
+      }
+    }
+  } catch { /* extraction is best-effort; never block compaction */ }
 
   // IMPORTANT: Anthropic requires every assistant tool_use to be immediately
   // followed by its tool_result. We must NOT drop a `tool` message whose
@@ -380,17 +470,27 @@ export async function compactMessages(session) {
 }
 
 /**
- * Auto context compaction (HK2_ENABLE_AUTOCOMPACT, default 0): if the last
- * measured context size reached HK2_AUTOCOMPACT_PCTUSED% (default 90) of the
- * model's context window, compact the prior conversation at the turn boundary
- * so an in-flight turn is never interrupted.
+ * Auto context compaction (HK2_ENABLE_AUTOCOMPACT, default 1 since the
+ * session-facts layer landed): if the last measured context size reached
+ * HK2_AUTOCOMPACT_PCTUSED% (default 90) of the model's context window,
+ * compact the prior conversation at the turn boundary so an in-flight turn
+ * is never interrupted.
+ *
+ * The default flipped 0 → 1 because the two loss channels that made
+ * auto-compaction risky are now closed: (a) durable user-stated facts are
+ * extracted into the session facts store BEFORE the turns are summarized
+ * away (and survive as a standing system message), and (b) the summarizer
+ * input is head+tail so opening-stated facts reach the summary verbatim.
+ * The alternative to auto-compaction — letting the provider hard-truncate
+ * or error at the window edge — loses the SAME information with no summary
+ * and no extraction at all.
  *
  * Runs only at the start of a new turn (before rewrite/retrieval/agent work),
  * using the snapshot captured at the previous turn's end. The tolerance comes
  * from only checking at this safe boundary — never mid-loop.
  */
 export async function maybeAutoCompact(session, ctx) {
-  if (!envFlag('HK2_ENABLE_AUTOCOMPACT', 0)) return;
+  if (!envFlag('HK2_ENABLE_AUTOCOMPACT', 1)) return;
   const windowTokens = session.modelCfg?.maxChars || 0;
   if (!windowTokens) return;
 

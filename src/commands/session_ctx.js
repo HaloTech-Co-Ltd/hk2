@@ -69,6 +69,7 @@ import { toolCardToken } from '../../lib/agent/tool_theme.js';
 import * as style from '../../lib/agent/style.js';
 import { safeParseArgs, toolHeader, formatPlanProgressLines, digestLine, plainPlanLines } from './status_format.js';
 import { compactMessages, collectWorkingTreeDiff, estimateMessagesTokens, applyCompactTokenEstimate } from './turn_support.js';
+import { ensureSessionFactsMessage } from '../../lib/agent/session_facts.js';
 
 /**
  * Build a bare session object (no readline / status bar). Shared by
@@ -915,6 +916,19 @@ export function buildBaseCtx(session, io) {
       console.error(`Compacted: dropped ${out.dropped} messages, kept ${out.kept}.`);
     },
     /**
+     * Session-facts hook for /remember & /forget: swap in the updated fact
+     * list and refresh the standing "## Session facts" message in place so
+     * the very next turn (and every LLM call in it) sees the change — no
+     * need to wait for the next turn's disk load.
+     */
+    sessionFacts: {
+      refresh: (facts) => {
+        session.sessionFacts = Array.isArray(facts) ? facts : [];
+        ensureSessionFactsMessage(session, session.sessionFacts);
+        return session.sessionFacts;
+      },
+    },
+    /**
      * Read-only view of the current conversation for the /review command:
      * the latest user request (the "task requirement") and the assistant's
      * final answer (the "claimed result"). Deliberately returns ONLY these
@@ -1321,6 +1335,16 @@ export function buildSessionDigest(session, currentRequest, opts = {}) {
   if (plan.length > 0) {
     lines.push('Active plan progress:');
     lines.push(...plan);
+  }
+
+  // 2.2) Session facts (P0-2 digest synergy): the persistent facts layer —
+  // user-stated environment facts / constraints / preferences that survive
+  // compaction. The assessor should treat them as always-in-scope context
+  // (e.g. a terse request referencing "the test host" is disambiguated by a
+  // recorded fact naming it).
+  if (Array.isArray(session.sessionFacts) && session.sessionFacts.length > 0) {
+    lines.push('Session facts (persistent, always in scope):');
+    for (const f of session.sessionFacts.slice(0, 12)) lines.push(`  - ${digestLine(f)}`);
   }
 
   // 2.5) Assistant's latest closing proposal (P0-2). The single strongest

@@ -1047,6 +1047,21 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       if (marked !== null) ui.statusRefresh();
       return marked;
     },
+    // `remember` tool callback: persist the fact to the session facts store
+    // and refresh the standing "## Session facts" message IN PLACE so the
+    // very next LLM call in this same loop already sees it. Returns the
+    // updated fact list (truthy) on success, null on failure.
+    remember: async (fact) => {
+      const { addSessionFact, ensureSessionFactsMessage } = await import('../../lib/agent/session_facts.js');
+      const pid = session.project?.id;
+      const sid = session.transcript?.sessionId;
+      const updated = await addSessionFact(pid, sid, fact, { source: 'remember-tool' });
+      if (!Array.isArray(updated)) return null;
+      session.sessionFacts = updated;
+      ensureSessionFactsMessage(session, updated);
+      await session.transcript?.logMeta('session_fact', { added: fact.slice(0, 200), total: updated.length });
+      return updated;
+    },
     // Knowledge-save approval gate: the agent calls `kb_save_knowledge` to
     // persist learned entries. Holy Space is the source of truth - it MUST
     // prompt the user before every commit, regardless of env vars. Eden
@@ -1140,6 +1155,19 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       role: 'system',
       content: `## Knowledge-base context for this turn (query="${userText}")\nHits: ${graphSummary}\n\n${graphText}`,
     });
+  }
+  // Session facts layer: load the session's persistent facts (user-stated
+  // environment facts — test IPs, ports, versions, constraints, preferences)
+  // and refresh the standing "## Session facts" system message right after
+  // the main system prompt. The message is NOT in compactMessages' foldable
+  // set, so it survives every compaction — persistence by design, not by
+  // luck of staying inside the summarizer's input window. Facts live in
+  // session memory too (session.sessionFacts) so mid-turn remember-tool
+  // calls can update the message without re-reading disk.
+  {
+    const { loadSessionFacts, ensureSessionFactsMessage } = await import('../../lib/agent/session_facts.js');
+    session.sessionFacts = await loadSessionFacts(session.project?.id, session.transcript?.sessionId);
+    ensureSessionFactsMessage(session, session.sessionFacts);
   }
   // Track KB-first-policy violations: when the agent uses bash to grep/find/cat
   // source files, that's a signal the KB didn't have what it needed and we
