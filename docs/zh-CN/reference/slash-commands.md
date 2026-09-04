@@ -129,6 +129,10 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | `transform <id> <from> <to>` | 在 holy/eden 之间移动条目（需确认） |
 | `drop` | 删除整个知识库（需确认） |
 
+### status 自愈写入
+
+`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，它会先尽力创建空的永久条目；失败会被忽略且不单独报告，因此这个特殊情况可能有写盘副作用。首次加载 `KBRuntime` 也会尝试同样的缺失条目自愈。
+
 ## `/kb knowledge`
 
 用法：`/kb knowledge <子命令> [参数]`。
@@ -190,6 +194,11 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | `resume [<sessionId>]` | 恢复之前的会话（完整还原上下文）；无 id 时恢复项目最近一次之前的会话 |
 | `compact` | 手动压缩对话（同 `/compact`） |
 
+`/session new` 保留当前项目与模型选择，开启新 transcript，并清除当前进程的
+对话 / 任务 / 计划 / 审查快照及计数器。它会 flush 旧 transcript，不会武断删除
+项目级 `taskstate.json`。`/session resume` 在重放目标 transcript 前清除旧任务状态，
+只恢复匹配且未完成的 taskstate；不会恢复进程内的 `lastCompletedTask` 快照。
+
 ## `/resume`
 
 用法：`/resume [<sessionId>]`——重新打开之前会话的记录并还原完整对话上下
@@ -238,6 +247,18 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 问题"。`--model` 覆盖阶段配置的模型
 （`/model set-phase --phase=code-review`），其次会话模型。
 
+## 审查模型解析
+
+自动 plan/code 审查与手动 `/review code` 的模型解析不同：
+
+| 审查路径 | 项目阶段引用过期 | 显式缺失 `--model` | 选定模型调用失败 |
+|---|---|---|---|
+| 自动 plan/code 审查 | 静默使用会话模型 | 不适用 | 告警并跳过 |
+| 手动 `/review code` | 告警并使用会话模型 | 终止 | 告警并跳过 |
+
+手动显式 `--model` 绝不回退；过期阶段引用或阶段解析异常会先告警，再使用会话模型。
+选定的审查模型调用失败时跳过，不替换为其他模型。
+
 ## `/theme`
 
 用法：`/theme <子命令> [参数]`——自定义工具卡片边框 / 标题颜色
@@ -279,12 +300,10 @@ key（解析优先级：精确工具名 > 分组 key > `*` > 内置默认）：`
 
 退出 REPL。同 Ctrl+D。`/exit` 是 `/quit` 的别名。
 
+
+
 ## 相关文档
 
 - [REPL 与 TUI](../guides/repl-and-tui.md)——命令在哪里运行、如何补全
 - [智能体工具](agent-tools.md)——*智能体*（而非你）可以调用什么
 - [环境变量](environment-variables.md)——控制相关行为的开关
-
-### status 自愈写入
-
-`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，它会先尽力创建空的永久条目；失败会被忽略且不单独报告，因此这个特殊情况可能有写盘副作用。首次加载 `KBRuntime` 也会尝试同样的缺失条目自愈。

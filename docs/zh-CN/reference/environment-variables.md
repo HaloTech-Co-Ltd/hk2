@@ -59,7 +59,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | `HK2_ENABLE_REQUEST_ASSESS` | `1`（且改写开启）：在第一次查询改写**和**知识库检索之后，LLM 判断请求是否清晰——刻意让评估模型手握已检索的项目上下文；不清晰的请求弹出编号澄清菜单，选定答案驱动第二次改写 + 检索。结合会话摘要判断以免误判后续输入；仅交互式 TTY；一轮有界；尽力而为。调用始终使用 `enableReasoning:true`，但提供商不一定返回独立 reasoning 流。判定字段记入会话记录的 `assess` 元数据 | `1` | 超时使用 `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` |
 | `HK2_ASSESS_MIN_CONFIDENCE` | 置信度阈值（0.0–1.0），低于该值的"不清晰"结论按清晰处理 | `0.8` | 误弹菜单的代价高于让主智能体内联追问 |
 | `HK2_ENABLE_FOLLOWUP_FASTLANE` | `1`（且改写开启）：确定为会话性后续输入的内容（继续指令、纯确认词、恰逢刚给出菜单时的纯数字选择、有活跃计划时的推进指令）跳过整个前置管线，直接进入智能体循环 | `1` | 设 `0` 恢复完整管线以便 A/B 对比 |
-| `HK2_ENABLE_CONTINUATION_UPGRADE` | 仅为未被 tier 1 识别的输入启用 tier-2 continuation upgrade。使用 `envFlag()`（仅 `1`/`yes`/`true`/`on` 生效）；依赖请求评估实际运行，因此关闭 / 跳过评估或查询改写时不会升级 | `1` | assessor 的 followup 结论还必须达到置信度阈值并找到进行中的任务 |
+| `HK2_ENABLE_CONTINUATION_UPGRADE` | 仅为未被 tier 1 识别的输入启用 tier-2 continuation upgrade。使用 `envFlag()`（仅 `1`/`yes`/`true`/`on` 生效）；依赖请求评估实际运行，因此关闭 / 跳过评估或查询改写时不会升级 | `1` | assessor 的 followup 结论还必须达到置信度阈值并找到可供后续输入引用的先前会话上下文 |
 | `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` | tier-2 continuation upgrade 的最小评估置信度；使用 `parseFloat()` 并钳制到 `0–1` | `0.6` | 非数字回退到 `0.6`；没有活跃 plan、`lastTask` 或会话上下文时不会升级 |
 | `HK2_ENABLE_PHASEMODEL_FALLBACK` | `rewrite-query` 或 `request-assess` 阶段模型已成功解析、但实际调用失败时：`1` 告警并用会话模型重跑；`0` 告警并跳过。审查阶段始终跳过（绝不替换审查者）。解析为 `null` 的过期 ref 会静默视为无覆盖；解析异常则告警并使用会话模型 | `1` | |
 

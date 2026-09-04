@@ -177,6 +177,14 @@ Two env flags control what the agent may write to the KB without asking:
   parser-owned entries of deleted/excluded docs); it does not touch
   hand-authored Holy or ordinary Eden entries.
 
+### Status self-healing
+
+`/kb status` normally reads and reports statistics. For a legacy KB missing the
+permanent `hk2-supreme-code` entry, it attempts a best-effort creation of an
+empty permanent entry first; a failure is ignored and not separately reported.
+This exceptional compatibility path may write to disk. Initial `KBRuntime`
+loading has the same missing-entry self-heal attempt.
+
 Both default to `0` (off). See
 [Environment variables](../reference/environment-variables.md).
 
@@ -185,11 +193,3 @@ Both default to `0` (off). See
 - [Knowledge graph and retrieval](knowledge-graph-and-retrieval.md) — what Index Space contains and how it is queried
 - [Knowledge workflows](../guides/knowledge-workflows.md) — the commands that build and curate a KB
 - [Configuration](../reference/configuration.md) — the on-disk KB layout
-
-### Status self-healing
-
-`/kb status` normally reads and reports statistics. For a legacy KB missing the
-permanent `hk2-supreme-code` entry, it attempts a best-effort creation of an
-empty permanent entry first; a failure is ignored and not separately reported.
-This exceptional compatibility path may write to disk. Initial `KBRuntime`
-loading has the same missing-entry self-heal attempt.

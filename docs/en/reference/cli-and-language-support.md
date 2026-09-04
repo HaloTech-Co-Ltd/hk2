@@ -12,7 +12,7 @@ control direct `kb_outline` queries for already indexed files.
 
 Slash-command recognition is shape-based and shared by the dispatcher, task
 input capture, and multiline collection: only a single-segment ASCII command
-head matching `/[A-Za-z][A-Za-z0-9_-]*` is treated as a command attempt. Paths
+head matching `^/[A-Za-z][A-Za-z0-9_-]*$` is treated as a command attempt. Paths
 such as `/path/to/project/file.c` and path-glued prose remain ordinary input.
 
 ## CLI

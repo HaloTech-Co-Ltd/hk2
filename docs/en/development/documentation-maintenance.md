@@ -104,7 +104,8 @@ verifies:
   count/shape, and fenced-code language sequence;
 - every page pair links to each other (language switch);
 - every page has exactly one H1, the language switch is in the first block
-  after it, and heading levels do not skip;
+  after it, and heading levels do not skip (ATX headings may be indented by
+  up to three spaces; four spaces are code indentation);
 - each docs page pair has the same ordered heading-level sequence, table count and
   column/row signatures, and fenced-code language sequence;
 - local Markdown links and images in `README.md`, `README_zh.md`, and

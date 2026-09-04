@@ -128,16 +128,25 @@ function isTableSeparator(line) {
   return cells.length >= 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
 }
 
+/** Scan rendered ATX headings, allowing Markdown's 0–3 indentation spaces. */
+export function scanHeadings(stripped) {
+  const headings = [];
+  const re = /^ {0,3}(#{1,6})(?:[ \t]+|$)(.*)$/gm;
+  for (const match of stripped.matchAll(re)) {
+    headings.push({
+      level: match[1].length,
+      text: match[2].trim(),
+      index: match.index,
+    });
+  }
+  return headings;
+}
+
 /** Extract shape-only signals used for bilingual structural parity. */
 export function extractStructuralSignature(raw) {
   const scanned = scanFences(raw);
   const lines = scanned.stripped.split('\n');
-  const headingLevels = [];
-  const headingRe = /^(#{1,6})\s+(.*)$/;
-  for (const line of lines) {
-    const match = line.match(headingRe);
-    if (match) headingLevels.push(match[1].length);
-  }
+  const headingLevels = scanHeadings(scanned.stripped).map(h => h.level);
 
   const tables = [];
   for (let i = 0; i + 1 < lines.length; i++) {
@@ -351,12 +360,7 @@ for (const [abs, raw] of rawContents) {
   // level skips. Headings inside fenced code are ignored via scanFences.
   {
     const body = scanFences(raw).stripped;
-    const headingRe = /^(#{1,6})\s+(.*)$/gm;
-    const headings = [...body.matchAll(headingRe)].map((m) => ({
-      level: m[1].length,
-      text: m[2].trim(),
-      index: m.index,
-    }));
+    const headings = scanHeadings(body);
     const h1s = headings.filter((h) => h.level === 1);
     if (h1s.length !== 1) {
       problem(abs, `has ${h1s.length} ATX H1 headings (expected exactly 1)`);

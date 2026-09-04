@@ -71,22 +71,17 @@ LLM 会对定稿计划做一次复审。复审者会：
 
 ## 代码审查
 
-两种形式，共享同一实现：
+两种形式使用相关但不同的模型解析路径：
 
 - **自动**——`HK2_ENABLE_CODEREVIEW=1`（默认关闭）：智能体正常返回最终
   文本时，收尾逻辑可能在本轮确认或继续了计划的情况下触发审查，检查工作区
-  diff、变更文件与智能体最终总结的正确性、完整性与质量。即使模型没有为每个
-  步骤正确调用 `plan_step`，普通最终文本也可能清理 panel 并触发审查；中途以
-  普通最终文本询问用户也属于正常返回。
-- **手动**——`/review code` 对当前会话中刚完成的任务执行同样的回归检查。
-  原始任务请求、运行期间排队且扩展需求的指令以及完成结果会发送给审查模型；
-  工具调用、推理过程和中间回合等实现上下文会被刻意排除。原始需求的
-  `lastCompletedTask` 快照只在内存中存在，`/project set current` 会清理它；恢复的
-  会话改用确定性的 transcript 扫描。`/review plan` 为预留，尚未实现。
-
-审查过程实时流式展示（需求重分析、逐项覆盖检查、正确性检查、结论）；
-发现的问题逐一列出并给出详细说明与建议。`--model=<provider>/<model-id>`
-为手动审查指定模型。
+  diff、变更文件与智能体最终总结。即使模型没有为每个步骤调用 `plan_step`，
+  普通最终文本也可能清理面板并触发审查。
+- **手动**——`/review code` 审查原始任务请求、运行期间排队且扩展需求的指令
+  以及完成结果；工具调用、推理过程和中间回合会被刻意排除。显式 `--model`
+  缺失时快速失败；项目阶段引用过期时告警并使用会话模型。
+  `lastCompletedTask` 快照只在内存中存在；`/session new` 与恢复都会清除它，
+  恢复的会话改用确定性的 transcript 扫描。`/review plan` 为预留，尚未实现。
 
 ### UNKNOWN 判定
 
@@ -96,22 +91,18 @@ LLM 会对定稿计划做一次复审。复审者会：
 
 ## 审查模型
 
-两种审查都使用阶段模型机制：
+自动审查与手动审查使用相关但不同的模型解析路径：
 
-```text
-/model set-phase --phase=plan-review local/mymodel
-/model set-phase --phase=code-review local/mymodel
-```
+| 审查路径 | 项目阶段引用过期 | 显式缺失 `--model` | 选定模型调用失败 |
+|---|---|---|---|
+| 自动 plan/code 审查 | 静默使用会话模型 | 不适用 | 告警并跳过 |
+| 手动 `/review code` | 告警并使用会话模型 | 终止 | 告警并跳过 |
 
-未设置时使用会话模型审查。已配置的审查模型不可达时，审查被**跳过**并
-警告——绝不静默改用其他模型重跑，否则实际执行审查的模型就变了。
-（`rewrite-query` / `request-assess` 阶段模型在
-`HK2_ENABLE_PHASEMODEL_FALLBACK` 下*确实*会回退到会话模型；审查阶段刻意
-更严格。）
+自动审查把过期引用视为没有覆盖，不告警，也不产生 fallback/skip 审计事件。
+解析异常则告警并使用会话模型。手动 `/review code` 对过期阶段引用和解析异常
+都会告警并使用会话模型；显式 `--model=<ref>` 的引用无效或缺失时绝不回退。
+选定模型成功解析后实际调用失败，会跳过审查，不再选择其他模型。
 
-已成功解析的阶段模型在实际调用失败后产生的回退或跳过，会记入会话记录
-（`phaseModelFallback`、`skipped` + `error`）供审计。解析为 `null` 的过期
-引用会静默视为无覆盖，不产生该审计事件；解析异常则告警并使用会话模型。
 
 ## 推理设置
 
@@ -129,18 +120,20 @@ flowchart TD
     U[用户输入] --> T1{tier-1 确定性匹配？}
     T1 -- 是 --> C[直接继续]
     T1 -- 否 --> A[正常评估路径]
-    A --> V{followup=true + 达到阈值 + 存在进行中任务？}
+    A --> V{followup=true + 达到阈值 + 存在先前会话指代？}
     V -- 否 --> F[保持新任务分类]
-    V -- 是 --> UPGRADE[tier-2 continuation upgrade<br/>恢复 planProgress 与 lastTask<br/>注入恢复上下文<br/>记录 followupUpgrade 元数据]
+    V -- 是 --> UPGRADE[tier-2 continuation upgrade<br/>恢复可用的 plan/task 状态<br/>只有有 lastTask 时注入恢复上下文<br/>记录 followupUpgrade 元数据]
 ```
 
 `HK2_ENABLE_CONTINUATION_UPGRADE` 默认对未被 tier 1 识别的输入启用，并依赖
 请求评估实际运行。`HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` 默认 `0.6`，用
 `parseFloat()` 解析并钳制到 `0–1`（非法值使用 `0.6`）。assessor 必须返回
 `followup:true` 且置信度达到阈值，同时必须存在活跃 plan、`lastTask` 或会话
-上下文。升级复用已有评估结果，不增加额外 LLM 调用；它恢复原始任务锚点和此前
-的续接状态，注入恢复上下文，并在会话元数据中记录 `followupUpgrade`。tier-1
-快速通道会跳过评估，也不使用该升级。
+上下文。升级复用已有评估结果，不增加额外 LLM 调用；它只恢复实际存在的状态：
+只有 pre-commit plan 存在时才恢复 `planProgress`，只有 pre-commit task 存在时才
+恢复 `lastTask`，只有恢复后的 `lastTask` 非空时才注入恢复上下文。仅有历史对话时
+可能升级，但不会虚构 plan、任务锚点或恢复上下文，只避免把输入提交为新的任务快照。
+tier-1 快速通道会跳过评估，也不使用该升级。
 
 ## 中断行为
 

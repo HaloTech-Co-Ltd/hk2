@@ -461,7 +461,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   if (opts.continuation && session.lastTask) {
     const resumeMsg = buildResumeContext(session);
     if (resumeMsg) session.messages.push({ role: 'system', content: resumeMsg });
-    // Continuation with an in-flight task: the live plan block (if any) is
+    // Continuation with prior task context: the live plan block (if any) is
     // deliberately kept — planAction stays 'keep'.
   } else if (opts.continuation) {
     // Continuation cue with NO task to resume (fresh session, or the previous
@@ -521,10 +521,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // Tier-2 continuation upgrade gate (HK2_ENABLE_CONTINUATION_UPGRADE,
   // default 1, mirroring HK2_ENABLE_FOLLOWUP_FASTLANE's A/B convention):
   // when the tier-1 regex says "fresh task" but the Pass-1.5 assessor comes
-  // back followup:true with an in-flight task to continue, upgrade the
+  // back followup:true with a prior conversational referent, upgrade the
   // classification and roll back the deferred fresh-task commit. Set 0 to
   // keep tier 1 (the regex) as the sole decision-maker.
-  const enableUpgrade = envFlag('HK2_ENABLE_CONTINUATION_UPGRADE', 1);  if (fastLane) {
+  const enableUpgrade = envFlag('HK2_ENABLE_CONTINUATION_UPGRADE', 1);
+  if (fastLane) {
     await session.transcript?.logMeta('followupFastLane', { rule: fastLane, input: userText.slice(0, 160) });
     // Follow-up turns start straight on the model wait (no rewrite, no KB
     // retrieval, no assessment — the referent lives in the conversation).
@@ -723,7 +724,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         ctxLines.push('Knowledge entries:');
         for (const k of graph.knowledge.slice(0, 4)) ctxLines.push(`  - ${k.title}`);
       }
-      // Session task context (in-flight task / plan progress / recent turns)
+      // Session task context (available task state / plan progress / recent turns)
       // so follow-ups that are terse in isolation but unambiguous given the
       // conversation are not flagged unclear. The deferred fresh-task commit
       // runs right AFTER the digest is built (the digest must still see the
@@ -731,7 +732,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // final: lastTask points at THIS request (a later interruption must
       // resume it) and the stale plan block is retired. The ONE exception is
       // the tier-2 continuation upgrade below: when the assessor's followup
-      // verdict says this input actually advances the in-flight task, the
+      // verdict says this input refers to the prior conversational context, the
       // commit is rolled back from the pre-commit snapshot. When the assessor
       // is disabled the transition happens at the pass-2 boundary below
       // without this block, so every path commits exactly once.
@@ -771,8 +772,8 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // as fresh tasks, and the deferred commit above has ALREADY retired the
       // live plan block + overwritten lastTask. The assessor judged this
       // request with the session digest in view; when it comes back
-      // followup:true (with confidence) and the session HAD an in-flight task
-      // at the digest boundary, roll the fresh-task commit back and treat the
+      // followup:true (with confidence) and a prior conversational referent
+      // existed at the digest boundary, roll the fresh-task commit back and treat the
       // turn as the continuation it actually is.
       const upgrade = !fastLane && !opts.continuation && enableUpgrade
         ? shouldUpgradeToContinuation(assessment, {
@@ -794,8 +795,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         // turn counts for the end-of-turn Code Review gate.
         if (preCommitPlan) planActiveAtStart = true;
         // Resume context — the same injection a tier-1 continuation gets at
-        // the top of the turn (buildResumeContext), so the model knows it is
-        // advancing the interrupted in-flight task, not starting fresh. It
+        // the top of the turn (buildResumeContext), when a task anchor was
+        // restored, so the model knows it is advancing that task rather than
+        // starting fresh. It
         // lands here (before the user message is pushed at agent-loop entry)
         // rather than at the top of runTurn because the classification only
         // became known now. Appended (not replacing) buildResumeContext so
@@ -878,7 +880,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   }
 
   // Deferred fresh-task transition: a fast-lane follow-up ALWAYS counts as a
-  // continuation of the in-flight task — the plan block and lastTask stay as
+  // continuation of the prior task context — the plan block and lastTask stay as
   // they are. Otherwise commit at the pass-2 boundary as before.
   if (!fastLane) commitFreshTaskIfPending();
 

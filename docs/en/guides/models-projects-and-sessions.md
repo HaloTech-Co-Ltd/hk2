@@ -243,6 +243,17 @@ Sessions are stored as JSONL transcripts at
   [Slash commands](../reference/slash-commands.md#remember).
 - `/clear` clears the in-memory context only — the transcript on disk is
   preserved and can be resumed later.
+- `/session new` preserves the current project and model selection, starts a
+  new transcript, and clears conversation/task/plan/review snapshots, session
+  facts, counters, cooldowns, and other current-session state. It flushes the
+  old transcript but does not blindly delete project-level `taskstate.json`.
+- `/session resume` rebuilds messages from the target transcript, clears old
+  task/review/plan state first, and restores only unfinished taskstate whose
+  `sessionId` matches that transcript. `lastCompletedTask` is process-memory
+  only: every resume and `/session new` clears it; switching to a different
+  project clears it too, while setting the shared pointer to the project this
+  session already uses is a deliberate no-op. Resumed `/review code` derives
+  the original requirement by deterministic transcript scanning.
 
 ## Related documentation
 

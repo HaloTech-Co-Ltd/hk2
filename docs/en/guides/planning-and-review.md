@@ -86,27 +86,21 @@ failure returns the already-confirmed plan unchanged.
 
 ## Code review
 
-Two forms exist, sharing one implementation:
+Two forms exist, with distinct model-resolution paths:
 
 - **Automatic** — `HK2_ENABLE_CODEREVIEW=1` (default off): on a normal agent
   return, finalization can review the completed result — the working-tree
-  diff, the changed files, and the agent's final summary — when this turn
-  confirmed or continued a plan. A normal final text reply can therefore
-  finalize a panel and trigger review even if the model did not call
-  `plan_step` for every step.
-- **Manual** — `/review code` runs the same regression check on the
-  just-completed task in the current conversation. The original task request,
-  any queued mid-task additions that extended it, and the completed result are
-  sent to the review model. Tool calls, reasoning, and intermediate turns are
-  deliberately excluded. The `lastCompletedTask` original-request snapshot is
-  in-memory only, is cleared by `/project set current`, and resumed sessions
-  use deterministic transcript scanning instead. `/review plan` is reserved
-  and not implemented yet.
-
-The reviewer's analysis streams live (requirement re-analysis, per-point
-coverage check, correctness check, conclusion); issues it finds are listed
-one-by-one with detail and a suggestion. `--model=<provider>/<model-id>`
-picks the model for a manual review.
+  diff, changed files, and the agent's final summary — when this turn confirmed
+  or continued a plan. A normal final text reply can therefore finalize a panel
+  and trigger review even if the model did not call `plan_step` for every step.
+- **Manual** — `/review code` reviews the original task request, queued
+  mid-task additions that extended it, and the completed result; tool calls,
+  reasoning, and intermediate turns are deliberately excluded. Its explicit
+  `--model` fails fast when missing, while a stale project phase reference
+  warns and uses the session model. The `lastCompletedTask` snapshot is
+  in-memory only; `/session new` and resume clear it, and resumed sessions use
+  deterministic transcript scanning. `/review plan` is reserved and not
+  implemented yet.
 
 ### UNKNOWN verdicts
 
@@ -116,25 +110,21 @@ reply whose verdict cannot be parsed is reported as **UNKNOWN** — never as
 
 ## Review models
 
-Both reviews use the phase-model mechanism:
+Automatic and manual review use related but distinct model-resolution paths:
 
-```text
-/model set-phase --phase=plan-review local/mymodel
-/model set-phase --phase=code-review local/mymodel
-```
+| Review path | Stale project phase ref | Explicit missing `--model` | Selected model call failure |
+|---|---|---|---|
+| Automatic plan/code review | silently use session model | n/a | warn + skip |
+| Manual `/review code` | warn + use session model | abort | warn + skip |
 
-When unset, the session model reviews. If a configured review model is
-unreachable, the review is **skipped** with a warning — never silently
-re-run on a different model, which would change what reviewed the plan or
-code. (`rewrite-query` / `request-assess` phase models *do* fall back to the
-session model under `HK2_ENABLE_PHASEMODEL_FALLBACK`; the review phases are
-deliberately stricter.)
+Automatic review resolves a stale reference as no override, without warning or
+fallback/skip audit event. A resolution exception warns and uses the session
+model. Manual `/review code` warns for both a stale phase reference and a
+resolution exception, then uses the session model; an explicit `--model=<ref>`
+never falls back when its reference is invalid or missing. After any selected
+review model is successfully resolved, an actual call failure skips the review
+rather than selecting another model.
 
-Fallbacks and skips caused by a successfully resolved phase model failing are
-recorded in the session transcript (`phaseModelFallback`, `skipped` + `error`)
-for auditing. A stale ref that resolves to `null` is silently treated as no
-override and does not create that audit event; a resolution exception instead
-warns and uses the session model.
 
 ## Reasoning settings
 
@@ -154,9 +144,9 @@ flowchart TD
     U[User input] --> T1{Tier-1 deterministic match?}
     T1 -- yes --> C[Continue directly]
     T1 -- no --> A[Normal assessed path]
-    A --> V{followup=true + confidence threshold + in-flight task?}
+    A --> V{followup=true + threshold + prior conversational referent?}
     V -- no --> F[Keep fresh-task classification]
-    V -- yes --> UPGRADE[Tier-2 continuation upgrade<br/>restore planProgress and lastTask<br/>inject resume context<br/>followupUpgrade meta]
+    V -- yes --> UPGRADE[Tier-2 continuation upgrade<br/>restore available plan/task state<br/>inject resume context only with restored lastTask<br/>followupUpgrade meta]
 ```
 
 `HK2_ENABLE_CONTINUATION_UPGRADE` defaults to on for inputs missed by tier 1
@@ -164,11 +154,15 @@ and depends on request assessment actually running. The threshold
 `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` defaults to `0.6`, is parsed with
 `parseFloat()`, and is clamped to `0–1` (invalid values use `0.6`). The
 assessor must return `followup:true` with confidence at or above the threshold,
-and an active plan, `lastTask`, or conversation context must exist. The upgrade
-reuses the existing assessment result; it is not an additional LLM call. It
-restores the original task anchor and prior continuation state, injects resume
-context, and records `followupUpgrade` in transcript metadata. Tier-1 fast-lane
-inputs skip assessment and do not use this upgrade.
+and a prior conversational referent must exist: a pre-commit plan, a
+`lastTask`, or prior user/assistant messages. The upgrade reuses the existing
+assessment result; it is not an additional LLM call. It restores only state
+that exists: `planProgress` only when a pre-commit plan exists, `lastTask` only
+when a pre-commit task exists, and resume context only when the restored
+`lastTask` is non-empty. With conversation history alone there is no plan,
+task anchor, or resume-context injection; the upgrade only avoids committing
+the input as a fresh task snapshot. Tier-1 fast-lane inputs skip assessment
+and do not use this upgrade.
 
 ## Interruption behavior
 

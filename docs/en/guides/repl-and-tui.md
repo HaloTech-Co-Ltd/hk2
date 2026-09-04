@@ -144,7 +144,7 @@ to keep the draft isolated from normal streaming redraws.
   ends, since they may switch model / KB / project state the in-flight turn
   still depends on. Plan-confirmation menus are unaffected.
 - The shared slash-command shape guard treats only a first token matching
-  `/[A-Za-z][A-Za-z0-9_-]*` as a command-shaped head. Registered commands such as
+  `^/[A-Za-z][A-Za-z0-9_-]*$` as a command-shaped head. Registered commands such as
   `/kb` dispatch normally, and plausible typos such as `/mdoel` can receive a
   did-you-mean suggestion. Absolute paths such as `/tmp/example.md`, path-glued
   prose such as `/foo已更新`, hidden/tilde forms, bare `/`, and full-width `／model`

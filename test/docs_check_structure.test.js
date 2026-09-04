@@ -88,6 +88,44 @@ test('heading level skip is caught', () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test('ATX headings with zero through three leading spaces are checked', () => {
+  const { root } = makeRepo();
+  const enLink = 'English | [简体中文](../../zh-CN/x/p.md)';
+  const zhLink = '[English](../../en/x/p.md) | 简体中文';
+  replacePages(root,
+    parityPage(enLink, '## Two\n\n ### Three\n\n  #### Four\n\n   ##### Five'),
+    parityPage(zhLink, '## 二\n\n ### 三\n\n  #### 四\n\n   ##### 五'));
+  assert.equal(run(root).code, 0);
+  writeFileSync(path.join(root, 'docs/en/x/p.md'),
+    `# Page\n\n${enLink}\n\n   ### Skips H2\n`);
+  const r = run(root);
+  assert.match(r.out, /heading level skips from H1 to H3/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('four leading spaces are not parsed as an ATX heading', () => {
+  const { root } = makeRepo();
+  replacePages(root,
+    parityPage('English | [简体中文](../../zh-CN/x/p.md)', '## Section\n\n    ### indented code'),
+    parityPage('[English](../../en/x/p.md) | 简体中文', '## 章节\n\n    ### 缩进行'));
+  const r = run(root);
+  assert.equal(r.code, 0, r.out);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('paired heading parity recognizes indentation and catches an H2/H3 mismatch', () => {
+  const { root } = makeRepo();
+  replacePages(root,
+    parityPage('English | [简体中文](../../zh-CN/x/p.md)', '## Section\n\n   ### Detail'),
+    parityPage('[English](../../en/x/p.md) | 简体中文', '## 章节\n\n### 细节'));
+  assert.equal(run(root).code, 0);
+  replacePages(root,
+    parityPage('English | [简体中文](../../zh-CN/x/p.md)', '## Section'),
+    parityPage('[English](../../en/x/p.md) | 简体中文', '   ### 章节'));
+  assert.match(run(root).out, /heading-level sequence differs/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 
 test('language switch uses resolved target and only the first post-H1 block', () => {
   const { root } = makeRepo();

@@ -204,6 +204,22 @@ test('/review code uses the session model when no override and no flag', async (
   assert.ok(prints.some((s) => s.includes('no issues found')), 'expected ok verdict line');
 });
 
+test('/review code warns and uses the session model for a stale phase ref', async () => {
+  await seedModels();
+  const p = await makeProject('stalephase');
+  await setCurrentProject(p.id);
+  await setPhaseModelRef(p.id, 'code-review', 'missing-provider/missing-model');
+  const { session, ctx, prints } = await makeCtx(p);
+  const fake = recordingLlm('{"ok": true, "issues": []}');
+  session.llm = fake;
+
+  await dispatchSlash('/review code', ctx);
+  assert.equal(fake.calls.length, 1, 'stale phase ref must fall back to the session model');
+  assert.ok(prints.some((s) => /could not resolve.*using the session model/i.test(s)),
+    `expected stale-ref warning, got: ${JSON.stringify(prints)}`);
+  assert.ok(prints.some((s) => s.includes('no issues found')), 'session fallback should complete the review');
+});
+
 test('/review code prefers the project code-review phase model over the session model', async () => {
   await seedModels();
   const p = await makeProject('phasecfg');

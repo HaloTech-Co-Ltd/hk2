@@ -192,8 +192,9 @@ $HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
 - **中断任务状态**——`~/.hk2/sessions/<projectId>/taskstate.json` 持久化
   被中断的任务（原始请求、摘要、计划进度），`--resume` 时还原。
 - **后续分类状态**——`lastCompletedTask` 的原始请求快照仅存在于当前进程内存，
-  不写入磁盘，并会由 `/project set current` 清理。恢复的会话会回退到确定性的
-  transcript 扫描。tier-2 continuation upgrade 由
+  不写入磁盘。`/session new`、任意 resume 以及切换到不同项目时会清理它；
+  `/project set current` 指向本会话已经绑定的同一项目时是 no-op，不会清理。
+  恢复的会话会回退到确定性的 transcript 扫描。tier-2 continuation upgrade 由
   `HK2_ENABLE_CONTINUATION_UPGRADE` 与
   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` 控制。
 - **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。正常完成的回合

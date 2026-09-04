@@ -209,9 +209,11 @@ deleted, or are excluded. Use another id for hand-authored document knowledge.
   `~/.hk2/sessions/<projectId>/taskstate.json` persists the interrupted
   task (original request, summary, plan progress) that `--resume` restores.
 - **Continuation classification state** — the `lastCompletedTask` original-request
-  snapshot exists only in the current process; it is not written to disk and is
-  cleared by `/project set current`. A resumed session falls back to a
-  deterministic transcript scan. Tier-2 continuation upgrade is controlled by
+  snapshot exists only in the current process; it is not written to disk. It is
+  cleared by `/session new`, by any resume, and when switching to a different
+  project; `/project set current` is a no-op when it names the project already
+  bound to this session. A resumed session falls back to a deterministic
+  transcript scan. Tier-2 continuation upgrade is controlled by
   `HK2_ENABLE_CONTINUATION_UPGRADE` and
   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`.
 - **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. A normally

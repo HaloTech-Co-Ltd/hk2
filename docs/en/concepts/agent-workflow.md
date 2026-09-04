@@ -60,14 +60,16 @@ for obvious follow-ups:
    the summary. Facts saved explicitly via `/remember` / the `remember`
    tool survive compaction by design; the automatic extraction is
    best-effort. hk2 always requests `enableReasoning:true`; this does not
-   guarantee a separate reasoning stream from every provider. When tier 1 did
-   not classify the input as a continuation, the existing assessment result can
-   drive a tier-2 continuation upgrade when
-   `HK2_ENABLE_CONTINUATION_UPGRADE=1`, confidence reaches
-   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` (default `0.6`), and an in-flight
-   task exists. The upgrade reuses the assessment result, restores the original
-   task state, injects resume context, and records `followupUpgrade`; it is not
-   an additional LLM call.
+   guarantee a separate reasoning stream from every provider. When tier 1 did not classify the input as a continuation, the existing assessment result can
+drive a tier-2 continuation upgrade when
+`HK2_ENABLE_CONTINUATION_UPGRADE=1`, confidence reaches
+`HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` (default `0.6`), and a prior
+conversational referent exists: a pre-commit plan, `lastTask`, or prior
+user/assistant messages. The upgrade reuses the assessment result, restores
+only available plan/task state, injects resume context only when a restored
+`lastTask` is non-empty, and records `followupUpgrade`; it is not an
+additional LLM call. With conversation history alone it performs no
+resume-context injection.
 3. **Follow-up fast lane** (`HK2_ENABLE_FOLLOWUP_FASTLANE`, default on) —
    inputs that are certainly conversational follow-ups skip the whole
    pre-agent pipeline and go straight to the agent loop, which sees the full
@@ -90,7 +92,7 @@ for obvious follow-ups:
    `supersededBy` stamping and sync report happen at end of turn.
 6. **Request-clarity assessment** (`HK2_ENABLE_REQUEST_ASSESS`, default on) —
    one bounded LLM round judges whether the request is clear, *against the
-   session context* (in-flight task, active plan, the assistant's latest
+   session context* (available task context, active plan, the assistant's latest
    message, recent turns, recorded session facts) so real follow-ups are not
    flagged. An unclear
    verdict surfaces a numbered clarification menu (with a free-text "other"

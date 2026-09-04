@@ -132,6 +132,10 @@ pin is session-local; without a pin, the shared `projects.json.current` pointer 
 | `transform <id> <from> <to>` | Move an entry between holy/eden (confirmation required) |
 | `drop` | Delete the whole KB (confirmation required) |
 
+### `/kb status` self-healing
+
+`/kb status` normally reads and displays statistics. For an older KB missing the permanent `hk2-supreme-code` entry, it attempts a best-effort creation of an empty permanent entry first. A self-heal failure is ignored and not separately reported, so this special case may have a write-to-disk side effect. Initial `KBRuntime` loading has the same missing-entry self-heal attempt.
+
 ## `/kb knowledge`
 
 Usage: `/kb knowledge <subcommand> [args]`.
@@ -199,6 +203,13 @@ Usage: `/session <subcommand> [args]`. Sessions are stored as JSONL at
 | `resume [<sessionId>]` | Resume a previous session (full context restored); with no id, the project's latest previous session |
 | `compact` | Manually compact the conversation (same as `/compact`) |
 
+`/session new` preserves the current project and model selection, starts a new
+transcript, and clears the current process's conversation/task/plan/review
+snapshots and counters. It flushes the old transcript and does not blindly
+delete project-level `taskstate.json`. `/session resume` clears old task state
+before replaying the target transcript and restores only matching unfinished
+taskstate; it does not restore the in-memory `lastCompletedTask` snapshot.
+
 ## `/resume`
 
 Usage: `/resume [<sessionId>]` — reopen a previous session's transcript and
@@ -255,6 +266,19 @@ unparseable verdict is reported as UNKNOWN, never as "no issues found".
 `--model` overrides the phase-configured model
 (`/model set-phase --phase=code-review`), then the session model.
 
+## Review model resolution
+
+Automatic plan/code review and manual `/review code` resolve models differently:
+
+| Review path | Stale project phase ref | Explicit missing `--model` | Selected model call failure |
+|---|---|---|---|
+| Automatic plan/code review | silently use session model | n/a | warn + skip |
+| Manual `/review code` | warn + use session model | abort | warn + skip |
+
+A manual explicit `--model` never falls back; stale phase refs and phase
+resolution exceptions warn before using the session model. A successfully
+selected reviewer that fails is skipped rather than replaced.
+
 ## `/theme`
 
 Usage: `/theme <subcommand> [args]` — customize tool-card border/title
@@ -298,12 +322,10 @@ and examples for one family. The same text is reachable as
 
 Exit the REPL. Same as Ctrl+D. `/exit` is an alias of `/quit`.
 
+
+
 ## Related documentation
 
 - [REPL and TUI](../guides/repl-and-tui.md) — where these commands run, with completion
 - [Agent tools](agent-tools.md) — what the agent (not you) can call
 - [Environment variables](environment-variables.md) — flags gating related behaviors
-
-### Status self-healing
-
-`/kb status` normally reads and displays statistics. For an older KB missing the permanent `hk2-supreme-code` entry, it attempts a best-effort creation of an empty permanent entry first. A self-heal failure is ignored and not separately reported, so this special case may have a write-to-disk side effect. Initial `KBRuntime` loading has the same missing-entry self-heal attempt.

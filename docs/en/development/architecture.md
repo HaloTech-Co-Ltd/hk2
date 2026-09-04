@@ -184,7 +184,7 @@ flowchart TB
    `code_search.js` + `kb_runtime.js`) → reasoning-enabled clarity assessment
    (optional menu → second rewrite/retrieve pass) → possible tier-2
    continuation upgrade. Tier-1 deterministic fast-lane matches skip this
-   pipeline; tier-2 reuses the assessment result and requires an in-flight task.
+   pipeline; tier-2 reuses the assessment result and requires a prior conversational referent; it restores and injects state only when that state exists.
    Each stage is conditional: rewrite and assessment can be disabled via
    environment variables, and assessment runs only with a prompt-capable
    front-end.
@@ -227,7 +227,7 @@ finalization may clear a leftover panel before review.
 
 The shared command-shape fact source is `lib/slash_command.js`. The dispatcher,
 mid-task input capture, and multiline paste collector all use its
-`/[A-Za-z][A-Za-z0-9_-]*/` single-segment rule, so absolute paths and path-glued
+`^/[A-Za-z][A-Za-z0-9_-]*$` single-segment rule, so absolute paths and path-glued
 prose remain ordinary agent input rather than becoming slash-command attempts.
 
 Manual `/review code` receives the original task request, queued mid-task

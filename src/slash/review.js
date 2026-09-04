@@ -20,15 +20,19 @@
  *     plan   Reserved for a future manual plan-review (NOT implemented yet).
  *
  *   --model=<provider>/<model-id>
- *            Run the review with this specific model. When omitted, the
+ *            Run the review with this specific model. An invalid or missing
+ *            explicit ref fails fast; it never falls back. When omitted, the
  *            project's phase-configured model is used
  *            (/model set-phase --phase=code-review <ref>), falling back to
- *            the current session (main) model when no phase override exists.
+ *            the current session model when no phase override exists. A stale
+ *            phase ref warns before using the session model; a phase-resolution
+ *            exception is also warned and handled as a session-model fallback.
  *
  * The review itself runs through reviewCode() with the manual
- * regression-check system prompt (see lib/agent/code_review.js), under the
- * same "skip on unreachable" policy as the automatic end-of-turn review
- * (never silently re-runs on another model). The reviewer's analysis
+ * regression-check system prompt (see lib/agent/code_review.js). A selected
+ * reviewer that is unreachable is skipped rather than replaced, matching the
+ * automatic review call-failure policy; model resolution differs for stale
+ * phase refs and explicit flags. The reviewer's analysis
  * (requirement re-analysis, coverage check, correctness check, conclusion)
  * streams live to the terminal as it is produced; the machine-readable
  * verdict JSON is never shown raw — only the parsed issues/verdict line.

@@ -215,6 +215,14 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
   压缩影响；`/forget` 删除它。见
   [斜杠命令](../reference/slash-commands.md#remember)。
 - `/clear` 只清空内存中的上下文——磁盘上的会话记录保留，之后可恢复。
+- `/session new` 保留当前项目与模型选择，开启新的 transcript，并清除当前会话的
+  对话、任务、计划、审查快照、会话事实、计数器与 cooldown 等状态。它会 flush
+  旧 transcript，但不会武断删除可能属于其他进程的项目级 `taskstate.json`。
+- `/session resume` 先从目标 transcript 重建消息并清除旧的任务 / 审查 / 计划状态，
+  只恢复 `sessionId` 与该 transcript 匹配且仍有未完成步骤的 taskstate。
+  `lastCompletedTask` 只存在进程内存：每次 resume 与 `/session new` 都会清除；切换到
+  不同项目也会清除；而把共享指针设置为本会话已绑定的同一项目是刻意的 no-op。
+  恢复后的 `/review code` 通过确定性的 transcript 扫描推导原始需求。
 
 ## 相关文档
 
