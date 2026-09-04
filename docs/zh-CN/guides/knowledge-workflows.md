@@ -18,15 +18,15 @@
 /kb status                                # 各空间统计
 ```
 
-- `/kb init` 全量重索引；被中断的构建从检查点恢复。`--full` 在已存在时
-  强制重建。
+- `/kb init` **默认即全量重索引**（`--full` 实际是默认值，`--full=false`
+  才是退出项）；被中断的构建从检查点恢复。
 - `/kb update` 只重新解析变化的文件（Index 空间）。它自动检测旧版知识库并
   无损升级——知识内容先快照到 `backup/pre-upgrade-<ts>/`；解析器版本变化
   触发全量重建。
 
 **什么时候跑什么**：`/project init` 之后跑 `/kb init`；日常编辑后跑
 `/kb update`（或让 `HK2_ENABLE_AUTOUPDATEKB=1` 在智能体回退 bash 搜索时
-自动执行）；切换分支或大型重构后跑 `/kb init --full`。
+自动执行）；切换分支或大型重构后再跑一次 `/kb init`——它本身就是全量重建。
 
 ## 查询知识库
 
@@ -88,7 +88,8 @@
 LLM 只分组目录（规划图大幅缩小），每个目录令牌再被确定性展开为具体文件，
 切分为 ≤30 文件的批次。若 LLM 计划仍不可用（推理模型可能把全部预算耗在
 思考阶段），命令会先禁用推理重试一次，最终回退到确定性目录分组——研读
-永远以全覆盖继续，绝不中断。
+*不会因 LLM 计划不可用而中止*，且始终保持全覆盖。其他错误（文件访问、
+模型连接、磁盘写入、用户中断）仍可能终止运行。
 
 **慢速提供商**：阶段 1 规划调用默认 300 秒预算；若你的提供商超时，传入
 `--plan-timeout-ms=600000`（或设置 `HK2_PLAN_TIMEOUT_MS`）。
@@ -150,7 +151,7 @@ LLM 只分组目录（规划图大幅缩小），每个目录令牌再被确定�
   `/kb knowledge show project-overview`。
 - **吸收设计文档**——`/kb knowledge learn --file=docs/design.md
   --space=eden`，然后 `/kb knowledge housekeep eden` 去重。
-- **大型重构之后**——`/kb init --full`（图谱结构变了），再
+- **大型重构之后**——`/kb init`（本身就是全量重建；图谱结构变了），再
   `/kb knowledge learn` 刷新主题条目。
 - **知识库陈旧 / 重复**——`/kb update`，然后
   `/kb knowledge housekeep all`。

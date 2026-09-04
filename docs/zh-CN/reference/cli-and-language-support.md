@@ -42,14 +42,17 @@ hk2 --project=otherapp --resume            # 恢复其他项目最近的会话
 hk2 --mode=project-init --name=myapp --source=/path/to/repo --source-root=src
 
 # 为当前项目构建知识库（全量重索引）
-hk2 --mode=build-kb
+hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
 
 # 增量更新知识库
 hk2 --mode=update-kb
 ```
 
-`--mode=project-init` 还接受 `--include=<globs>` 与 `--exclude=<globs>`
-（逗号分隔），与 `/project init` 一致。
+- `--mode=build-kb` 接受 `--source=<path>` 与 `--source-root=<rel>`。省略
+  `--source` 时回退到一个较为特殊的默认值 `../../../`（相对当前工作目录
+  解析）——建议显式传入，或改用交互式 REPL 中的 `/kb init`。
+- `--mode=project-init` 还接受 `--include=<globs>` 与 `--exclude=<globs>`
+  （逗号分隔），与 `/project init` 一致。
 
 ### 旧版运行模式
 
@@ -99,6 +102,12 @@ hk2 --help                   # 或 -h
 
 这些语言的符号携带完整记录：限定名、父级链接、基类、实现接口、导入与
 文档注释。
+
+> **glob 注意**：*默认* include globs（见
+> [配置](configuration.md#默认-include--exclude-globs)）不含 `**/*.cs` 与
+> `**/*.kts`，因此 C# 与 Kotlin Script 文件虽可解析，默认的 `/kb init`
+> **不会扫描**它们。请通过 `/project init --include=**/*.cs,**/*.kts` 或
+> `/project set include ...` 显式加入。
 
 ### 正则回退解析器
 

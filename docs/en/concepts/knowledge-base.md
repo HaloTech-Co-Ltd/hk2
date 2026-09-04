@@ -32,8 +32,8 @@ change often; Index is derived data that can always be rebuilt from source.
   documents (`doc:<relpath>` entries), and manually added fast-moving facts.
 - **Index Space** — BM25 inverted index, sharded symbol table, file registry,
   the code knowledge graph, and per-space keyword indexes over Holy/Eden.
-  Purely derived; `/kb update` refreshes it incrementally, `/kb init --full`
-  rebuilds it.
+  Purely derived; `/kb update` refreshes it incrementally, `/kb init`
+  (a full build by default) rebuilds it.
 
 ## Entry lifecycle
 

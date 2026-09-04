@@ -32,7 +32,7 @@ Supreme Code）。
   以及手动添加的快速变化事实。
 - **Index Space**——BM25 倒排索引、分片符号表、文件注册表、代码知识图谱，
   以及 Holy/Eden 的各空间关键词索引。纯派生数据；`/kb update` 增量刷新，
-  `/kb init --full` 全量重建。
+  `/kb init`（默认即全量构建）重建。
 
 ## 条目生命周期
 

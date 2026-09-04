@@ -33,7 +33,7 @@ node --test test/permissions.test.js  # a single file
 Run a single test case by name with `--test-name-pattern`:
 
 ```bash
-node --test test/permissions.test.js --test-name-pattern="deny beats allow"
+node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 ```
 
 ## Where tests live and how they are named

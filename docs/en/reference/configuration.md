@@ -55,7 +55,7 @@ environment variable. The directory is created 0700; files holding keys are
           "temperature": 0.2,
           "reasoning": true,
           "modelType": "generic",
-          "options": {}
+          "modelOptions": {}
         }
       ]
     },
@@ -81,9 +81,11 @@ Field notes:
   code on `name` avoids "model code not found" gateway errors.
 - `modelType` — family declaration validated by `/model add|set
   --model-type`; defaults to `generic`. `/model types` lists all values.
-- `options` — model-specific options object (e.g.
+- `modelOptions` — model-specific options object (e.g.
   `{"reasoning_effort":"max"}` for the glm-5.3 family), validated against
-  the type's declared features.
+  the type's declared features. Written by `/model add|set
+  --model-options`; the runtime reads the `modelOptions` key, so hand-edited
+  entries must use exactly that name.
 - `mcpServers` — optional array of MCP server attachments added via
   `/model add-mcpserver` (type, name, options with the `$APIKEY`
   placeholder).

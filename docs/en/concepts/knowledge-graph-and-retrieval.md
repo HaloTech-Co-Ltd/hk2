@@ -108,14 +108,18 @@ mention the fact only in their body).
 
 For each user message, before the agent loop starts, hk2:
 
-1. Optionally assesses request clarity (see
-   [Agent workflow](agent-workflow.md)).
-2. Rewrites the query and retrieves related **symbols**, **call chains**,
-   **class membership**, **knowledge entries**, and **parsed docs** from the
-   KB (`lib/agent/graph.js` + `lib/retrieval/context_builder.js`).
-3. Injects them into the system prompt as a `# Knowledge-base context`
-   section — placed *after* the Project Supreme Code section, so project
-   laws always outrank retrieved knowledge.
+1. Rewrites the query into retrieval terms (LLM call — see
+   [Agent workflow](agent-workflow.md) for the full pre-agent pipeline).
+2. Retrieves related **symbols**, **call chains**, **class membership**,
+   **knowledge entries**, and **parsed docs** from the KB
+   (`lib/agent/graph.js` + `lib/retrieval/context_builder.js`).
+3. Only then assesses request clarity — deliberately **after** the first
+   retrieval, so the assessor judges against the retrieved project context;
+   an unclear verdict triggers a clarification menu, then a second rewrite +
+   retrieval pass.
+4. Injects the results into the system prompt as a
+   `# Knowledge-base context` section — placed *after* the Project Supreme
+   Code section, so project laws always outrank retrieved knowledge.
 
 KB content that mirrors real files honors the same `r` permission as reading
 those files — denied source files are suppressed from snippets, slices, and

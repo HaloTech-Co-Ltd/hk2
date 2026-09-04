@@ -30,7 +30,7 @@ node --test test/permissions.test.js  # 单个文件
 按名称运行单个用例：
 
 ```bash
-node --test test/permissions.test.js --test-name-pattern="deny beats allow"
+node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 ```
 
 ## 测试的位置与命名

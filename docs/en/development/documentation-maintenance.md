@@ -98,7 +98,8 @@ verifies:
 - every page pair links to each other (language switch);
 - local Markdown links and images in `README.md`, `README_zh.md`, and
   `docs/**/*.md` resolve to real files;
-- quality gates: no `<repo-url>` placeholders, no `TODO`/`TBD` markers in docs,
+- quality gates: no unfilled repository-URL placeholders and no
+  unfinished-work markers anywhere in docs,
   the root READMEs link to each other, to their language's docs index, and
   `docs/README.md` links both language indexes.
 
@@ -109,7 +110,7 @@ All problems are reported before a non-zero exit — fix everything it lists.
 - One H1 per page; heading levels step without gaps; code blocks carry a
   language tag (`bash`, `json`, `text`, `mermaid`).
 - No absolute local links; relative paths only, written to the `.md` file.
-- No `TODO`/`TBD` markers or placeholder sections in committed docs.
+- No unfinished-work markers or placeholder sections in committed docs.
 - No unverifiable claims: no invented performance numbers, no "supports
   everything", no "completely safe". Best-effort mechanisms are labeled as
   such.

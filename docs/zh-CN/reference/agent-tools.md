@@ -23,11 +23,12 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 ### `read`
 
-读取文件内容——带行号，大文件用 `offset`/`limit`，超过行数 / KB 上限时
-截断（继续用 `offset` 读完整）。支持文本与图片（jpg、png、gif、webp、
-bmp）——图片作为附件发送。对知识库已知的代码文件，内容前附带结构性
-`## Outline (from KB)` 章节（`outline=false` 禁用）；结果携带 `tag` 用于
-陈旧锚点保护。写入：否。
+读取文件内容——**仅支持文本文件**。输出带行号，超过 2000 行或 256KB
+（先到为准）时截断；大文件用 `offset`/`limit` 继续读取。二进制文件会被
+拒绝（前 8192 个字符中出现 NUL 字节即返回
+`binary file (NUL byte detected): … — read only supports text files`）。
+对知识库已知的代码文件，内容前附带结构性 `## Outline (from KB)` 章节
+（`outline=false` 禁用）；结果携带 `tag` 用于陈旧锚点保护。写入：否。
 
 ### `write`
 

@@ -46,14 +46,19 @@ hk2 --project=otherapp --resume            # resume another project's latest ses
 hk2 --mode=project-init --name=myapp --source=/path/to/repo --source-root=src
 
 # Build the KB for the current project (full re-index)
-hk2 --mode=build-kb
+hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
 
 # Incrementally update the KB
 hk2 --mode=update-kb
 ```
 
-`--mode=project-init` also accepts `--include=<globs>` and
-`--exclude=<globs>` (comma-separated), mirroring `/project init`.
+- `--mode=build-kb` accepts `--source=<path>` and `--source-root=<rel>`.
+  When `--source` is omitted it falls back to the unusual default
+  `../../../` resolved against the current working directory — prefer
+  passing it explicitly, or use `/kb init` inside the interactive REPL
+  instead.
+- `--mode=project-init` also accepts `--include=<globs>` and
+  `--exclude=<globs>` (comma-separated), mirroring `/project init`.
 
 ### Legacy run mode
 
@@ -102,6 +107,13 @@ and `tsx`):
 
 Symbols from these carry the full record: qualified names, parent links,
 super-classes, implemented interfaces, imports, doc comments.
+
+> **Glob caveat**: the *default* include globs (see
+> [Configuration](configuration.md#default-include--exclude-globs)) do not
+> list `**/*.cs` or `**/*.kts`, so C# and Kotlin Script files are parsed
+> when encountered but **not scanned by a default `/kb init`**. Add them
+> via `/project init --include=**/*.cs,**/*.kts` or
+> `/project set include ...`.
 
 ### Regex fallback parsers
 

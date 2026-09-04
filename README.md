@@ -1,4 +1,4 @@
-<img width="886" height="223" alt="Screenshot 2026-08-23 at 09 02 34" src="https://github.com/user-attachments/assets/f64c2197-5301-46d2-8984-d659dac5e556" />
+<img width="886" height="223" alt="hk2 terminal interface" src="https://github.com/user-attachments/assets/f64c2197-5301-46d2-8984-d659dac5e556" />
 
 # hk2
 
@@ -86,15 +86,16 @@ Inside the REPL:
 How does login verify the password?
 ```
 
-A real exchange looks like:
+An illustrative exchange (the prompt, status bar, and tool calls are real
+hk2 behavior; the answer below is an example, not output from this repo):
 
 ```text
 hk2(myapp|Eden/9 Holy/1|mymodel)> How does login verify the password?
 ✎ thinking …
 ⚡ kb_search("verify password login")
-⚡ read(src/auth/password.js)
-login() hashes the input with bcrypt.compare against user.password_hash
-(line 42) — see the auth flow in kb entry `auth-password-flow`.
+⚡ read(<the source file the search surfaced>)
+login() verifies the submitted password against the stored hash, traced
+through the related symbols and knowledge entries retrieved from the KB.
 ```
 
 More: [Quick start](docs/en/getting-started/quick-start.md).

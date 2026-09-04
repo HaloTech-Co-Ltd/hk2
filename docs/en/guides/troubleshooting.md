@@ -117,9 +117,12 @@ here come from the shipped code.
 
 ### An interrupted `/kb init` — do I lose progress?
 
-- **No.** A checkpoint is saved every N files (default 100). Re-run
-  `/kb init` to resume from the checkpoint; use `--no-resume` to start over
-  and `--no-checkpoint` to disable checkpointing.
+- **You do not start from zero.** A checkpoint is saved every N files
+  (default 100); re-running `/kb init` resumes from the *most recent
+  checkpoint*. Files processed after that checkpoint but before the next one
+  are re-processed on resume, and an interruption before the first
+  checkpoint has nothing saved yet. Use `--no-resume` to start over and
+  `--no-checkpoint` to disable checkpointing.
 
 ## Front-ends
 

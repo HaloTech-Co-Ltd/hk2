@@ -102,17 +102,38 @@ working.
 
 ## Uninstall
 
-Remove the symlink and the source copy. Because `~/.hk2` also holds your
-config and KBs, deleting the whole directory wipes those too — back up
-`models.json`, `projects.json`, and `kb/` first, or just remove the launcher:
+There is no uninstaller; what to remove depends on what you want to keep.
+
+**Disable the command only** — remove the launcher; everything else stays:
 
 ```bash
-rm -f /usr/local/bin/hk2                  # drop the launcher
-rm -rf ~/.hk2/node_modules ~/.hk2/bin     # remove the installed source copy, keep config + KBs
+rm -f /usr/local/bin/hk2
 ```
 
-To remove everything, including models, projects, sessions, and knowledge
-bases: `rm -rf ~/.hk2` (back up what you want to keep first).
+**Remove the installed source copy** — `install.sh` copies the *whole*
+repository into the install dir, so with the default `~/.hk2` the code and
+your user data (`models.json`, `projects.json`, `kb/`, `sessions/`, `logs/`)
+live in the same tree, and there is no single command that removes the code
+while provably keeping the data. A partial cleanup such as:
+
+```bash
+rm -rf ~/.hk2/node_modules ~/.hk2/bin     # removes SOME installed files — not the full copy
+```
+
+still leaves `src/`, `lib/`, `package.json`, `install.sh`, and other repo
+files behind. It is harmless, but it is not a complete removal.
+
+**Clean removal** — if you want code and data separable, install with a
+dedicated source directory in the first place
+(`HK2_INSTALL_DIR=~/.hk2-src ./install.sh`); uninstalling is then just:
+
+```bash
+rm -f /usr/local/bin/hk2
+rm -rf ~/.hk2-src                         # the whole source copy, data untouched
+```
+
+To remove **everything**, including models, projects, sessions, and
+knowledge bases: `rm -rf ~/.hk2` — back up what you want to keep first.
 
 ## Related documentation
 

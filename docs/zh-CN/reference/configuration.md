@@ -50,7 +50,7 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
           "temperature": 0.2,
           "reasoning": true,
           "modelType": "generic",
-          "options": {}
+          "modelOptions": {}
         }
       ]
     },
@@ -75,8 +75,10 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
   不存在"。
 - `modelType`——`/model add|set --model-type` 校验的家族声明；默认
   `generic`。`/model types` 列出全部取值。
-- `options`——模型特性参数对象（如 glm-5.3 家族的
-  `{"reasoning_effort":"max"}`），按类型声明的特性校验。
+- `modelOptions`——模型特性参数对象（如 glm-5.3 家族的
+  `{"reasoning_effort":"max"}`），按类型声明的特性校验。由
+  `/model add|set --model-options` 写入；运行时读取的是 `modelOptions`
+  键，手工编辑时必须使用这个精确名称。
 - `mcpServers`——可选数组，由 `/model add-mcpserver` 添加的 MCP 服务器挂载
   （类型、名称、含 `$APIKEY` 占位符的 options）。
 - `timeout`——可选的每模型请求超时（毫秒），保存 / 解析时取自

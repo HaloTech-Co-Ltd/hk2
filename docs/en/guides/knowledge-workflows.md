@@ -19,8 +19,9 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
 /kb status                                # per-space statistics
 ```
 
-- `/kb init` full re-index; interrupted builds resume from the checkpoint.
-  `--full` forces a rebuild even when one exists.
+- `/kb init` performs a **full re-index by default** (`--full` is
+  effectively the default; `--full=false` is the opt-out); interrupted
+  builds resume from the checkpoint.
 - `/kb update` re-parses only changed files (Index Space). It auto-detects a
   legacy KB and upgrades it losslessly — knowledge is snapshotted to
   `backup/pre-upgrade-<ts>/` first; a parser-version change triggers a full
@@ -29,7 +30,7 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
 **When to run what**: after `/project init` run `/kb init`; after normal
 editing sessions run `/kb update` (or let `HK2_ENABLE_AUTOUPDATEKB=1` do it
 when the agent fell back to bash searches); after branch switches or large
-refactors run `/kb init --full`.
+refactors run `/kb init` again — it is already a full rebuild.
 
 ## Query the KB
 
@@ -96,8 +97,9 @@ map), and each directory token is deterministically expanded into concrete
 files, split into ≤30-file batches. If the LLM plan is still unusable
 (reasoning models can spend their whole budget thinking), the command retries
 once with reasoning disabled and finally falls back to deterministic
-directory grouping — the study always proceeds with full file coverage and
-never aborts.
+directory grouping — the study never aborts *because of an unusable LLM
+plan* and always keeps full file coverage. Other failures (file access,
+the model connection, disk writes, user interrupts) can still stop the run.
 
 **Slow providers**: the Phase 1 planning call has a default 300s budget; if
 your provider exceeds it, pass `--plan-timeout-ms=600000` (or set
@@ -163,7 +165,7 @@ Limits and protection rules are covered in
 - **Ingest a design doc** — `/kb knowledge learn --file=docs/design.md
   --space=eden`, then `/kb knowledge housekeep eden` to dedupe against
   existing entries.
-- **After a big refactor** — `/kb init --full` (graph shapes changed), then
+- **After a big refactor** — `/kb init` (a full rebuild; graph shapes changed), then
   `/kb knowledge learn` to refresh the topic entries.
 - **KB feels stale / duplicated** — `/kb update`, then
   `/kb knowledge housekeep all`.

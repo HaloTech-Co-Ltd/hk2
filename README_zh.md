@@ -1,4 +1,4 @@
-<img width="886" height="223" alt="Screenshot 2026-08-23 at 09 02 34" src="https://github.com/user-attachments/assets/f64c2197-5301-46d2-8984-d659dac5e556" />
+<img width="886" height="223" alt="hk2 终端界面" src="https://github.com/user-attachments/assets/f64c2197-5301-46d2-8984-d659dac5e556" />
 
 # hk2
 
@@ -76,15 +76,15 @@ hk2
 登录是如何校验密码的？
 ```
 
-一次真实的交互大致如下：
+一段示意交互（提示符、状态栏与工具调用是 hk2 的真实行为；下方回答为示例，
+并非本仓库的实际输出）：
 
 ```text
 hk2(myapp|Eden/9 Holy/1|mymodel)> 登录是如何校验密码的？
 ✎ thinking …
 ⚡ kb_search("verify password login")
-⚡ read(src/auth/password.js)
-login() 使用 bcrypt.compare 将输入与 user.password_hash 比对（第 42 行）——
-完整认证流程见知识条目 `auth-password-flow`。
+⚡ read(<检索命中的源码文件>)
+login() 将输入口令与已存哈希比对——相关符号与知识条目均来自知识库检索。
 ```
 
 更多见[快速开始](docs/zh-CN/getting-started/quick-start.md)。

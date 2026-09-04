@@ -24,12 +24,14 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 
 ### `read`
 
-Read file contents — line-numbered, `offset`/`limit` for large files,
-truncated at a line/KB cap (continue with `offset` until complete). Supports
-text files and images (jpg, png, gif, webp, bmp) — images are sent as
-attachments. For code files known to the KB, a structural `## Outline (from
-KB)` section is prepended (`outline=false` disables); the result carries a
-`tag` for stale-anchor protection. Writes: no.
+Read file contents — **text files only**. Output is line-numbered and
+truncated at 2000 lines or 256KB (whichever is hit first); continue with
+`offset`/`limit` for large files. Binary files are rejected (a NUL byte in
+the first 8192 characters returns
+`binary file (NUL byte detected): … — read only supports text files`). For
+code files known to the KB, a structural `## Outline (from KB)` section is
+prepended (`outline=false` disables); the result carries a `tag` for
+stale-anchor protection. Writes: no.
 
 ### `write`
 

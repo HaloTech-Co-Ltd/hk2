@@ -157,8 +157,11 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 - **切换**——`/project set current` 把当前会话保存到原项目下，并在目标
   项目上开启新会话（等同 `/quit` 后 `hk2 --project=<目标>`）；切到当前已
   选中的项目为空操作。
-- **`/project drop`** 移除注册但**保留磁盘上的知识库**——重新注册同一路径
-  即可复用。
+- **`/project drop`** 移除注册时**没有确认提示**。知识库目录会留在磁盘上，
+  但它挂在项目 UUID 之下——由于 `/project init` 每次生成**新的 UUID**，
+  重新注册同一路径**不会**自动接回旧知识库，而是从新库开始。旧目录成为
+  `~/.hk2/kb/<旧 UUID>/` 下的孤立目录（需要的话请手动删除）。目前要复用
+  旧库只能恢复带原 UUID 的原项目记录，CLI 尚无对应命令。
 
 同样的注册也可在 shell 中完成：
 `hk2 --mode=project-init --name=myapp --source=/path/to/repo`。

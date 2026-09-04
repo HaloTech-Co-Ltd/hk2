@@ -15,10 +15,11 @@
  *      README_zh.md, and every file under docs/ must point at an existing
  *      file (query/fragment stripped; pure #anchors skipped;
  *      http/https/mailto ignored).
- *   4. Quality gates — no `<repo-url>` placeholders; no TODO/TBD markers in
- *      docs; README.md ↔ README_zh.md cross-link; README.md →
- *      docs/en/README.md; README_zh.md → docs/zh-CN/README.md; docs/
- *      README.md links both language indexes.
+ *   4. Quality gates — no `<repo-url>` placeholders or TODO/TBD markers
+ *      anywhere (raw text, including inside code examples); README.md ↔
+ *      README_zh.md cross-link; README.md → docs/en/README.md;
+ *      README_zh.md → docs/zh-CN/README.md; docs/README.md links both
+ *      language indexes.
  *
  * All problems are collected and reported; the process exits non-zero if
  * any check failed.
@@ -120,12 +121,17 @@ for (const f of zhFiles) {
 /* Load every checked file                                             */
 /* ------------------------------------------------------------------ */
 const docFiles = [...enFiles.map(f => path.join(EN, f)), ...zhFiles.map(f => path.join(ZH, f))];
-const contents = new Map();
+const contents = new Map();     // code-stripped text — link & switch-link checks
+const rawContents = new Map();  // raw text — placeholder / marker checks
 for (const abs of [...docFiles, ...ROOT_READMES, path.join(DOCS, 'README.md')]) {
   try {
-    // All checks run on code-stripped text: examples inside code blocks /
-    // inline code are illustrations, not live links or markers.
-    contents.set(abs, stripCode(await readFile(abs, 'utf8')));
+    const raw = await readFile(abs, 'utf8');
+    // Links are checked on code-stripped text (examples inside code blocks /
+    // inline code are illustrations, not live links). Placeholders and TODO
+    // markers are checked on RAW text — a `<repo-url>` inside a fenced
+    // `git clone` example is exactly the kind of leak to catch.
+    rawContents.set(abs, raw);
+    contents.set(abs, stripCode(raw));
   } catch {
     problem(abs, 'cannot read file');
   }
@@ -146,8 +152,8 @@ for (const rel of enFiles) {
   const zhText = contents.get(zhAbs);
   if (!enText || !zhText) continue;
 
-  const enLinks = extractLocalLinks(enText).map(t => path.resolve(path.dirname(enAbs), decodeURIComponent(t)));
-  const zhLinks = extractLocalLinks(zhText).map(t => path.resolve(path.dirname(zhAbs), decodeURIComponent(t)));
+  const enLinks = extractLocalLinks(enText).map(t => safeResolve(enAbs, t)).filter(Boolean);
+  const zhLinks = extractLocalLinks(zhText).map(t => safeResolve(zhAbs, t)).filter(Boolean);
   if (!enLinks.includes(zhAbs)) problem(enAbs, `no language-switch link to zh-CN counterpart (${rel})`);
   if (!zhLinks.includes(enAbs)) problem(zhAbs, `no language-switch link to en counterpart (${rel})`);
 }
@@ -155,8 +161,23 @@ for (const rel of enFiles) {
 /* ------------------------------------------------------------------ */
 /* 3. Local link targets                                               */
 /* ------------------------------------------------------------------ */
+/** Resolve a link target defensively: a malformed %xx sequence must not
+ *  crash the whole run — report it as unresolvable instead. */
+function safeResolve(fromFile, target) {
+  try {
+    return path.resolve(path.dirname(fromFile), decodeURIComponent(target));
+  } catch {
+    return null;
+  }
+}
+
 for (const [abs, text] of contents) {
   for (const target of extractLocalLinks(text)) {
+    const resolved = safeResolve(abs, target);
+    if (resolved === null) {
+      problem(abs, `malformed link target (bad percent-encoding): ${target}`);
+      continue;
+    }
     if (!(await targetExists(abs, target))) {
       problem(abs, `broken local link: ${target}`);
     }
@@ -166,9 +187,12 @@ for (const [abs, text] of contents) {
 /* ------------------------------------------------------------------ */
 /* 4. Quality gates                                                    */
 /* ------------------------------------------------------------------ */
-for (const [abs, text] of contents) {
-  if (text.includes('<repo-url>')) problem(abs, 'contains a <repo-url> placeholder');
-  if (abs.startsWith(DOCS) && /\b(TODO|TBD)\b/.test(text)) {
+// Placeholders and markers are checked on RAW text (see the load comment):
+// a <repo-url> or an unfinished-work marker inside a fenced bash example is
+// exactly the kind of leak that must fail the check.
+for (const [abs, raw] of rawContents) {
+  if (raw.includes('<repo-url>')) problem(abs, 'contains a <repo-url> placeholder');
+  if (abs.startsWith(DOCS) && /\b(TODO|TBD)\b/.test(raw)) {
     problem(abs, 'contains a TODO/TBD marker');
   }
 }
@@ -178,7 +202,7 @@ const readmeZh = contents.get(path.join(ROOT, 'README_zh.md')) || '';
 const docsIndex = contents.get(path.join(DOCS, 'README.md')) || '';
 
 const linkTargetsOf = (text, fromFile) =>
-  extractLocalLinks(text).map(t => path.resolve(path.dirname(fromFile), decodeURIComponent(t)));
+  extractLocalLinks(text).map(t => safeResolve(fromFile, t)).filter(Boolean);
 
 const enIndexAbs = path.join(EN, 'README.md');
 const zhIndexAbs = path.join(ZH, 'README.md');

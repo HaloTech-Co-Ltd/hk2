@@ -171,8 +171,14 @@ Registration options (`/project init`):
   old project and starts a fresh session on the target (equivalent to
   `/quit` then `hk2 --project=<target>`); switching to the already-current
   project is a no-op.
-- **`/project drop`** removes the registration but **preserves the KB** on
-  disk — re-registering the same path reuses it.
+- **`/project drop`** removes the registration **without a confirmation
+  prompt**. The KB directory stays on disk, but under the project's UUID —
+  since `/project init` generates a **new UUID** each time, re-registering
+  the same path does **not** reconnect the old KB; it starts a fresh one.
+  The old directory remains as an orphan under `~/.hk2/kb/<old-uuid>/`
+  (delete it manually if you want). Reusing an old KB currently requires
+  restoring the original project record with its UUID; there is no CLI
+  command for that yet.
 
 The same registration is available from the shell:
 `hk2 --mode=project-init --name=myapp --source=/path/to/repo`.
