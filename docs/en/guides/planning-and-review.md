@@ -100,7 +100,7 @@ reply whose verdict cannot be parsed is reported as **UNKNOWN** — never as
 
 Both reviews use the phase-model mechanism:
 
-```
+```text
 /model set-phase --phase=plan-review local/mymodel
 /model set-phase --phase=code-review local/mymodel
 ```

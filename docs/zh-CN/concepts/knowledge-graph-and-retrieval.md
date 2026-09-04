@@ -38,8 +38,9 @@ flowchart LR
    `lib/index/text_tokenizer.js`，含中英混查词典）、旧版调用图、知识图谱
    （`lib/graph/builder.js`）与文件 / 符号注册表写入
    `~/.hk2/kb/<projectId>/`。
-5. **摘要**——`/kb init` 结束时，LLM 撰写三个结构性 Eden 条目（可用
-   `--skip-summary` 跳过）。
+5. **摘要**——`/kb init` 结束时，**在已配置模型且未传 `--skip-summary` 的
+   情况下**，LLM 才会撰写三个结构性 Eden 条目。未配置 LLM 时索引照常构建，
+   仅跳过摘要条目。
 
 解析运行在有界并行池中——`HK2_INDEX_PARALLEL` 固定并行度（默认：自动，
 取宿主 CPU 数并遵循 cgroup 配额）。
@@ -55,7 +56,7 @@ Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路�
 
 `/kb init` 时，hk2 基于 Symbol 构建代码知识图谱：
 
-```
+```text
 ~/.hk2/kb/<projectId>/graph/
   nodes.json            id -> 节点记录（函数 / 方法 / 类 / 接口 / 结构体 / 字段）
   edges.calls.json      srcId -> [calleeIds, ...]
@@ -76,7 +77,7 @@ Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路�
 
 图谱通过智能体工具查询（见[智能体工具](../reference/agent-tools.md)）：
 
-- `kb_callchain`——对调用图做有界 DFS（前向、后向、双向）
+- `kb_callchain`——对调用图做有界 BFS（前向、后向、双向）
 - `kb_class`——类 / 接口 / 结构体查询，含成员与实现
 - `kb_refs`——谁调用了 / 导入了 / 继承了某符号
 - `kb_implements`——查找实现某接口的所有类

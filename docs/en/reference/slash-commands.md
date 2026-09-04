@@ -101,15 +101,17 @@ Usage: `/project <subcommand> [args]` — manages `~/.hk2/projects.json`.
 | `set name <new-name>` | Rename the current project |
 | `set source <path>` | Update the source path |
 | `set source-root <rel-path>` | Update the indexed sub-root |
-| `set include <glob1,glob2,...>` | Set extra include globs |
-| `set exclude <glob1,glob2,...>` | Set extra exclude globs |
+| `set include <glob1,glob2,...>` | **Replace** the include glob set (the defaults are dropped) |
+| `set exclude <glob1,glob2,...>` | **Replace** the exclude glob set (the defaults are dropped) |
 | `show` | Show the current project's settings |
 | `drop <id\|name>` | Remove a project's registration — **no confirmation prompt**. The KB directory survives as an orphan under the old UUID and is **not** reconnected by re-registering the same path (new UUID); see [Models, projects, and sessions](../guides/models-projects-and-sessions.md#projects) |
 
 `init` flags: `--name` (defaults to directory name), `--source` (required),
 `--source-root` (indexed sub-directory, default whole tree),
-`--include`/`--exclude` (comma-separated globs), `--extra=<name>:<rel>,...`
-(named extra roots, e.g. `docs:docs,spec:spec`).
+`--include`/`--exclude` (comma-separated globs that **replace** the default
+sets — see
+[Models, projects, and sessions](../guides/models-projects-and-sessions.md#projects)),
+`--extra=<name>:<rel>,...` (named extra roots, e.g. `docs:docs,spec:spec`).
 
 ## `/kb`
 
@@ -118,7 +120,7 @@ project's KB. All commands operate on the current project.
 
 | Subcommand | Effect |
 |---|---|
-| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — a **full re-index by default** (the `--full` flag is effectively the default; `--full=false` is the opt-out), checkpointed and resumable; LLM summary entries unless `--skip-summary` |
+| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation (`--full` is accepted but redundant; use `/kb update` for incremental), checkpointed and resumable; LLM summary entries when a model is configured and `--skip-summary` is not passed |
 | `update` | Incremental update (sha256 diff) — Index Space only; auto-upgrades a legacy KB losslessly (snapshot to `backup/pre-upgrade-<ts>/` first; a parser-version change triggers a full re-index) |
 | `status` | Per-space statistics |
 | `search <query> [--top-k=N]` | BM25 + reranking symbol search |
@@ -157,11 +159,9 @@ Every proposed entry is validated against the existing KB before writing
 `--no-survey` (skip Phase 0), `--model`, `--plan-timeout-ms` (default
 300000), and free-form trailing instructions passed to every LLM prompt.
 
-Aliases (verified against the dispatcher): `ls`→list, `get`→show,
-`create`/`set`→add, `study`/`init`/`bootstrap`/`scan`→learn,
+Aliases: `ls`→list, `get`→show, `create`/`set`→add,
+`study`/`init`/`bootstrap`/`scan`→learn,
 `housekeeping`/`cleanup`/`clean`→housekeep, `clear`/`wipe`→empty, `rm`→del.
-(The alias summary inside `/help knowledge` currently misprints the first
-pair as `ls=get`; the dispatcher behavior above is authoritative.)
 
 ## `/kb code`
 

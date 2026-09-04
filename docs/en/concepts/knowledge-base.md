@@ -33,7 +33,7 @@ change often; Index is derived data that can always be rebuilt from source.
 - **Index Space** — BM25 inverted index, sharded symbol table, file registry,
   the code knowledge graph, and per-space keyword indexes over Holy/Eden.
   Purely derived; `/kb update` refreshes it incrementally, `/kb init`
-  (a full build by default) rebuilds it.
+  (always a full build) rebuilds it.
 
 ## Entry lifecycle
 
@@ -79,7 +79,7 @@ enforced until you write laws into it.
 Usage (the only way to modify it; every write requires an explicit y/N
 confirmation):
 
-```
+```text
 /kb code list                                # show all items
 /kb code add --code-content="API keys are strictly forbidden in any code file"
 /kb code add 1 --code-content="..."          # update item 1 in place

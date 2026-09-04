@@ -18,8 +18,8 @@
 /kb status                                # 各空间统计
 ```
 
-- `/kb init` **默认即全量重索引**（`--full` 实际是默认值，`--full=false`
-  才是退出项）；被中断的构建从检查点恢复。
+- `/kb init` 当前实现**始终执行全量重索引**——`--full` 参数被接受但为
+  冗余；增量刷新请用 `/kb update`。被中断的构建从检查点恢复。
 - `/kb update` 只重新解析变化的文件（Index 空间）。它自动检测旧版知识库并
   无损升级——知识内容先快照到 `backup/pre-upgrade-<ts>/`；解析器版本变化
   触发全量重建。
@@ -30,7 +30,7 @@
 
 ## 查询知识库
 
-```
+```text
 /kb search password verification --top-k=5
 /kb symbol login
 /kb neighbors 80:78

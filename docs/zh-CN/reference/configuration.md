@@ -81,8 +81,8 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
   键，手工编辑时必须使用这个精确名称。
 - `mcpServers`——可选数组，由 `/model add-mcpserver` 添加的 MCP 服务器挂载
   （类型、名称、含 `$APIKEY` 占位符的 options）。
-- `timeout`——可选的每模型请求超时（毫秒），保存 / 解析时取自
-  `HK2_LLMAPI_TIMEOUT_MS`。
+- `timeout` **不是可持久化字段**——`/model add|set` 没有 `--timeout` 参数。
+  运行时解析模型配置时始终从 `HK2_LLMAPI_TIMEOUT_MS` 取得生效超时。
 
 建议通过 `/model` 命令而非手改文件来编辑模型——命令会校验类型、参数与
 引用。
@@ -101,6 +101,7 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
       "includeGlobs": ["**/*.js", "**/*.ts", "**/*.py"],
       "excludeGlobs": ["**/node_modules/**"],
       "extraRoots": [],
+      "defaultModel": "local/mymodel",
       "phaseModels": { "rewriteQuery": "local/mymodel" },
       "kbBuiltAt": "2026-07-24T16:41:44.248Z",
       "createdAt": "2026-07-24T16:41:43.000Z"
@@ -118,12 +119,16 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
   覆盖常见源码与文档扩展名。
 - `extraRoots`——通过 `--extra=<名称>:<相对路径>,...` 注册的命名额外根；
   在主根之外一并遍历。
+- `defaultModel`——`/model set-default current <ref>` 写入的项目级默认模型
+  覆盖；`--clear` 移除。
 - `phaseModels`——`/model set-phase` 写入的项目级阶段模型覆盖（存储键为
   `rewriteQuery`、`requestAssess`、`planReview`、`codeReview`）。
 
 ## 默认 include / exclude globs
 
-项目未覆盖时，`/kb init` 使用以下默认值（`lib/config/home.js`）：
+项目未覆盖时，`/kb init` 使用以下默认值（`lib/config/home.js`）。项目的
+`includeGlobs`/`excludeGlobs`——经 `/project init --include/--exclude` 或
+`/project set include/exclude` 设置——会**整体替换**以下列表，不做合并。
 
 - **Include**——C/C++（`.c .h .cpp .cc .hpp .cxx`）、JS/TS
   （`.js .jsx .mjs .cjs .ts .tsx`）、Python、Go、Rust、Java、Kotlin、
@@ -156,6 +161,9 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
 │   └── meta.json             # 计数 + 版本
 ├── files.json                # Index Space——文件注册表
 ├── inverted.json             # Index Space——BM25 倒排索引
+├── holy.idx.json             # Holy 知识条目的 BM25 索引
+├── eden.idx.json             # Eden 知识条目的 BM25 索引
+├── doc_index.json            # 解析文档索引（文档引用图）
 ├── callgraph.json            # Index Space——旧版调用图（由 graph 派生）
 ├── symbols.0000.json         # Index Space——分片符号表
 ├── stats.json                # Index Space——构建统计

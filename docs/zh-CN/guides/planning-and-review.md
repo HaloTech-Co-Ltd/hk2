@@ -87,7 +87,7 @@ LLM 会对定稿计划做一次复审。复审者会：
 
 两种审查都使用阶段模型机制：
 
-```
+```text
 /model set-phase --phase=plan-review local/mymodel
 /model set-phase --phase=code-review local/mymodel
 ```

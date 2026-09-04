@@ -33,6 +33,13 @@ Two layers are merged (see `setting.example.json` at the repo root). **Both
 live under `HK2_HOME` — deliberately outside the agent-writable project
 tree, so the model can never rewrite the rules that bound its own sandbox**:
 
+> **Reinstall warning**: when the install dir is also `~/.hk2` (the
+> default), re-running `install.sh` from an outside checkout **deletes
+> `setting.json` and `settings/`** — they are not on the installer's
+> preserve list (only models/projects/theme/kb/sessions/logs are). Back them
+> up first or install with a separate `HK2_INSTALL_DIR`; see
+> [Installation](../getting-started/installation.md).
+
 - `~/.hk2/setting.json` — global baseline
 - `~/.hk2/settings/<project-id>/setting.json` — per-project override
 

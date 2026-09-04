@@ -19,9 +19,10 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
 /kb status                                # per-space statistics
 ```
 
-- `/kb init` performs a **full re-index by default** (`--full` is
-  effectively the default; `--full=false` is the opt-out); interrupted
-  builds resume from the checkpoint.
+- `/kb init` **always performs a full re-index** in the current
+  implementation — the `--full` flag is accepted but redundant; use
+  `/kb update` for incremental refreshes. Interrupted builds resume from
+  the checkpoint.
 - `/kb update` re-parses only changed files (Index Space). It auto-detects a
   legacy KB and upgrades it losslessly — knowledge is snapshotted to
   `backup/pre-upgrade-<ts>/` first; a parser-version change triggers a full
@@ -34,7 +35,7 @@ refactors run `/kb init` again — it is already a full rebuild.
 
 ## Query the KB
 
-```
+```text
 /kb search password verification --top-k=5
 /kb symbol login
 /kb neighbors 80:78

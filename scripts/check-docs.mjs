@@ -57,9 +57,10 @@ async function collectMarkdown(dir, prefix = '') {
 }
 
 /**
- * Strip fenced code blocks and inline code spans. Links, placeholders, and
- * marker words inside code are examples, not live references — no check
- * should fire on them.
+ * Strip fenced code blocks and inline code spans for the LINK checks —
+ * links inside code are examples, not live references. (Placeholder and
+ * marker checks intentionally run on RAW text; see the quality gates.)
+ * Also validates that every opening fence carries a language tag.
  */
 function stripCode(text) {
   return text
@@ -194,6 +195,20 @@ for (const [abs, raw] of rawContents) {
   if (raw.includes('<repo-url>')) problem(abs, 'contains a <repo-url> placeholder');
   if (abs.startsWith(DOCS) && /\b(TODO|TBD)\b/.test(raw)) {
     problem(abs, 'contains a TODO/TBD marker');
+  }
+  // Every opening fence must carry a language tag (```bash, ```json, ```text, ...).
+  {
+    let inFence = false;
+    for (const line of raw.split('\n')) {
+      const s = line.trim();
+      if (!s.startsWith('```')) continue;
+      if (!inFence) {
+        inFence = true;
+        if (s === '```') problem(abs, 'code fence without a language tag');
+      } else if (s === '```' || /^[`]{3,}$/.test(s)) {
+        inFence = false;
+      }
+    }
   }
 }
 

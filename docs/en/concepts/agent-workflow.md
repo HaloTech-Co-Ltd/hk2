@@ -52,8 +52,11 @@ for obvious follow-ups:
    everything older (including tool results) is LLM-summarized into one
    system message, with naive truncation as the fallback. Before the turns
    are summarized away, durable user-stated facts are extracted into the
-   session facts store, and the summarizer input keeps the conversation's
-   head *and* tail so opening-stated facts reach the summary verbatim.
+   session facts store (best-effort, fail-open), and the summarizer input
+   keeps the conversation's head *and* tail so opening-stated facts reach
+   the summary. Facts saved explicitly via `/remember` / the `remember`
+   tool survive compaction by design; the automatic extraction is
+   best-effort.
 3. **Follow-up fast lane** (`HK2_ENABLE_FOLLOWUP_FASTLANE`, default on) —
    inputs that are certainly conversational follow-ups skip the whole
    pre-agent pipeline and go straight to the agent loop, which sees the full

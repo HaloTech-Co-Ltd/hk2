@@ -14,9 +14,12 @@ behavior, optional PDF/Word parsing, verification, and uninstalling.
 > **Tree-sitter compatibility note**: very new Node versions (e.g. Node 25+)
 > may have N-API / V8 ABI mismatches with the prebuilt Tree-sitter binaries
 > on some platforms. If `/kb init` logs `tree-sitter parse failed`, hk2
-> transparently falls back to its regex-based parsers — symbol coverage is
-> somewhat lower but the system is fully functional. For maximum precision,
-> install on Node 20 LTS or run `npm rebuild` to recompile from source.
+> transparently falls back to its regex-based parsers: languages with a
+> regex fallback keep working at lower symbol precision, but languages
+> **without** a fallback parser (notably C#) yield no symbols at all — see
+> [CLI and language support](../reference/cli-and-language-support.md).
+> For maximum precision, install on Node 20 LTS or run `npm rebuild` to
+> recompile from source.
 
 hk2 is not published to npm. Install from source.
 
@@ -31,14 +34,23 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 symlinks `hk2` into your PATH (`/usr/local/bin/hk2` by default), and runs
 `npm install --omit=optional` to build the Tree-sitter native bindings.
 
-### Reinstalls preserve user data
+### Reinstalls preserve user data — with a fixed list
 
-`~/.hk2` serves two roles: it is the **config / data home** (`HK2_HOME` —
-`models.json`, `projects.json`, `theme.json`, `kb/`, `sessions/`, `logs/`)
-*and* the default **install dir** for the source copy. Reinstalls **preserve
-user data**: the installer moves those data items aside, refreshes the code
+`~/.hk2` serves two roles: it is the **config / data home** (`HK2_HOME`)
+*and* the default **install dir** for the source copy. On a reinstall the
+installer moves a **fixed list** of data items aside, refreshes the code
 tree, then moves them back (user data wins over any same-named item shipped
-by the new tree). Pass `--preserve-data=off` for the legacy wipe behavior.
+by the new tree):
+
+- **Preserved**: `models.json`, `projects.json`, `theme.json`, `kb/`,
+  `sessions/`, `logs/`
+- **NOT preserved**: `setting.json` (the global permission baseline),
+  `settings/` (per-project permission overrides), and `history.jsonl`
+  (input history) — with the default layout these are **deleted** when the
+  install dir is refreshed. Back them up before reinstalling, or keep the
+  source copy out of the config home with `HK2_INSTALL_DIR`.
+
+Pass `--preserve-data=off` for the legacy wipe behavior (nothing preserved).
 
 If you already have a checkout and actively develop on hk2, prefer
 `npm link` (Option B), or set `HK2_INSTALL_DIR` to keep the source copy out

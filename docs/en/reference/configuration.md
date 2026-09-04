@@ -89,8 +89,9 @@ Field notes:
 - `mcpServers` — optional array of MCP server attachments added via
   `/model add-mcpserver` (type, name, options with the `$APIKEY`
   placeholder).
-- `timeout` — optional per-model request timeout (ms), resolved from
-  `HK2_LLMAPI_TIMEOUT_MS` at save/resolve time.
+- `timeout` is **not a persisted field** — `/model add|set` have no
+  `--timeout` flag. The runtime always resolves the effective timeout from
+  `HK2_LLMAPI_TIMEOUT_MS` when a model config is resolved.
 
 Prefer editing models through `/model` commands rather than by hand — they
 validate types, options, and refs.
@@ -109,6 +110,7 @@ validate types, options, and refs.
       "includeGlobs": ["**/*.js", "**/*.ts", "**/*.py"],
       "excludeGlobs": ["**/node_modules/**"],
       "extraRoots": [],
+      "defaultModel": "local/mymodel",
       "phaseModels": { "rewriteQuery": "local/mymodel" },
       "kbBuiltAt": "2026-07-24T16:41:44.248Z",
       "createdAt": "2026-07-24T16:41:43.000Z"
@@ -126,6 +128,8 @@ Field notes:
   defaults cover common source and document extensions.
 - `extraRoots` — named extra roots registered with
   `--extra=<name>:<rel>,...`; walked in addition to the main root.
+- `defaultModel` — per-project default model override written by
+  `/model set-default current <ref>`; `--clear` removes it.
 - `phaseModels` — per-project phase model overrides written by
   `/model set-phase` (storage keys `rewriteQuery`, `requestAssess`,
   `planReview`, `codeReview`).
@@ -133,7 +137,9 @@ Field notes:
 ## Default include / exclude globs
 
 When a project does not override them, `/kb init` walks with these defaults
-(`lib/config/home.js`):
+(`lib/config/home.js`). A project's `includeGlobs`/`excludeGlobs` — set via
+`/project init --include/--exclude` or `/project set include/exclude` —
+**replace these lists entirely**; they are not merged.
 
 - **Include** — C/C++ (`.c .h .cpp .cc .hpp .cxx`), JS/TS
   (`.js .jsx .mjs .cjs .ts .tsx`), Python, Go, Rust, Java, Kotlin, Scala,
@@ -166,6 +172,9 @@ When a project does not override them, `/kb init` walks with these defaults
 │   └── meta.json             # counts + version
 ├── files.json                # Index Space — file registry
 ├── inverted.json             # Index Space — BM25 inverted index
+├── holy.idx.json             # BM25 index over Holy knowledge entries
+├── eden.idx.json             # BM25 index over Eden knowledge entries
+├── doc_index.json            # Parsed-document index (doc reference graph)
 ├── callgraph.json            # Index Space — legacy callgraph (derived from graph)
 ├── symbols.0000.json         # Index Space — sharded symbol table
 ├── stats.json                # Index Space — build statistics

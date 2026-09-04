@@ -49,7 +49,7 @@ means "disabled" (timeouts: "no timeout").
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
 | `HK2_ENABLE_QUERYREWRITE` | `1`: rewrite each query via an LLM into English function names + keywords before BM25 retrieval (turn start and each `kb_search` call) | `1` | Prerequisite for assess + fast lane |
-| `HK2_ENABLE_REQUEST_ASSESS` | `1` (and query rewrite on): first ask an LLM whether the request is clear; unclear requests get a numbered clarification menu whose answer feeds back into the rewrite. Judges against a session digest so follow-ups are not flagged; interactive TTY only; one bounded round; best-effort. Verdict fields recorded in the transcript's `assess` meta | `1` | |
+| `HK2_ENABLE_REQUEST_ASSESS` | `1` (and query rewrite on): after the first query rewrite **and** KB retrieval, an LLM judges whether the request is clear — deliberately with the retrieved project context in hand; unclear requests get a numbered clarification menu whose answer feeds a second rewrite + retrieval pass. Judges against a session digest so follow-ups are not flagged; interactive TTY only; one bounded round; best-effort. Verdict fields recorded in the transcript's `assess` meta | `1` | |
 | `HK2_ASSESS_MIN_CONFIDENCE` | Confidence threshold (0.0–1.0) below which an "unclear" verdict is treated as clear | `0.8` | A spurious menu costs more than an inline follow-up |
 | `HK2_ASSESS_REASONING` | `1`: run the clarity assessment with deep reasoning (better pragmatic reference resolution on strong models; adds latency) | `0` | |
 | `HK2_ENABLE_FOLLOWUP_FASTLANE` | `1` (and query rewrite on): certainly-conversational follow-ups (continuation cues, bare confirmations, a bare number picking the just-offered menu, plan-advance directives with an active plan) skip the entire pre-agent pipeline straight to the agent loop | `1` | Set `0` to restore the full pipeline for A/B comparison |
@@ -78,7 +78,7 @@ means "disabled" (timeouts: "no timeout").
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_ENABLE_AUTOCOMPACT` | `1` (default): at the start of a turn, compact once measured context usage reaches the threshold. Keeps the last 4 user/assistant turns verbatim, LLM-summarizes earlier turns into one system message; naive truncation fallback. Turn boundary only, never mid-turn. Before turns are summarized away, durable user-stated facts are extracted into the session facts store (see `/remember`), and the summarizer input keeps the conversation's head AND tail so opening-stated facts reach the summary verbatim — auto-compaction no longer loses them | `1` | |
+| `HK2_ENABLE_AUTOCOMPACT` | `1` (default): at the start of a turn, compact once measured context usage reaches the threshold. Keeps the last 4 user/assistant turns verbatim, LLM-summarizes earlier turns into one system message; naive truncation fallback. Turn boundary only, never mid-turn. Facts saved explicitly (via `/remember` or the `remember` tool) survive compaction **by design**; the compaction-time extraction and the head+tail summarizer input that protect opening-stated facts are **best-effort** (the extraction is fail-open; the naive-truncation fallback summarizes nothing) | `1` | |
 | `HK2_AUTOCOMPACT_PCTUSED` | Context-usage trigger percentage (1–100) | `90` | |
 
 ## First-run import

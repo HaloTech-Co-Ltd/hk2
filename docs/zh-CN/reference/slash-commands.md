@@ -100,13 +100,15 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | `set name <新名称>` | 重命名当前项目 |
 | `set source <路径>` | 更新源码路径 |
 | `set source-root <相对路径>` | 更新被索引的子根 |
-| `set include <glob1,glob2,...>` | 设置额外 include globs |
-| `set exclude <glob1,glob2,...>` | 设置额外 exclude globs |
+| `set include <glob1,glob2,...>` | **整体替换** include glob 集合（默认集合被丢弃） |
+| `set exclude <glob1,glob2,...>` | **整体替换** exclude glob 集合（默认集合被丢弃） |
 | `show` | 显示当前项目配置 |
 | `drop <id\|名称>` | 移除项目注册——**没有确认提示**。知识库目录以旧 UUID 成为孤立目录保留，重新注册同一路径**不会**接回（新 UUID）；见[模型、项目与会话](../guides/models-projects-and-sessions.md#项目) |
 
 `init` 参数：`--name`（默认取目录名）、`--source`（必填）、`--source-root`
-（被索引子目录，默认整棵树）、`--include`/`--exclude`（逗号分隔 globs）、
+（被索引子目录，默认整棵树）、`--include`/`--exclude`（逗号分隔 globs，
+**整体替换**默认集合——见
+[模型、项目与会话](../guides/models-projects-and-sessions.md#项目)）、
 `--extra=<名称>:<相对路径>,...`（命名额外根，如 `docs:docs,spec:spec`）。
 
 ## `/kb`
@@ -116,7 +118,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 
 | 子命令 | 作用 |
 |---|---|
-| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——**默认即全量重索引**（`--full` 实际是默认值，`--full=false` 才是退出项），带检查点、可恢复；除非 `--skip-summary` 否则生成 LLM 摘要条目 |
+| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；已配置模型且未传 `--skip-summary` 时生成 LLM 摘要条目 |
 | `update` | 增量更新（sha256 差异）——仅 Index 空间；自动无损升级旧版知识库（先快照到 `backup/pre-upgrade-<ts>/`；解析器版本变化触发全量重建） |
 | `status` | 各空间统计 |
 | `search <查询> [--top-k=N]` | BM25 + 重排序的符号搜索 |
@@ -153,11 +155,10 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 `--dry-run`、`--no-survey`（跳过阶段 0）、`--model`、`--plan-timeout-ms`
 （默认 300000），以及传入每个 LLM 提示词的自由格式尾部指令。
 
-别名（经分发器核验）：`ls`→list、`get`→show、`create`/`set`→add、
+别名：`ls`→list、`get`→show、`create`/`set`→add、
 `study`/`init`/`bootstrap`/`scan`→learn、
 `housekeeping`/`cleanup`/`clean`→housekeep、`clear`/`wipe`→empty、
-`rm`→del。（`/help knowledge` 内置的别名摘要目前把第一对误印为
-`ls=get`；以上分发器行为为准。）
+`rm`→del。
 
 ## `/kb code`
 

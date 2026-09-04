@@ -56,7 +56,9 @@ hk2 --mode=update-kb
   When `--source` is omitted it falls back to the unusual default
   `../../../` resolved against the current working directory — prefer
   passing it explicitly, or use `/kb init` inside the interactive REPL
-  instead.
+  instead. "Current project" here means: the current project's KB is used
+  only if it was already built; otherwise the build targets a KB named
+  `default` (`HK2_KB_NAME` overrides).
 - `--mode=project-init` also accepts `--include=<globs>` and
   `--exclude=<globs>` (comma-separated), mirroring `/project init`.
 
@@ -86,7 +88,8 @@ hk2 --help                   # or -h
 | `--resume` | optional `<sessionId>` | Interactive mode only |
 | `--mode` | `project-init`, `build-kb`, `update-kb` | One-shot modes |
 | `--run-mode` | `once`, `serve` | `serve` = legacy REPL |
-| `--name` / `--source` / `--source-root` / `--include` / `--exclude` | strings | `--mode=project-init` operands |
+| `--name` / `--include` / `--exclude` | strings | `--mode=project-init` operands |
+| `--source` / `--source-root` | strings | Operands of **both** `--mode=project-init` and `--mode=build-kb` |
 | `--version` / `-V`, `--help` / `-h` | - | |
 
 ## Language support
@@ -111,8 +114,10 @@ super-classes, implemented interfaces, imports, doc comments.
 > **Glob caveat**: the *default* include globs (see
 > [Configuration](configuration.md#default-include--exclude-globs)) do not
 > list `**/*.cs` or `**/*.kts`, so C# and Kotlin Script files are parsed
-> when encountered but **not scanned by a default `/kb init`**. Add them
-> via `/project init --include=**/*.cs,**/*.kts` or
+> when encountered but **not scanned by a default `/kb init`**. Because
+> `--include` **replaces** the whole default set (it does not append), copy
+> the default list from the configuration page, append `**/*.cs` and
+> `**/*.kts`, and pass the full list to `/project init --include=...` or
 > `/project set include ...`.
 
 ### Regex fallback parsers

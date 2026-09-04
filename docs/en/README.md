@@ -4,9 +4,10 @@ English | [简体中文](../zh-CN/README.md)
 
 Welcome to the hk2 documentation. hk2 is a knowledge-base (KB) driven agent,
 purpose-built for coding: every project gets its own KB — symbols, a code
-knowledge graph, and distilled knowledge entries — and the agent consults it
-on every request, so it starts each new task already knowing what the last
-one learned.
+knowledge graph, and distilled knowledge entries — and hk2 pre-fetches
+related KB context into the prompt for each substantive request (clear
+conversational follow-ups take a fast lane instead), so it starts each new
+task already knowing what the last one learned.
 
 New to hk2? Start with [Installation](getting-started/installation.md) and
 the [Quick start](getting-started/quick-start.md), then read the

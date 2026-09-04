@@ -13,7 +13,9 @@
 > **Tree-sitter 兼容性提示**：过新的 Node 版本（如 Node 25+）在某些平台上
 > 可能与预编译的 Tree-sitter 二进制存在 N-API / V8 ABI 不匹配。若
 > `/kb init` 日志出现 `tree-sitter parse failed`，hk2 会透明地回退到基于
-> 正则的解析器——符号覆盖率会略低，但系统功能完全正常。如需最高精度，
+> 正则的解析器：有正则回退的语言以较低的符号精度继续工作，但**没有**回退
+> 解析器的语言（尤其是 C#）将完全不产出符号——见
+> [CLI 与语言支持](../reference/cli-and-language-support.md)。如需最高精度，
 > 请在 Node 20 LTS 上安装，或运行 `npm rebuild` 从源码重新编译。
 
 hk2 未发布到 npm，请从源码安装。
@@ -29,13 +31,20 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 PATH（默认 `/usr/local/bin/hk2`），并运行 `npm install --omit=optional`
 构建 Tree-sitter 原生绑定。
 
-### 重装时保留用户数据
+### 重装时保留用户数据——按固定清单
 
-`~/.hk2` 同时承担两个角色：它既是**配置 / 数据主目录**（`HK2_HOME`——
-`models.json`、`projects.json`、`theme.json`、`kb/`、`sessions/`、
-`logs/`），也是源码副本的默认**安装目录**。重新安装时**保留用户数据**：
-安装器会把这些数据项移到一边，刷新代码树，再移回来（用户数据优先于新版本
-树中的同名条目）。传入 `--preserve-data=off` 可恢复旧的擦除行为。
+`~/.hk2` 同时承担两个角色：它既是**配置 / 数据主目录**（`HK2_HOME`），也是
+源码副本的默认**安装目录**。重装时，安装器会把一份**固定清单**里的数据项
+移到一边，刷新代码树，再移回来（用户数据优先于新版本树中的同名条目）：
+
+- **保留**：`models.json`、`projects.json`、`theme.json`、`kb/`、
+  `sessions/`、`logs/`
+- **不保留**：`setting.json`（全局权限基线）、`settings/`（项目级权限
+  覆盖）与 `history.jsonl`（输入历史）——默认布局下，安装目录刷新时它们
+  会被**删除**。重装前请先备份，或用 `HK2_INSTALL_DIR` 把源码副本放在
+  配置主目录之外。
+
+传入 `--preserve-data=off` 恢复旧的擦除行为（什么都不保留）。
 
 如果你已有检出并正在开发 hk2 本身，建议改用方式 B（`npm link`），或通过
 `HK2_INSTALL_DIR` 把源码副本放到配置主目录之外。

@@ -24,7 +24,7 @@ Add a model with `/model add` (see
 [Models, projects, and sessions](../guides/models-projects-and-sessions.md)
 for all flags):
 
-```
+```text
 /model add local mymodel --api=openai --base-url=http://localhost:8000/v1 --api-key=sk-example
 /model set-default local/mymodel
 ```
@@ -38,7 +38,7 @@ with no model configured it imports one from Claude Code's
 
 ## 3. Register a project
 
-```
+```text
 /project init --name=myapp --source=/path/to/repo --source-root=src
 ```
 
@@ -47,19 +47,20 @@ index the whole tree. `--name` defaults to the directory name.
 
 ## 4. Build the knowledge base
 
-```
+```text
 /kb init
 ```
 
 This parses every indexed source file (Tree-sitter AST, regex fallback where
-unavailable), builds the BM25 symbol index and the code knowledge graph, and
-asks an LLM to write three summary entries into Eden Space. Builds are
+unavailable) and builds the BM25 symbol index and the code knowledge graph.
+When a model is configured (step 2) and `--skip-summary` is not passed, it
+also asks the LLM to write three summary entries into Eden Space. Builds are
 checkpointed and resumable — if interrupted, re-running continues from the
 checkpoint.
 
 ## 5. Deep-study the project
 
-```
+```text
 /kb knowledge learn
 ```
 
@@ -67,13 +68,13 @@ The unified deep-study command: it surveys the codebase, plans topics, and
 writes topic-specific knowledge entries. Scope it to a subdirectory with
 `--base-dir=src/storage`, or deep-study documents instead:
 
-```
+```text
 /kb knowledge learn --space=eden --file=docs/spec.pdf
 ```
 
 ## 6. Ask a question
 
-```
+```text
 How does login verify the password?
 ```
 
@@ -83,7 +84,7 @@ agent answers using tools as needed.
 
 ## 7. Query the KB explicitly
 
-```
+```text
 /kb search password verification
 /kb symbol login
 /kb neighbors 12:345
@@ -98,7 +99,7 @@ agent answers using tools as needed.
 
 ## 8. Switch projects or resume a session
 
-```
+```text
 /model use local/mymodel           # this session only
 /project list
 /project set current otherapp      # switch (session saved under old project)

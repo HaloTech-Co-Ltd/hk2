@@ -42,8 +42,10 @@ flowchart LR
    mixed-language queries), the legacy callgraph, the knowledge graph
    (`lib/graph/builder.js`), and the file/symbol registries are written to
    `~/.hk2/kb/<projectId>/`.
-5. **Summaries** — at the end of `/kb init`, an LLM authors the three
-   structural Eden entries (skippable with `--skip-summary`).
+5. **Summaries** — at the end of `/kb init`, **when a model is configured
+   and `--skip-summary` is not passed**, an LLM authors the three structural
+   Eden entries. Without a configured LLM the index is still built; only the
+   summary entries are skipped.
 
 Parsing runs in a bounded parallel pool — `HK2_INDEX_PARALLEL` pins the
 width (default: auto, the host CPU count respecting cgroup quotas).
@@ -61,7 +63,7 @@ instead of breaking the pipeline.
 
 On `/kb init`, hk2 builds a code knowledge graph from the Symbols:
 
-```
+```text
 ~/.hk2/kb/<projectId>/graph/
   nodes.json            id → node record (function / method / class / interface / struct / field)
   edges.calls.json      srcId → [calleeIds, ...]
@@ -83,7 +85,7 @@ Edge kinds:
 The graph is queried via the agent tools (see
 [Agent tools](../reference/agent-tools.md)):
 
-- `kb_callchain` — bounded DFS over the call graph (forward, backward, both)
+- `kb_callchain` — bounded BFS over the call graph (forward, backward, both)
 - `kb_class` — class / interface / struct lookup with members + implementations
 - `kb_refs` — who calls / imports / derives from a symbol
 - `kb_implements` — find every class that implements an interface

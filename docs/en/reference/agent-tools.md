@@ -24,10 +24,11 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 
 ### `read`
 
-Read file contents — **text files only**. Output is line-numbered and
-truncated at 2000 lines or 256KB (whichever is hit first); continue with
-`offset`/`limit` for large files. Binary files are rejected (a NUL byte in
-the first 8192 characters returns
+Read file contents — **text files only**. Files larger than **5 MiB** are
+rejected outright (`file too large: N bytes` — pagination cannot help).
+Below that, output is line-numbered and truncated at 2000 lines or 256KB
+(whichever is hit first); continue with `offset`/`limit`. Binary files are
+rejected (a NUL byte in the first 8192 characters returns
 `binary file (NUL byte detected): … — read only supports text files`). For
 code files known to the KB, a structural `## Outline (from KB)` section is
 prepended (`outline=false` disables); the result carries a `tag` for
@@ -87,8 +88,11 @@ staged only — applied via `resolve`.
 ### `resolve`
 
 Two-phase commit for `ast_edit`: `action:"apply"` writes every staged file
-(re-validating each content tag; rolls back on any failure);
-`action:"discard"` drops the stash without writing. Writes: yes (on apply).
+(re-validating each content tag); on a failure it **attempts** to restore
+the already-written files from their previous contents — rollback is
+best-effort, not a transactional guarantee (a rollback write that itself
+fails is logged and skipped). `action:"discard"` drops the stash without
+writing. Writes: yes (on apply).
 
 ## Plan tools
 
@@ -123,7 +127,7 @@ that mirrors a denied source file is suppressed (metadata stays visible).
 | `kb_symbol` | Look up a symbol by exact identifier; all matching candidates |
 | `kb_outline` | File outline from the KB index — name / kind / lines / signature / parent / child count per symbol; cheaper than `read` for "what's in this file?"; returns a `tag` for edit safety |
 | `kb_neighbors` | Call-graph 1-hop neighbors of a symbol (legacy) |
-| `kb_callchain` | Bounded DFS over the call graph — callers and/or callees up to `max_depth` hops, capped at `max_nodes` |
+| `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops, capped at `max_nodes` |
 | `kb_class` | Class / interface / struct lookup: signature, doc string, members, super-classes, direct implementations |
 | `kb_refs` | Reverse lookup: callers, importers, deriving classes (`kind=call\|import\|inherit\|any`) |
 | `kb_implements` | Given an interface or base class, list every class / struct deriving from it |

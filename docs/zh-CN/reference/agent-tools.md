@@ -23,9 +23,10 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 ### `read`
 
-读取文件内容——**仅支持文本文件**。输出带行号，超过 2000 行或 256KB
-（先到为准）时截断；大文件用 `offset`/`limit` 继续读取。二进制文件会被
-拒绝（前 8192 个字符中出现 NUL 字节即返回
+读取文件内容——**仅支持文本文件**。超过 **5 MiB** 的文件直接拒绝
+（`file too large: N bytes`——分页读取也无济于事）。在此限内，输出带行号，
+超过 2000 行或 256KB（先到为准）时截断；用 `offset`/`limit` 继续读取。
+二进制文件会被拒绝（前 8192 个字符中出现 NUL 字节即返回
 `binary file (NUL byte detected): … — read only supports text files`）。
 对知识库已知的代码文件，内容前附带结构性 `## Outline (from KB)` 章节
 （`outline=false` 禁用）；结果携带 `tag` 用于陈旧锚点保护。写入：否。
@@ -79,8 +80,9 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 ### `resolve`
 
 `ast_edit` 的两阶段提交：`action:"apply"` 写入全部暂存文件（先逐个复验
-内容 tag；任一失败则回滚）；`action:"discard"` 丢弃暂存不写入。写入：
-是（apply 时）。
+内容 tag）；失败时**尝试**用先前内容恢复已写入的文件——回滚是尽力而为，
+不是事务性保证（回滚写入自身失败会被记录并跳过）。`action:"discard"`
+丢弃暂存不写入。写入：是（apply 时）。
 
 ## 规划工具
 
@@ -111,7 +113,7 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 | `kb_symbol` | 按精确标识符查找符号；返回全部匹配候选 |
 | `kb_outline` | 来自知识库索引的文件大纲——每个符号的名称 / 种类 / 行号 / 签名 / 父类 / 子项数；对"这个文件里有什么？"比 `read` 更轻量；返回 `tag` 供编辑安全使用 |
 | `kb_neighbors` | 某符号的调用图 1 跳邻居（旧版） |
-| `kb_callchain` | 对调用图做有界 DFS——按 `max_depth` 跳数返回调用者 / 被调用者，以 `max_nodes` 为上限 |
+| `kb_callchain` | 对调用图做有界 BFS——按 `max_depth` 跳数返回调用者 / 被调用者，以 `max_nodes` 为上限 |
 | `kb_class` | 类 / 接口 / 结构体查询：签名、docString、成员、父类、直接实现 |
 | `kb_refs` | 反向查找：调用者、导入者、派生类（`kind=call\|import\|inherit\|any`） |
 | `kb_implements` | 给定接口或基类，列出全部派生的类 / 结构体 |

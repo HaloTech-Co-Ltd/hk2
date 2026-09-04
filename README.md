@@ -13,7 +13,9 @@ English | [简体中文](README_zh.md)
 Coding agents forget. Every new session re-reads the same files, re-derives
 the same architecture, and re-makes the same mistakes. hk2 flips that: each
 project gets a **knowledge base** — symbols, a code knowledge graph, and
-curated knowledge entries — and the agent consults it on **every request**.
+curated knowledge entries — and for every substantive request hk2 pre-fetches
+related KB context into the prompt (clear conversational follow-ups take a
+fast lane and let the agent query the KB on demand instead).
 Make the KB the source of truth, and the agent gets smarter the more you use
 it.
 
@@ -57,8 +59,10 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ```
 
 Installs a self-contained copy at `~/.hk2`, symlinks `hk2` into your PATH,
-and preserves your data (models, projects, KBs) across reinstalls. Options:
-`--prefix=<path>`, `--install-dir=<path>`, `--no-npm-install`,
+and preserves models, projects, theme, KBs, sessions, and logs across
+reinstalls (permission files and input history are not preserved — see the
+[fixed list](docs/en/getting-started/installation.md#reinstalls-preserve-user-data--with-a-fixed-list)).
+Options: `--prefix=<path>`, `--install-dir=<path>`, `--no-npm-install`,
 `--preserve-data=off` — or use `npm link` for development. Details:
 [Installation](docs/en/getting-started/installation.md).
 
@@ -70,14 +74,15 @@ hk2
 
 Inside the REPL:
 
-```
-# 1. Register a project and build its knowledge base
-/project init --name=myapp --source=/path/to/repo --source-root=src
-/kb init
-
-# 2. Add a model (or let `hk2 --tui` import one from Claude Code)
+```text
+# 1. Add a model FIRST (or let `hk2 --tui` import one from Claude Code) —
+#    /kb init needs it to generate the summary entries
 /model add local mymodel --api=openai --base-url=http://localhost:8000/v1 --api-key=sk-example
 /model set-default local/mymodel
+
+# 2. Register a project and build its knowledge base
+/project init --name=myapp --source=/path/to/repo --source-root=src
+/kb init
 
 # 3. Deep-study the project → auto-generate knowledge entries
 /kb knowledge learn

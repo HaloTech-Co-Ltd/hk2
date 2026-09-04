@@ -32,7 +32,7 @@ Supreme Code）。
   以及手动添加的快速变化事实。
 - **Index Space**——BM25 倒排索引、分片符号表、文件注册表、代码知识图谱，
   以及 Holy/Eden 的各空间关键词索引。纯派生数据；`/kb update` 增量刷新，
-  `/kb init`（默认即全量构建）重建。
+  `/kb init`（始终为全量构建）重建。
 
 ## 条目生命周期
 
@@ -70,7 +70,7 @@ Supreme Code）。
 
 用法（修改它的唯一途径；每次写入都需显式 y/N 确认）：
 
-```
+```text
 /kb code list                                # 查看全部规则
 /kb code add --code-content="API 密钥严禁出现在任何代码文件中"
 /kb code add 1 --code-content="..."          # 原地更新第 1 条

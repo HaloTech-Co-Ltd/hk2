@@ -46,7 +46,7 @@ wire `name` is unaffected.
 
 ## Configuring models
 
-```
+```text
 /model add local mymodel --api=openai --base-url=http://localhost:8000/v1 --api-key=sk-example --context-window=128000
 /model set-default local/mymodel
 /model list
@@ -91,7 +91,7 @@ project:
 | `plan-review` | Review of a confirmed plan (`HK2_ENABLE_PLANREVIEW=1`) |
 | `code-review` | Review of the completed task (`HK2_ENABLE_CODEREVIEW=1` and `/review code`) |
 
-```
+```text
 /model set-phase --phase=rewrite-query local/mymodel
 /model set-phase --phase=code-review --clear
 ```
@@ -122,7 +122,7 @@ The Anthropic adapter sends both `x-api-key` and `Authorization: Bearer`, so
 Attach Model Context Protocol servers to a model; their tools then appear to
 the agent as `mcp__<name>__<tool>`:
 
-```
+```text
 /model add-mcpserver local/mymodel --type=http --name=web-reader \
   --options='{"url":"https://example.invalid/mcp","headers":{"Authorization":"Bearer $APIKEY"}}'
 ```
@@ -139,7 +139,7 @@ the agent as `mcp__<name>__<tool>`:
 Projects are registered in `~/.hk2/projects.json` with a generated UUID; the
 `current` pointer names the active one.
 
-```
+```text
 /project init --name=myapp --source=/path/to/repo --source-root=src
 /project list
 /project set current <id|name>
@@ -159,14 +159,19 @@ Registration options (`/project init`):
 | `--name=<name>` | Display name (defaults to directory name) |
 | `--source=<path>` | Source path (required) |
 | `--source-root=<rel>` | Indexed sub-directory (e.g. `src`); default = whole tree |
-| `--include=<globs>` | Comma-separated extra include globs |
-| `--exclude=<globs>` | Comma-separated extra exclude globs |
+| `--include=<globs>` | Comma-separated include globs — **replaces the whole default set** (see the warning below) |
+| `--exclude=<globs>` | Comma-separated exclude globs — **replaces the whole default set** (see the warning below) |
 | `--extra=<name>:<rel>,...` | Named extra roots, e.g. `docs:docs,spec:spec` |
 
 - **`sourceRoot` / `extraRoots`** — the indexed roots of the project. The
   main source root plus any named extra roots all get walked by `/kb init`.
-- **include/exclude globs** — extend/restrict the default glob sets (see
-  [Configuration](../reference/configuration.md) for the defaults).
+- **include/exclude globs — full replacement, not extension.** Passing
+  either one replaces the entire default glob list for that project
+  (`/project set include` / `set exclude` likewise overwrite the stored
+  array). `/project init --include=**/*.cs` therefore scans *only* `.cs`
+  files, and `/project set exclude vendor/**` silently drops the default
+  `node_modules` / `.git` / build excludes. To add extensions, copy the
+  defaults from [Configuration](../reference/configuration.md) and append.
 - **Switching** — `/project set current` saves the current session under the
   old project and starts a fresh session on the target (equivalent to
   `/quit` then `hk2 --project=<target>`); switching to the already-current
@@ -188,7 +193,7 @@ The same registration is available from the shell:
 Sessions are stored as JSONL transcripts at
 `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`.
 
-```
+```text
 /session info
 /session list --limit=5
 /session new

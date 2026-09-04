@@ -41,7 +41,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 
 ## 配置模型
 
-```
+```text
 /model add local mymodel --api=openai --base-url=http://localhost:8000/v1 --api-key=sk-example --context-window=128000
 /model set-default local/mymodel
 /model list
@@ -82,7 +82,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 | `plan-review` | 已确认计划的复审（`HK2_ENABLE_PLANREVIEW=1`） |
 | `code-review` | 已完成任务的审查（`HK2_ENABLE_CODEREVIEW=1` 与 `/review code`） |
 
-```
+```text
 /model set-phase --phase=rewrite-query local/mymodel
 /model set-phase --phase=code-review --clear
 ```
@@ -110,7 +110,7 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 为模型挂载 Model Context Protocol 服务器；其工具以
 `mcp__<name>__<tool>` 形式提供给智能体：
 
-```
+```text
 /model add-mcpserver local/mymodel --type=http --name=web-reader \
   --options='{"url":"https://example.invalid/mcp","headers":{"Authorization":"Bearer $APIKEY"}}'
 ```
@@ -126,7 +126,7 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 项目注册在 `~/.hk2/projects.json`，使用生成的 UUID；`current` 指针指向当前
 项目。
 
-```
+```text
 /project init --name=myapp --source=/path/to/repo --source-root=src
 /project list
 /project set current <id|name>
@@ -146,14 +146,18 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 | `--name=<name>` | 显示名称（默认取目录名） |
 | `--source=<path>` | 源码路径（必填） |
 | `--source-root=<rel>` | 被索引的子目录（如 `src`）；默认整棵树 |
-| `--include=<globs>` | 逗号分隔的额外 include globs |
-| `--exclude=<globs>` | 逗号分隔的额外 exclude globs |
+| `--include=<globs>` | 逗号分隔的 include globs——**整体替换默认集合**（见下方警告） |
+| `--exclude=<globs>` | 逗号分隔的 exclude globs——**整体替换默认集合**（见下方警告） |
 | `--extra=<name>:<rel>,...` | 命名的额外根，如 `docs:docs,spec:spec` |
 
 - **`sourceRoot` / `extraRoots`**——项目的被索引根。主源码根与所有命名
   额外根都会被 `/kb init` 遍历。
-- **include/exclude globs**——在默认 glob 集合上扩展 / 收窄（默认值见
-  [配置](../reference/configuration.md)）。
+- **include/exclude globs——整体替换，不是追加。**传入任一项都会完整替换
+  该项目的默认 glob 列表（`/project set include` / `set exclude` 同样覆盖
+  整个数组）。因此 `/project init --include=**/*.cs` 只会扫描 `.cs` 文件，
+  而 `/project set exclude vendor/**` 会静默丢掉默认的 `node_modules` /
+  `.git` / 构建产物排除项。要新增扩展名，请从
+  [配置](../reference/configuration.md) 复制默认集合并自行追加。
 - **切换**——`/project set current` 把当前会话保存到原项目下，并在目标
   项目上开启新会话（等同 `/quit` 后 `hk2 --project=<目标>`）；切到当前已
   选中的项目为空操作。
@@ -171,7 +175,7 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 会话以 JSONL 记录存储在
 `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。
 
-```
+```text
 /session info
 /session list --limit=5
 /session new

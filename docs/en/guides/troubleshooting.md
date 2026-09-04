@@ -31,8 +31,10 @@ here come from the shipped code.
 
 - **Cause**: the `tree-sitter` package is not loadable at all (not
   installed, or `--no-npm-install` was used).
-- **Fix**: run `npm install` in the install dir. The warning is informational;
-  everything works with reduced symbol precision.
+- **Fix**: run `npm install` in the install dir. The warning is
+  informational; languages with a regex fallback keep parsing at reduced
+  precision, while languages without one (notably C#) yield no symbols
+  until the bindings work.
 
 ## Models and providers
 

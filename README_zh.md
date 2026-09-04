@@ -11,8 +11,9 @@
 
 编码智能体会"失忆"。每个新会话都要重新读同样的文件、重新推导同样的架构、
 重新犯同样的错误。hk2 反其道而行：每个项目拥有一个**知识库**——符号、代码
-知识图谱与沉淀的知识条目——智能体在**每次请求**时都会查询它。让知识库成为
-唯一可信来源，智能体就越用越聪明。
+知识图谱与沉淀的知识条目——对每条实质性请求，hk2 都会把相关 KB 上下文预取
+进提示词（明确的会话性后续输入走快速通道，改由智能体按需查询知识库）。让
+知识库成为唯一可信来源，智能体就越用越聪明。
 
 ## 核心能力
 
@@ -47,10 +48,12 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ./install.sh
 ```
 
-在 `~/.hk2` 安装一份自包含副本，把 `hk2` 符号链接加入 PATH，重装时保留你的
-数据（模型、项目、知识库）。可用参数：`--prefix=<path>`、
-`--install-dir=<path>`、`--no-npm-install`、`--preserve-data=off`——开发
-者可用 `npm link`。详见[安装](docs/zh-CN/getting-started/installation.md)。
+在 `~/.hk2` 安装一份自包含副本，把 `hk2` 符号链接加入 PATH；重装时保留
+模型、项目、主题、知识库、会话与日志（权限文件和输入历史**不在**保留清单
+——见[固定清单](docs/zh-CN/getting-started/installation.md#重装时保留用户数据按固定清单)）。
+可用参数：`--prefix=<path>`、`--install-dir=<path>`、`--no-npm-install`、
+`--preserve-data=off`——开发者可用 `npm link`。详见
+[安装](docs/zh-CN/getting-started/installation.md)。
 
 ## 快速开始
 
@@ -60,14 +63,15 @@ hk2
 
 在 REPL 中：
 
-```
-# 1. 注册项目并构建知识库
-/project init --name=myapp --source=/path/to/repo --source-root=src
-/kb init
-
-# 2. 添加模型（或用 `hk2 --tui` 从 Claude Code 导入一个）
+```text
+# 1. 先添加模型（或用 `hk2 --tui` 从 Claude Code 导入一个）——
+#    /kb init 生成摘要条目需要可用的 LLM
 /model add local mymodel --api=openai --base-url=http://localhost:8000/v1 --api-key=sk-example
 /model set-default local/mymodel
+
+# 2. 注册项目并构建知识库
+/project init --name=myapp --source=/path/to/repo --source-root=src
+/kb init
 
 # 3. 深度研读项目 -> 自动生成知识条目
 /kb knowledge learn

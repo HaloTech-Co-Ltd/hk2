@@ -21,7 +21,7 @@ TTY 终端；条件不满足时自动回落到 REPL）。
 用 `/model add` 添加模型（全部参数见
 [模型、项目与会话](../guides/models-projects-and-sessions.md)）：
 
-```
+```text
 /model add local mymodel --api=openai --base-url=http://localhost:8000/v1 --api-key=sk-example
 /model set-default local/mymodel
 ```
@@ -34,7 +34,7 @@ TTY 终端；条件不满足时自动回落到 REPL）。
 
 ## 3. 注册项目
 
-```
+```text
 /project init --name=myapp --source=/path/to/repo --source-root=src
 ```
 
@@ -43,30 +43,31 @@ TTY 终端；条件不满足时自动回落到 REPL）。
 
 ## 4. 构建知识库
 
-```
+```text
 /kb init
 ```
 
 该命令解析每个被索引的源文件（Tree-sitter AST，不可用时回退正则），构建
-BM25 符号索引与代码知识图谱，并让 LLM 撰写三个摘要条目写入 Eden 空间。
-构建过程有检查点、可恢复——被中断后重新运行会从检查点继续。
+BM25 符号索引与代码知识图谱。在已配置模型（第 2 步）且未传
+`--skip-summary` 时，它还会让 LLM 撰写三个摘要条目写入 Eden 空间。构建
+过程有检查点、可恢复——被中断后重新运行会从检查点继续。
 
 ## 5. 深度研读项目
 
-```
+```text
 /kb knowledge learn
 ```
 
 统一的深度研读命令：它会概览代码库、规划主题，并写入主题相关的知识条目。
 用 `--base-dir=src/storage` 限定到某个子目录，或改为研读文档：
 
-```
+```text
 /kb knowledge learn --space=eden --file=docs/spec.pdf
 ```
 
 ## 6. 提问
 
-```
+```text
 登录是如何校验密码的？
 ```
 
@@ -75,7 +76,7 @@ BM25 符号索引与代码知识图谱，并让 LLM 撰写三个摘要条目写�
 
 ## 7. 显式查询知识库
 
-```
+```text
 /kb search password verification
 /kb symbol login
 /kb neighbors 12:345
@@ -90,7 +91,7 @@ BM25 符号索引与代码知识图谱，并让 LLM 撰写三个摘要条目写�
 
 ## 8. 切换项目或恢复会话
 
-```
+```text
 /model use local/mymodel           # 仅当前会话
 /project list
 /project set current otherapp      # 切换（当前会话保存到原项目下）

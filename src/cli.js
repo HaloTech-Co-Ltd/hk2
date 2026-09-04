@@ -113,9 +113,9 @@ Usage:
   hk2 --project-id=<id>
       Enter the REPL with a specific project selected. <name> matches
       projects.json's name field; <id> matches the UUID. The chosen project
-      becomes the new current project (persisted to projects.json). Only one
-      of the two flags may be given. Only meaningful with the default
-      interactive mode (no --mode).
+      is pinned for this session only — the shared current pointer in
+      projects.json is NOT rewritten. Only one of the two flags may be
+      given. Only meaningful with the default interactive mode (no --mode).
 
   hk2 --resume [<sessionId>]
       Resume a previous session: reopen its transcript and restore the full

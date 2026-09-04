@@ -28,6 +28,11 @@ hk2 对所有触碰路径的智能体工具（`read` / `write` / `edit` / `find`
 位于 `HK2_HOME` 下——刻意放在智能体可写的项目树之外，模型永远无法改写
 约束自己沙箱的规则**：
 
+> **重装警告**：当安装目录同时也是 `~/.hk2`（默认）时，从外部检出重新运行
+> `install.sh` 会**删除 `setting.json` 与 `settings/`**——它们不在安装器的
+> 保留清单里（只保留 models/projects/theme/kb/sessions/logs）。请先备份，
+> 或用独立的 `HK2_INSTALL_DIR` 安装；见[安装](../getting-started/installation.md)。
+
 - `~/.hk2/setting.json`——全局基线
 - `~/.hk2/settings/<project-id>/setting.json`——项目级覆盖
 

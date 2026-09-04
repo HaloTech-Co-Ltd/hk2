@@ -50,7 +50,9 @@ hk2 --mode=update-kb
 
 - `--mode=build-kb` 接受 `--source=<path>` 与 `--source-root=<rel>`。省略
   `--source` 时回退到一个较为特殊的默认值 `../../../`（相对当前工作目录
-  解析）——建议显式传入，或改用交互式 REPL 中的 `/kb init`。
+  解析）——建议显式传入，或改用交互式 REPL 中的 `/kb init`。此处的"当前
+  项目"含义是：仅当当前项目的知识库已构建时才使用其项目 ID，否则构建目标
+  是名为 `default` 的知识库（`HK2_KB_NAME` 可覆盖）。
 - `--mode=project-init` 还接受 `--include=<globs>` 与 `--exclude=<globs>`
   （逗号分隔），与 `/project init` 一致。
 
@@ -80,7 +82,8 @@ hk2 --help                   # 或 -h
 | `--resume` | 可选 `<sessionId>` | 仅交互模式 |
 | `--mode` | `project-init`、`build-kb`、`update-kb` | 一次性模式 |
 | `--run-mode` | `once`、`serve` | `serve` = 旧版 REPL |
-| `--name` / `--source` / `--source-root` / `--include` / `--exclude` | 字符串 | `--mode=project-init` 的操作数 |
+| `--name` / `--include` / `--exclude` | 字符串 | `--mode=project-init` 的操作数 |
+| `--source` / `--source-root` | 字符串 | **同时**是 `--mode=project-init` 与 `--mode=build-kb` 的操作数 |
 | `--version` / `-V`、`--help` / `-h` | - | |
 
 ## 语言支持
@@ -106,8 +109,9 @@ hk2 --help                   # 或 -h
 > **glob 注意**：*默认* include globs（见
 > [配置](configuration.md#默认-include--exclude-globs)）不含 `**/*.cs` 与
 > `**/*.kts`，因此 C# 与 Kotlin Script 文件虽可解析，默认的 `/kb init`
-> **不会扫描**它们。请通过 `/project init --include=**/*.cs,**/*.kts` 或
-> `/project set include ...` 显式加入。
+> **不会扫描**它们。由于 `--include` 是**整体替换**默认集合而非追加，请
+> 从配置页复制默认列表、追加 `**/*.cs` 与 `**/*.kts` 后，把完整列表传给
+> `/project init --include=...` 或 `/project set include ...`。
 
 ### 正则回退解析器
 
