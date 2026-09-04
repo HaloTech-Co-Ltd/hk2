@@ -1470,7 +1470,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
 
     // End-of-turn KB update: if the agent fell back to bash-search at all,
     // the project source may have new files / the KB may be stale. Offer to
-    // run an incremental update unless HK2_ENABLE_AUTO_UPDATEKB=1, in which
+    // run an incremental update unless HK2_ENABLE_AUTOUPDATEKB=1, in which
     // case update silently.
     await maybeOfferKbUpdate(session, ctx);
 

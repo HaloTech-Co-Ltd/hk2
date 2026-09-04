@@ -23,6 +23,18 @@ The split is about **trust and churn**, not storage: Holy holds things that
 should only change when a human says so; Eden holds things that legitimately
 change often; Index is derived data that can always be rebuilt from source.
 
+Confirmation behavior depends on the **write path**, not just the space:
+
+| Path | Current confirmation behavior |
+|---|---|
+| `/kb knowledge add --space=holy` | Explicit user command — writes directly, no extra generic y/N |
+| `/kb init` / `/kb update` | Explicit commands — do not go through the auto-learn/auto-update confirmation flow |
+| `kb_save_knowledge` → Holy | Always requires interactive confirmation; refused when no confirm callback exists |
+| `kb_save_knowledge` → Eden | Auto-writes with `HK2_ENABLE_AUTO_LEARN=1`, otherwise confirms |
+| End-of-turn knowledge proposal | Only arises when the end-of-turn flow triggers; confirms per target-space policy |
+| `/kb knowledge learn --space=holy` (DOC mode) | Confirms before running |
+| `/kb transform`, import → Holy, `del` / `empty` / `/kb drop` | Each keeps its own destructive/confirmation prompt |
+
 ## What each space stores
 
 - **Holy Space** — design principles, architecture decisions, project laws,
@@ -108,9 +120,12 @@ in their own Holy entry, referenced from a code item as `**KB(entry-id)**`.
 `/kb init` and `/kb knowledge learn` produce complementary sets of
 LLM-authored Eden entries — no manual writing required.
 
-**`/kb init`** rewrites 3 fixed-id structural entries **when a model is
+**`/kb init`** attempts 3 fixed-id structural entries **when a model is
 configured and `--skip-summary` is not passed** (without an LLM the index is
-still built and only these entries are skipped):
+still built and the summaries are skipped). Each summary is its own LLM
+call: an entry is written only when its call returns non-empty content, a
+successful write overwrites the previous version of that fixed id, and one
+summary failing does not imply the others fail:
 
 | Entry id | Contents |
 |---|---|

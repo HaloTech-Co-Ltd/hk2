@@ -98,7 +98,7 @@ The graph is queried via the agent tools (see
 - `kb_callchain` — bounded BFS over the call graph (forward, backward, both)
 - `kb_class` — class / interface / struct lookup with members + implementations
 - `kb_refs` — who calls / imports / derives from a symbol
-- `kb_implements` — find every class that implements an interface
+- `kb_implements` — find the direct classes implementing an interface (one hop)
 
 The REPL-side equivalents are `/kb neighbors` (1-hop) and the tools above.
 

@@ -16,8 +16,9 @@ several affected subsystems), it calls the `plan` tool:
 
 - a one-line summary, plus
 - an intended shape of 2–5 ordered steps, each with 2–4 candidate
-  strategies (one marked recommended). These counts are the expected shape
-  the tool prompt asks the model for, not hard runtime ceilings.
+  strategies (one marked recommended) — the recommended shape the prompt
+  asks for; runtime validation enforces only a minimum of two usable steps
+  and two usable strategies per step, with no maximum.
 
 Simple tasks skip `plan` entirely and execute directly.
 

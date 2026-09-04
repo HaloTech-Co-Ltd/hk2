@@ -84,7 +84,8 @@ flowchart TB
     REPL & TUI --> SI
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
-    LOOP --> FACTS
+    SESSCTX --> FACTS
+    SI -. /remember /forget .-> FACTS
     TURN --> TSTATE
     REPL & TUI --> SF
     IDX --> DGR
@@ -172,10 +173,13 @@ flowchart TB
 
 1. Front-end reads a line → slash? dispatch → otherwise `runTurn`
    (`src/commands/turn.js`).
-2. Gates (model, project, KB) → auto-compact check → follow-up fast lane.
+2. Gates (model, project, KB) → auto-compact check → follow-up fast lane
+   (fast-lane turns skip steps 3's pipeline entirely).
 3. Query rewrite (`rewrite_query.js`) → KB retrieval (`graph.js` over
    `code_search.js` + `kb_runtime.js`) → clarity assessment (optional menu
-   → second rewrite/retrieve pass).
+   → second rewrite/retrieve pass). Each stage is conditional: rewrite and
+   assessment can be disabled via environment variables, and assessment
+   runs only with a prompt-capable front-end.
 4. System prompt build (`system_prompt.js`): identity → KB-first policy →
    tools → project info → Supreme Code → permission sandbox → KB context.
 5. Agent loop (`loop.js`): stream reply, execute tool calls (`tools.js` /

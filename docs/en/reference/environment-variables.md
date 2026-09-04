@@ -21,7 +21,7 @@ its own parsing rule.
 |---|---|---|---|
 | `HK2_HOME` | Config / data home | `~/.hk2` | Holds models.json, projects.json, kb/, sessions/, logs/ |
 | `HK2_KB_DIR` | KB root override | `$HK2_HOME/kb` | |
-| `HK2_KB_NAME` | KB name for legacy `--mode` commands | Current project id, or `default` | |
+| `HK2_KB_NAME` | KB name for legacy `--mode` commands. Resolution: a non-empty `HK2_KB_NAME` wins; else the shared current project's UUID **when its KB dir already has `meta.json`**; else the literal `default` | non-empty value / project UUID / `default` | |
 | `HK2_PREFIX` | Install prefix used by `install.sh` for the symlink | `/usr/local` | install.sh only |
 | `HK2_INSTALL_DIR` | Self-contained source copy location used by `install.sh` | `~/.hk2` | install.sh only |
 | `HK2_PROJECT_SOURCE` | Project source root for the tool sandbox | - | Set automatically in interactive mode |
@@ -36,8 +36,8 @@ its own parsing rule.
 | `HK2_WELCOME` | TUI welcome card tier: `full` / `compact` / `auto` | `auto` | `auto`: full on first run; compact for returning users / screens < 30 rows. Full needs >= 88 cols; narrower terminals degrade |
 | `HK2_REPL_HINTS` | `0` disables the REPL's live slash-completion hints | on | Restores the plain prompt |
 | `HK2_HIDE_THINKING` | `1` (default): cap the `✎ thinking` window at 9 lines and collapse TUI thinking to `Thought for Ns`; `0`: render the full stream | `1` | |
-| `HK2_NO_COLOR` | `1` disables ANSI colors (the standard `NO_COLOR` is honored too) | - | |
-| `HK2_ASCII` | `1` forces ASCII fallbacks for box-drawing / spinner / icons | - | Useful on non-UTF-8 terminals |
+| `HK2_NO_COLOR` | Disables ANSI colors when set to **any non-empty value** — `HK2_NO_COLOR=0` still disables them (the string "0" is non-empty); unset to re-enable. The standard `NO_COLOR` is honored with the same presence semantics | unset |
+| `HK2_ASCII` | Forces ASCII fallbacks for box-drawing / spinner / icons when set to **any non-empty value** (`0` still enables them — the string "0" is non-empty; unset to disable) | unset | Useful on non-UTF-8 terminals |
 
 ## LLM requests, timeouts, retries
 
@@ -70,9 +70,9 @@ its own parsing rule.
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | Save a `/kb init` checkpoint every N files | `100` | Per-run `--checkpoint-interval=N` |
+| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` checkpoint cadence in files, parsed as `parseInt(value \|\| '100')`. `0` does **not** disable checkpointing — the save check degenerates and a checkpoint is written on every file; use the `--no-checkpoint` flag to disable. Negative/non-numeric values are not meaningfully validated — do not use them | `100` | Per-run `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | Parallelism of the KB parse pool; `0`/unset = auto (host CPU count) | `0` | |
-| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning timeout (ms) | `300000` | Per-run `--plan-timeout-ms=N` |
+| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning timeout (ms). Parsed as `parseInt(value) \|\| 300000`: `0` and non-numeric values fall back to the default (this is NOT a "0 = disable" variable, unlike the LLM timeouts) | `300000` | Per-run `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`: silently run an incremental `/kb update` at end of any turn where the agent fell back to bash to search source files | `0` | Otherwise prompts y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`: silently save the end-of-turn extracted knowledge entry to Eden. Holy ALWAYS prompts y/N regardless | `0` | |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | Positive minutes: skip the end-of-turn `[kb learn]` offer while a knowledge capture for this session's task was handled within the window (agent save, answered proposal, or model skip). Anchor restored across `--resume`. An agent `kb_save_knowledge` save this turn always skips the offer | `0` (off) | |
@@ -101,8 +101,8 @@ its own parsing rule.
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Seeds an `anthropic` provider when the model registry file is first created (not re-scanned on later starts) | - | Also read by the Claude Code first-run import alongside `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
-| `OPENAI_API_KEY` | Seeds an `openai` provider when the model registry file is first created | - | |
+| `ANTHROPIC_API_KEY` | Process-env key: seeds an `anthropic` provider when the model registry file is first created (not re-scanned on later starts) | - | The Claude Code import reads same-named keys from `~/.claude/settings.json` — a separate source (see below) |
+| `OPENAI_API_KEY` | Process-env key: seeds an `openai` provider when the model registry file is first created | - | |
 
 ## Standard terminal environment variables honored
 
@@ -115,6 +115,20 @@ These are not hk2-specific; hk2 reads them the way terminal tools usually do:
 | `COLORTERM` | Truecolor detection (`truecolor` / `24bit` → 24-bit color mode) |
 | `WT_SESSION` / `TERM_PROGRAM` | Windows Terminal / VS Code detection for truecolor and UTF-8 assumptions |
 | `LC_ALL` / `LC_CTYPE` / `LANG` | UTF-8 locale detection (glyph vs ASCII fallback rendering) |
+
+## Claude Code settings env keys consumed during first-run import
+
+The TUI first-run import reads these from the `env` object of
+`~/.claude/settings.json` — NOT from the hk2 process environment:
+
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_AUTH_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- `ANTHROPIC_MODEL`
+
+A process-level `ANTHROPIC_API_KEY` seeds the registry through a different
+path (first registry creation); the settings-file key only feeds the import.
 
 ## Related documentation
 

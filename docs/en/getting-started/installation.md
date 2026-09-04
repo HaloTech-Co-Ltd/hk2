@@ -30,9 +30,12 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ./install.sh
 ```
 
-`install.sh` creates a self-contained copy of the source tree at `~/.hk2`,
-symlinks `hk2` into your PATH (`/usr/local/bin/hk2` by default), and runs
-`npm install --omit=optional` to build the Tree-sitter native bindings.
+`install.sh` copies the current local source checkout into a self-contained
+tree at `~/.hk2`, symlinks `hk2` into your PATH (`/usr/local/bin/hk2` by
+default — writing there may need elevated permissions; unprivileged users
+can pass `--prefix="$HOME/.local"`), and runs `npm install --omit=optional`
+to build the Tree-sitter native bindings. The script itself never clones
+anything — run it from a full checkout.
 
 ### Reinstalls preserve user data — with a fixed list
 
@@ -71,7 +74,7 @@ for `--install-dir`.
 ```bash
 ./install.sh --prefix=$HOME/.local
 ./install.sh --prefix /usr/local          # same as default
-HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # keep the source copy out of the config home
+HK2_INSTALL_DIR="$HOME/.hk2-src" ./install.sh   # keep the source copy out of the config home
 ./install.sh --no-npm-install             # skip Tree-sitter (regex fallback)
 ./install.sh --preserve-data=off          # legacy wipe: do NOT preserve user data on reinstall
 ```
@@ -82,11 +85,14 @@ HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # keep the source copy out of the conf
 the installer omits them to keep the base install light. To enable them:
 
 ```bash
-cd ~/.hk2 && npm install                  # installs pdf-parse + mammoth
+cd ~/.hk2 && npm install                  # installs pdf-parse + mammoth (use your actual install dir if HK2_INSTALL_DIR was set)
 ```
 
-Legacy Office binaries (`.doc`, `.pptx`, `.ppt`) are extracted
-dependency-free; only PDF and `.docx` need the optional packages.
+`.pptx` is extracted via the built-in OOXML ZIP/XML reader; the older
+`.doc` / `.ppt` binaries via a built-in best-effort printable-text heuristic
+(neither is a full Office renderer — complex layouts, charts, embedded
+objects, or every text run are not guaranteed to be recovered). Only PDF
+and `.docx` need the optional packages.
 
 ## Option B — npm link (for developers)
 
@@ -137,11 +143,11 @@ files behind. It is harmless, but it is not a complete removal.
 
 **Clean removal** — if you want code and data separable, install with a
 dedicated source directory in the first place
-(`HK2_INSTALL_DIR=~/.hk2-src ./install.sh`); uninstalling is then just:
+(HK2_INSTALL_DIR="$HOME/.hk2-src" ./install.sh); uninstalling is then just:
 
 ```bash
 rm -f /usr/local/bin/hk2
-rm -rf ~/.hk2-src                         # the whole source copy, data untouched
+rm -rf "$HOME/.hk2-src"                   # the whole source copy, data untouched
 ```
 
 To remove **everything**, including models, projects, sessions, and

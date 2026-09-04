@@ -12,9 +12,9 @@ English | [简体中文](README_zh.md)
 ## Why hk2
 
 Coding agents forget. Every new session re-reads the same files, re-derives
-the same architecture, and re-makes the same mistakes. hk2 flips that: each
-project gets a **knowledge base** — symbols, a code knowledge graph, and
-curated knowledge entries — and for every substantive request hk2 pre-fetches
+the same architecture, and re-makes the same mistakes. hk2 flips that: register a
+project with `/project init`, build its **knowledge base** with `/kb init`
+— symbols, a code knowledge graph, and curated knowledge entries — and for every substantive request hk2 pre-fetches
 related KB context into the prompt (clear conversational follow-ups take a
 fast lane and let the agent query the KB on demand instead).
 Make the KB the source of truth, and the agent gets smarter the more you use
@@ -29,11 +29,12 @@ it.
   packages); regex fallback covers most languages when grammars are
   unavailable (C# has no fallback), turning symbols, call chains, class
   hierarchies, and imports into a queryable graph.
-- **Per-request context injection** — related symbols, call chains, class
+- **Substantive-request context prefetch** — for substantive requests,
+  related symbols, call chains, class
   membership, knowledge entries, and docs are retrieved and injected before
   the LLM answers.
 - **KB-first agent** — the tool registry steers the agent to KB tools before
-  `bash grep`, with mid-turn guardrails; every path-touching tool runs
+  `bash grep`, with mid-turn guardrails; the built-in local path tools run
   behind an r/w/x permission model that denies everything outside the
   project by default.
 - **Deep-study** — `/kb knowledge learn` has an LLM survey the codebase (or
@@ -99,7 +100,7 @@ An illustrative exchange (the prompt, status bar, and tool calls are real
 hk2 behavior; the answer below is an example, not output from this repo):
 
 ```text
-hk2(myapp|Eden/9 Holy/1|mymodel)> How does login verify the password?
+hk2(myapp|Eden/9 Holy/1|local/mymodel)> How does login verify the password?
 ✎ thinking …
 ⚡ kb_search("verify password login")
 ⚡ read(<the source file the search surfaced>)

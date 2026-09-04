@@ -89,6 +89,11 @@ Field notes:
   the type's declared features. Written by `/model add|set
   --model-options`; the runtime reads the `modelOptions` key, so hand-edited
   entries must use exactly that name.
+- Provider-level optional fields: `headers` (extra HTTP headers resolved
+  into the LLM config for every call) and importer metadata
+  `importedFrom` / `importedAt` (written by the Claude Code first-run
+  import). `mcpServers` below is a **model-level** field, not a provider
+  one.
 - `mcpServers` — optional array of MCP server attachments added via
   `/model add-mcpserver` (type, name, options with the `$APIKEY`
   placeholder).
@@ -205,8 +210,6 @@ When a project does not override them, `/kb init` walks with these defaults
   `remember` tool (max 100 per session). `/remember --project` additionally
   appends to the project-level Eden entry `env-facts`, which lives in the
   normal KB layout and is searchable across sessions.
-- **Interrupted-task state** — persisted alongside sessions; restored on
-  resume (see [Agent workflow](../concepts/agent-workflow.md)).
 - **Logs** — `~/.hk2/logs/`.
 
 ## Permission config

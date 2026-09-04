@@ -97,14 +97,20 @@ project:
 /model set-phase --phase=code-review --clear
 ```
 
-When unset, a phase uses the session model. A configured phase model is
-resolved through the registry first — an unresolvable ref (unknown
-provider/model) never reaches the network: `rewrite-query` /
-`request-assess` warn and follow `HK2_ENABLE_PHASEMODEL_FALLBACK` (re-run on
-the session model by default, or skip at `0`), while the review phases
-always warn and skip rather than silently substitute a different reviewer.
-Reachability failures after a real call follow the same policy split. See
-[Planning and review](planning-and-review.md).
+When unset, a phase uses the session model. Two distinct failure classes:
+
+- **Stale/unresolvable registry ref** (unknown provider or model —
+  `resolveModelRef` returns null): currently treated **silently** as "no
+  override configured" — the phase just runs on the session model, with no
+  warning and no fallback/skip path. The ref effectively disappears.
+- **Resolved but the call fails** (transport/HTTP/timeout): `rewrite-query`
+  / `request-assess` follow `HK2_ENABLE_PHASEMODEL_FALLBACK` (warn + re-run
+  on the session model by default; `0` = warn + skip), while the review
+  phases always warn and skip rather than silently substitute a different
+  reviewer.
+
+See [Planning and review](planning-and-review.md); the silent-stale-ref
+behavior is a known limitation.
 
 ## Claude Code first-run import
 

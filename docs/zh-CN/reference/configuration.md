@@ -82,6 +82,9 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
   `{"reasoning_effort":"max"}`），按类型声明的特性校验。由
   `/model add|set --model-options` 写入；运行时读取的是 `modelOptions`
   键，手工编辑时必须使用这个精确名称。
+- 提供商级可选字段：`headers`（随每次调用解析进 LLM 配置的额外 HTTP
+  头）与导入器元数据 `importedFrom` / `importedAt`（由 Claude Code 首启
+  导入写入）。下文的 `mcpServers` 是**模型级**字段，不在提供商级。
 - `mcpServers`——可选数组，由 `/model add-mcpserver` 添加的 MCP 服务器挂载
   （类型、名称、含 `$APIKEY` 占位符的 options）。
 - `timeout` **不是可持久化字段**——`/model add|set` 没有 `--timeout` 参数。
@@ -190,8 +193,6 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
   经 `/remember` / `remember` 工具记录的、免受压缩影响的事实（每会话上限
   100 条）。`/remember --project` 还会追加到项目级 Eden 条目 `env-facts`
   ——它位于常规知识库布局中，可跨会话检索。
-- **中断任务状态**——随会话持久化；恢复时还原（见
-  [智能体工作流](../concepts/agent-workflow.md)）。
 - **日志**——`~/.hk2/logs/`。
 
 ## 权限配置

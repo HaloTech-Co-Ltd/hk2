@@ -88,16 +88,15 @@ color alone. Modal prompts wrap their question text and show a key-hint row
 A status bar is pinned to the bottom of the terminal (TTY mode only):
 
 ```text
-streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
+streaming │ myapp | Eden/9 Holy/1 | local/mymodel │ ↑1.4k ↓120 0.1%/128k │ 4.2s · esc to interrupt
 ```
 
-- `↑1.4k` / `↓120` — input/output tokens **aggregated across the current
-  agent loop** (the user prompt being processed): a multi-step task with N
-  tool-call rounds shows the sum over all N LLM calls, not the latest single
-  call's numbers
-- `0.1%` — context usage, computed from the peak single-call input within
-  the loop relative to the context window (not a simple sum)
-- `1.0M` — context window size
+- `↑1.4k` — the **largest single-call input** observed in the current agent
+  loop (the user prompt being processed); `↓120` — the largest single-call
+  output. These are peak values, not the sum over all LLM calls and not the
+  latest call's numbers.
+- `0.1%` — the peak input divided by the configured context window
+- `128k` — context window size
 
 Updates live during streaming, tool calls, and phase transitions. When a
 plan is active, a progress panel renders above it (see

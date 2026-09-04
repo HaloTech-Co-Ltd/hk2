@@ -27,9 +27,10 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ./install.sh
 ```
 
-`install.sh` 在 `~/.hk2` 创建一份源码树的自包含副本，把 `hk2` 符号链接加入
-PATH（默认 `/usr/local/bin/hk2`），并运行 `npm install --omit=optional`
-构建 Tree-sitter 原生绑定。
+`install.sh` 把当前本地源码检出复制为 `~/.hk2` 下的一份自包含树，把 `hk2` 符号链接
+加入 PATH（默认 `/usr/local/bin/hk2`——写入该位置可能需要提权；普通用户
+可传 `--prefix="$HOME/.local"`），并运行 `npm install --omit=optional`
+构建 Tree-sitter 原生绑定。脚本自身从不执行 clone——请从完整检出中运行。
 
 ### 重装时保留用户数据——按固定清单
 
@@ -63,7 +64,7 @@ PATH（默认 `/usr/local/bin/hk2`），并运行 `npm install --omit=optional`
 ```bash
 ./install.sh --prefix=$HOME/.local
 ./install.sh --prefix /usr/local          # 等同于默认值
-HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # 将源码副本置于配置主目录之外
+HK2_INSTALL_DIR="$HOME/.hk2-src" ./install.sh   # 将源码副本置于配置主目录之外
 ./install.sh --no-npm-install             # 跳过 Tree-sitter（正则回退）
 ./install.sh --preserve-data=off          # 旧版擦除：重装时不保留用户数据
 ```
@@ -74,11 +75,13 @@ HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # 将源码副本置于配置主目录
 它们以保持基础安装轻量。启用方法：
 
 ```bash
-cd ~/.hk2 && npm install                  # 安装 pdf-parse + mammoth
+cd ~/.hk2 && npm install                  # 安装 pdf-parse + mammoth（若设置了 HK2_INSTALL_DIR 请进入实际安装目录）
 ```
 
-旧版 Office 二进制（`.doc`、`.pptx`、`.ppt`）以无依赖方式提取；只有 PDF
-与 `.docx` 需要可选包。
+`.pptx` 经内置 OOXML ZIP/XML 读取器提取；更老的 `.doc` / `.ppt` 二进制经
+内置的尽力而为可打印文本启发式提取（两者都不是完整的 Office 渲染器——
+不保证恢复复杂布局、图表、嵌入对象或全部文本）。只有 PDF 与 `.docx` 需要
+可选包。
 
 ## 方式 B——npm link（面向开发者）
 
@@ -126,11 +129,11 @@ rm -rf ~/.hk2/node_modules ~/.hk2/bin     # 只删除部分安装文件——不
 这无伤大雅，但**不是**完整移除。
 
 **干净卸载**——若希望代码与数据可分离，安装时就使用独立的源码目录
-（`HK2_INSTALL_DIR=~/.hk2-src ./install.sh`）；卸载只需：
+（`HK2_INSTALL_DIR="$HOME/.hk2-src" ./install.sh`）；卸载只需：
 
 ```bash
 rm -f /usr/local/bin/hk2
-rm -rf ~/.hk2-src                         # 整份源码副本，数据不受影响
+rm -rf "$HOME/.hk2-src"                   # 整份源码副本，数据不受影响
 ```
 
 要连同样式、项目、会话与知识库**全部**删除：`rm -rf ~/.hk2`——先备份需要

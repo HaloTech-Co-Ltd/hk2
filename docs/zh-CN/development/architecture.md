@@ -82,7 +82,8 @@ flowchart TB
     REPL & TUI --> SI
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
-    LOOP --> FACTS
+    SESSCTX --> FACTS
+    SI -. /remember /forget .-> FACTS
     TURN --> TSTATE
     REPL & TUI --> SF
     IDX --> DGR
@@ -158,10 +159,12 @@ flowchart TB
 ## 数据流：一次请求
 
 1. 前端读入一行 → 斜杠？分发 → 否则进入 `runTurn`（`src/commands/turn.js`）。
-2. 门禁（模型、项目、知识库）→ 自动压缩检查 → 后续快速通道。
+2. 门禁（模型、项目、知识库）→ 自动压缩检查 → 后续快速通道（快速通道
+   轮次完全跳过第 3–4 步）。
 3. 查询改写（`rewrite_query.js`）→ 知识库检索（`graph.js` 基于
    `code_search.js` + `kb_runtime.js`）→ 清晰度评估（可选菜单 → 第二次
-   改写 / 检索）。
+   改写 / 检索）。每个阶段都是有条件的：改写与评估可经环境变量关闭，
+   评估仅在具备提示能力的前端下运行。
 4. 系统提示词构建（`system_prompt.js`）：身份 → 知识库优先策略 → 工具 →
    项目信息 → 最高准则 → 权限沙箱 → 知识库上下文。
 5. 智能体循环（`loop.js`）：流式回复、执行工具调用（`tools.js` /

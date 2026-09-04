@@ -17,7 +17,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 |---|---|---|---|
 | `HK2_HOME` | 配置 / 数据主目录 | `~/.hk2` | 存放 models.json、projects.json、kb/、sessions/、logs/ |
 | `HK2_KB_DIR` | 知识库根目录覆盖 | `$HK2_HOME/kb` | |
-| `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名 | 当前项目 id，或 `default` | |
+| `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名。解析顺序：非空 `HK2_KB_NAME` 优先；否则当共享当前项目的知识库目录已有 `meta.json` 时用其 UUID；否则用字面量 `default` | 非空值 / 项目 UUID / `default` | |
 | `HK2_PREFIX` | `install.sh` 放置符号链接的安装前缀 | `/usr/local` | 仅 install.sh |
 | `HK2_INSTALL_DIR` | `install.sh` 自包含源码副本位置 | `~/.hk2` | 仅 install.sh |
 | `HK2_PROJECT_SOURCE` | 工具沙箱的项目源码根 | - | 交互模式下自动设置 |
@@ -32,8 +32,8 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | `HK2_WELCOME` | TUI 欢迎卡档位：`full` / `compact` / `auto` | `auto` | `auto`：首启完整；老用户 / 矮屏（<30 行）紧凑。完整档需 ≥88 列；更窄自动降级 |
 | `HK2_REPL_HINTS` | `0` 禁用 REPL 的实时斜杠补全提示 | 开 | 恢复无提示的朴素提示符 |
 | `HK2_HIDE_THINKING` | `1`（默认）：`✎ thinking` 窗口最多渲染 9 行，TUI 思考过程折叠为 `Thought for Ns`；`0`：完整流式显示 | `1` | |
-| `HK2_NO_COLOR` | `1` 禁用 ANSI 颜色（同时遵从标准 `NO_COLOR`） | - | |
-| `HK2_ASCII` | `1` 强制用 ASCII 字符替代制表 / 加载动画 / 图标 | - | 适用于非 UTF-8 终端 |
+| `HK2_NO_COLOR` | 设为**任意非空值**即禁用 ANSI 颜色——`HK2_NO_COLOR=0` 依然禁用（字符串 "0" 非空）；取消设置以恢复。标准 `NO_COLOR` 同样按存在性语义遵从 | 未设置 |
+| `HK2_ASCII` | 设为**任意非空值**即强制用 ASCII 字符替代制表 / 加载动画 / 图标（`0` 依然启用——字符串 "0" 非空；取消设置以禁用） | 未设置 | 适用于非 UTF-8 终端 |
 
 ## LLM 请求、超时与重试
 
@@ -66,9 +66,9 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | 每 N 个文件保存一次 `/kb init` 检查点 | `100` | 单次运行可用 `--checkpoint-interval=N` |
+| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` 检查点保存间隔（文件数），按 `parseInt(value \|\| '100')` 解析。`0` **不会**禁用检查点——保存判断会退化成每个文件都写一次检查点；禁用请用 `--no-checkpoint`。负数 / 非法值没有可靠校验——请勿使用 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | 知识库解析池并行度；`0` / 未设置 = 自动（取宿主 CPU 数） | `0` | |
-| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
+| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒）。按 `parseInt(value) \|\| 300000` 解析：`0` 与非法值都会回到默认值（与 LLM 超时不同，这**不是** "0 = 禁用" 变量） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`：当某轮智能体回退到 bash 搜索源文件时，轮末静默执行增量 `/kb update` | `0` | 否则提示 y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`：轮末抽取的知识条目静默写入 Eden。Holy 无论此标志如何始终提示 y/N | `0` | |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 正数分钟：若本会话任务的知识捕获在该窗口内已处理（智能体保存、已回答的提案、或模型跳过），则跳过轮末 `[kb learn]` 询问。锚点经 `--resume` 恢复。智能体本轮通过 `kb_save_knowledge` 保存时始终跳过询问 | `0`（关闭） | |
@@ -97,8 +97,8 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | 模型注册表文件首次创建时种子化 `anthropic` 提供商（之后的启动不再扫描） | - | Claude Code 首启导入还会连同读取 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
-| `OPENAI_API_KEY` | 模型注册表文件首次创建时种子化 `openai` 提供商 | - | |
+| `ANTHROPIC_API_KEY` | 进程环境变量：模型注册表文件首次创建时种子化 `anthropic` 提供商（之后的启动不再扫描） | - | Claude Code 导入读取的是 `~/.claude/settings.json` 中的同名字段——另一条来源（见下文） |
+| `OPENAI_API_KEY` | 进程环境变量：模型注册表文件首次创建时种子化 `openai` 提供商 | - | |
 
 ## 遵从的标准终端环境变量
 
@@ -111,6 +111,20 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | `COLORTERM` | 真彩色检测（`truecolor` / `24bit` → 24 位颜色模式） |
 | `WT_SESSION` / `TERM_PROGRAM` | Windows Terminal / VS Code 检测（真彩色与 UTF-8 假设） |
 | `LC_ALL` / `LC_CTYPE` / `LANG` | UTF-8 区域检测（字形与 ASCII 回退渲染） |
+
+## Claude Code settings 首启导入消费的 env 键
+
+TUI 首启导入从 `~/.claude/settings.json` 的 `env` 对象读取以下键——
+**不是** hk2 进程环境变量：
+
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_AUTH_TOKEN`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`
+- `ANTHROPIC_MODEL`
+
+进程级 `ANTHROPIC_API_KEY` 走另一条路径种子化注册表（首次创建时）；
+settings 文件中的同名键只供导入使用。
 
 ## 相关文档
 

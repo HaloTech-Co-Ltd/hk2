@@ -9,7 +9,7 @@ explicitly — what the model does *not* protect. It is verified against
 
 ## The r / w / x model
 
-hk2 restricts every path-touching agent tool (`read` / `write` / `edit` /
+hk2 restricts every built-in local path tool (`read` / `write` / `edit` /
 `find` / `grep` / `ast_grep` / `ast_edit` / `resolve`, plus best-effort
 scanning of `bash` commands) with a Unix-style permission model:
 
@@ -19,7 +19,7 @@ scanning of `bash` commands) with a Unix-style permission model:
 
 - **Inside the project: permissive by default.** Paths inside the current
   project roots (`cwd` + `HK2_PROJECT_SOURCE`) are fully operable — `rwx`
-  for files and directories — unless an explicit rule or the hard-denoed
+  for files and directories — unless an explicit rule or the hard-denied
   config paths override it (an `allow: r` rule on a project path makes it
   read-only; see below).
 - **Outside the project: default deny.** Any path outside those roots is
@@ -133,15 +133,31 @@ or real) matches both, so allow rules stay useful on symlinked systems.
 
 ## The KB inherits source-file permissions
 
-KB surfaces that mirror real file content follow the same `r` permission as
-a `read()` of the source file:
+A `read` deny on a source file suppresses the KB channels that explicitly
+mirror file content:
 
-- suppressed when the source file is denied: `kb_search` snippets and
-  slices, `kb_symbol` / `kb_outline` / `kb_class` doc strings, the per-turn
-  auto-injected KB context (symbol snippets, doc texts, structured doc
-  tables), and slice loading;
-- still visible (pure metadata, no file content): names, kinds, signatures,
-  line ranges, knowledge entries — so navigation keeps working.
+- **Filtered channels** (suppressed when the source file is denied):
+  `kb_search` snippets and source slices (slices additionally skip files
+  over 512 KiB), `kb_symbol` / `kb_outline` / `kb_class` doc strings, and
+  the per-turn auto-injected KB context (symbol snippets, collected doc
+  texts, structured doc tables).
+- **Still visible even after a deny** — index-derived material that is NOT
+  re-filtered against the original file's read permission: symbol names,
+  qualified names, kinds, **signatures** (source-derived: parameter names,
+  types, defaults), line ranges, graph relationships
+  (imports/inheritance/containment), and stored Holy/Eden knowledge-entry
+  bodies — including `doc:<relpath>` Eden entries whose `intro` is derived
+  from the original document text, `kb_search_knowledge` intro previews,
+  and the full entries returned by `kb_knowledge` (which may read the
+  on-disk knowledge store directly).
+
+> **Confidentiality warning**: a read deny is **not** currently a complete
+> confidentiality boundary for data indexed before the rule was applied. It
+> suppresses the explicitly filtered mirrored-content channels listed
+> above, but source-derived signatures, graph metadata, and stored
+> Holy/Eden entry bodies may remain visible. When confidentiality requires
+> removing already-indexed material, rebuild or delete the affected KB
+> data.
 
 ## Credentials and file permissions
 

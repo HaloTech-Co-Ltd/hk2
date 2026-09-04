@@ -122,26 +122,31 @@ flowchart TD
 
 最终回答流式输出完毕（会话记录已追加）后，hk2 按固定顺序执行：
 
-1. **自动知识库更新 / `[kb learn]` 询问**——若智能体在该轮回退到用
-   `bash` 搜索源文件：`HK2_ENABLE_AUTOUPDATEKB=1` 时静默执行增量
-   `/kb update`；否则提示 y/N。
-2. **知识捕获**——除非智能体本轮已保存知识（通过 `kb_save_knowledge`）
-   或在 `HK2_KB_LEARN_COOLDOWN_MIN` 窗口内已处理过捕获，否则一次 LLM
-   抽取调用提出条目；`HK2_KB_LEARN_VALIDATE=1` 时先对照现有知识库校验
-   （重复 → 跳过，相近 → 合并，冲突 → 裁决）。Eden 条目在
-   `HK2_ENABLE_AUTO_LEARN=1` 时自动提交（否则 y/N）；**Holy 始终提示
-   y/N**。
-3. **冲突同步**——与 Holy 条目冲突的 Eden 条目被标记
-   `supersededBy: "holy:<id>"`。
-4. **代码审查**——`HK2_ENABLE_CODEREVIEW=1` 时，若该轮执行并完成了计划，
-   审查者检查工作区 diff、变更文件与最终总结（见
-   [规划与审查](../guides/planning-and-review.md)）。
+1. **自动知识库更新 / `[kb learn]` 询问**——这一整块**仅当本轮记录到
+   符合条件的 bash 源码搜索**（grep/find/cat 类命令作用于源文件）时才
+   执行；没有此类回退记录则整块不运行。运行时：
+   `HK2_ENABLE_AUTOUPDATEKB=1` 触发静默增量 `/kb update`；否则提示 y/N。
+2. **知识捕获**——只能经上一块进入，且当智能体本轮已保存知识（通过
+   `kb_save_knowledge`）或在 `HK2_KB_LEARN_COOLDOWN_MIN` 窗口内已处理过
+   捕获时跳过。一次 LLM 抽取调用提出条目；`HK2_KB_LEARN_VALIDATE=1` 时
+   先对照现有知识库校验（重复 → 跳过，相近 → 合并，冲突 → 裁决）。Eden
+   条目在 `HK2_ENABLE_AUTO_LEARN=1` 时自动提交（否则 y/N）；**Holy 始终
+   提示 y/N**。
+3. **冲突同步**——与上面两条独立的流程：与 Holy 条目冲突的 Eden 条目被
+   标记 `supersededBy: "holy:<id>"`。
+4. **代码审查**——另一条独立流程，受 `HK2_ENABLE_CODEREVIEW=1` 门控：
+   循环正常返回后，当本轮涉及计划（或从继续计划开始）且计划面板已被
+   正常完成兜底收尾时，审查者检查工作区 diff、变更文件与最终总结（见
+   [规划与审查](../guides/planning-and-review.md)）。触发并不严格依赖
+   模型为每一步调用了 `plan_step`——返回即收尾的兜底会清除残留面板，
+   这也接受"模型中途以正常文本提问会清掉面板"的现状。
 
 ## 中断与恢复
 
 - **中断**——回合运行中按 `esc`（或 Ctrl+C）中止在途的 LLM 调用与工具
-  轮次；已产生的部分输出保留，悬空的工具调用从会话记录中清理。中断任务
-  状态（原始请求、摘要、计划进度）以原因 `interrupted` 持久化。
+  轮次。已流出的部分回答仍保留在终端画面上，但**不会**作为完整的
+  assistant 轮次写入会话记录；悬空的工具调用被清理。中断任务状态
+  （原始请求、摘要、计划进度）以原因 `interrupted` 持久化。
 - **恢复**——同一会话中输入继续指令（"continue"）会注入已保存的任务状态，
   智能体继续而不是从头开始。重启后 `hk2 --resume` 重放会话记录*并*恢复
   中断任务状态与进度面板。已完成的计划会清除状态，之后的"continue"是全新

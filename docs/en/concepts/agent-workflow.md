@@ -152,30 +152,39 @@ live progress panel advanced by `plan_step`. Details in
 After the final answer streams (and the transcript is appended), hk2 runs a
 fixed sequence:
 
-1. **Auto-KB-update / `[kb learn]` offer** — if the agent fell back to
-   `bash` to search source files during the turn: with
-   `HK2_ENABLE_AUTOUPDATEKB=1` a silent incremental `/kb update` runs;
-   otherwise hk2 prompts y/N.
-2. **Knowledge capture** — unless the agent already saved knowledge this turn
-   (via `kb_save_knowledge`) or a capture was handled within the
-   `HK2_KB_LEARN_COOLDOWN_MIN` window, one LLM extraction call proposes an
-   entry; validation against existing KB (duplicate → skip, related → merge,
-   conflict → resolve) runs when `HK2_KB_LEARN_VALIDATE=1`. Eden entries
-   auto-commit with `HK2_ENABLE_AUTO_LEARN=1` (otherwise y/N); **Holy always
-   prompts y/N**.
-3. **Conflict sync** — Eden entries that conflict with a Holy entry get
-   stamped `supersededBy: "holy:<id>"`.
-4. **Code review** — with `HK2_ENABLE_CODEREVIEW=1`, when a plan was
-   executed and finished, a reviewer checks the working-tree diff, changed
-   files, and the final summary (see
-   [Planning and review](../guides/planning-and-review.md)).
+1. **Auto-KB-update / `[kb learn]` offer** — this whole block runs **only
+   when the turn recorded a qualifying bash source search** (grep/find/cat
+   class commands on source files); with no such fallback recorded, none of
+   it executes. When it does run: `HK2_ENABLE_AUTOUPDATEKB=1` triggers a
+   silent incremental `/kb update`; otherwise hk2 prompts y/N.
+2. **Knowledge capture** — reached only through the block above, and skipped
+   when the agent already saved knowledge this turn (via
+   `kb_save_knowledge`) or a capture was handled within the
+   `HK2_KB_LEARN_COOLDOWN_MIN` window. One LLM extraction call proposes an
+   entry; validation against existing KB (duplicate → skip, related →
+   merge, conflict → resolve) runs when `HK2_KB_LEARN_VALIDATE=1`. Eden
+   entries auto-commit with `HK2_ENABLE_AUTO_LEARN=1` (otherwise y/N);
+   **Holy always prompts y/N**.
+3. **Conflict sync** — a separate flow from the two above: Eden entries that
+   conflict with a Holy entry get stamped `supersededBy: "holy:<id>"`.
+4. **Code review** — a separate flow, gated on `HK2_ENABLE_CODEREVIEW=1`:
+   after the loop returns normally, when this turn involved a plan (or
+   started while continuing one) and the plan panel has been finalized by
+   the normal-completion backstop, a reviewer checks the working-tree diff,
+   changed files, and the final summary (see
+   [Planning and review](../guides/planning-and-review.md)). The trigger
+   does not strictly depend on the model having called `plan_step` for
+   every step — the finalize-on-return backstop clears leftover panels,
+   accepting that a mid-plan question in normal text can also clear it.
 
 ## Interruption and recovery
 
 - **Interrupt** — `esc` (or Ctrl+C) mid-turn aborts the in-flight LLM call
-  and tool round; partial output is preserved and dangling tool calls are
-  cleaned from the transcript. Interrupted-task state (original request,
-  summary, plan progress) is persisted with reason `interrupted`.
+  and tool round. Partial assistant text already streamed stays visible on
+  the terminal screen, but it is **not** recorded into the transcript as a
+  complete assistant turn; dangling tool calls are cleaned. Interrupted-task
+  state (original request, summary, plan progress) is persisted with reason
+  `interrupted`.
 - **Resume** — in the same session, typing a continuation cue ("continue")
   injects the saved task state so the agent continues instead of restarting.
   After a restart, `hk2 --resume` replays the transcript *and* restores the

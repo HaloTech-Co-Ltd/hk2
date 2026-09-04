@@ -88,7 +88,7 @@ Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路�
 - `kb_callchain`——对调用图做有界 BFS（前向、后向、双向）
 - `kb_class`——类 / 接口 / 结构体查询，含成员与实现
 - `kb_refs`——谁调用了 / 导入了 / 继承了某符号
-- `kb_implements`——查找实现某接口的所有类
+- `kb_implements`——查找图谱记录的实现某接口的直接类（一跳）
 
 REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 

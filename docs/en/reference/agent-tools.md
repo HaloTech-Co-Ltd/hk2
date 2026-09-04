@@ -26,17 +26,22 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 
 Read **UTF-8 text** files — no image or binary content support. Files larger than **5 MiB** are
 rejected outright (`file too large: N bytes` — pagination cannot help).
-Below that, output is line-numbered and truncated at 2000 lines or 256KB
-(whichever is hit first); continue with `offset`/`limit`. Files whose first 8192
+Below that, output is line-numbered and capped at 2000 lines or roughly
+256 KiB at line boundaries — except that the first requested line is still
+emitted even when that one line exceeds the nominal byte cap; continue
+with `offset`/`limit`. Files whose first 8192
 decoded characters contain a NUL byte are rejected as binary
 (`binary file (NUL byte detected): … — read only supports text files`) —
 this is a NUL-scan heuristic, not full binary-format detection. For
 eligible indexed source files, a structural `## Outline (from KB)` section is
 prepended (`outline=false` disables) and the result may carry a `tag` for
 stale-anchor protection (see [Stale-anchor protection](#stale-anchor-protection-tag));
-eligibility follows the tool registry's recognized-extension list, which is
-narrower than full parser support (e.g. `.cs` and `.kts` are indexed but not
-outline/tag-eligible). Writes: no.
+eligibility follows the tool registry's recognized-extension whitelist
+(`SOURCE_EXT_RE`), which is narrower than the indexer's full parser/doc
+support — e.g. `.cs`, `.kts`, `.sgml`, `.doc`, `.ppt`, and `.pptx` are
+indexed but not outline/tag-eligible, and extension-less convention files
+(README/LICENSE/...) are never tag-eligible. Files outside the whitelist
+are still indexed; they just get no outline prepend or tag from `read`, Writes: no.
 
 ### `write`
 
@@ -99,12 +104,24 @@ multi-file proposals omit the tag and rely on the per-file re-validation at
 
 ### `resolve`
 
-Two-step preview/apply flow for `ast_edit`: `action:"apply"` writes every staged file
-(re-validating each content tag); on a failure it **attempts** to restore
-the already-written files from their previous contents — rollback is
-best-effort, not a transactional guarantee (a rollback write that itself
-fails is logged and skipped). `action:"discard"` drops the stash without
+Two-step preview/apply flow for `ast_edit`: `action:"apply"` writes every
+staged file (re-validating the per-file tags the proposal recorded at
+preview time); on a failure it **attempts** to restore the already-written
+files from their previous contents — rollback is best-effort,
+non-transactional (a rollback write that itself fails is currently ignored
+and not separately surfaced). `action:"discard"` drops the stash without
 writing. Writes: yes (on apply).
+
+**Proposal lifecycle**: proposals live in process memory only — lost on
+exit or crash, expiring after a 10-minute TTL, capped at 16 active
+proposals per process (LRU eviction beyond that). Re-using an expired,
+evicted, failed, or already-resolved id errors out; run `ast_edit` again
+for a fresh proposal.
+
+**Known limitation**: `ast_edit`'s directory expansion walks at most 2000
+candidate files per root and does not report the truncation in its result —
+a proposal over a very large tree may silently cover only the first 2000
+walked files. Narrow `paths` when targeting big trees.
 
 ## Plan tools
 
@@ -112,9 +129,12 @@ writing. Writes: yes (on apply).
 
 Propose an execution plan for the user to confirm — the interface the triage
 assistant calls when it decides the task is complex enough to warrant a
-strategy decision. Takes a `summary` string and 2–5 ordered `steps`, each
-with a `goal` and 2–4 candidate `strategies` ({name, description,
-recommended} — exactly one recommended). The tool surfaces the plan for
+strategy decision. Takes a `summary` string and an intended shape of 2–5
+ordered `steps`, each with a `goal` and 2–4 candidate `strategies`
+({name, description, recommended} — exactly one recommended) — the
+recommended shape the prompt asks for; runtime validation enforces only a
+minimum of two usable steps and two usable strategies per step, with no
+maximum. The tool surfaces the plan for
 per-step strategy selection (auto-accepting the recommended strategy in
 non-interactive mode) and returns the finalized plan text; `{confirmed,
 plan}` on acceptance, `{cancelled}` on cancel, `{error}` on an invalid
@@ -124,17 +144,23 @@ shape. Writes: no.
 
 Advance the live progress panel by marking the CURRENT in-progress step of
 the confirmed plan as done — call once after finishing each step. The
-`step` argument is accepted but deliberately ignored for the mutation (the
-state machine always advances the current step; invalid, out-of-range, or
-out-of-order values never jump steps). No-op when no plan is active; the
+`step` parameter is retained only as a compatibility/reporting hint: the
+interactive state machine always advances the current in-progress step, and
+the value never selects an arbitrary step (invalid, out-of-range, or
+out-of-order values change nothing). No-op when no plan is active; the
 panel clears after the last step, and a normal turn end finalizes any panel
 left un-advanced as a backstop. Do not call before `plan` returns a
 confirmed plan. Writes: no.
 
 ## KB query tools
 
-All read directly from the index — no filesystem hit, no reparse. Content
-that mirrors a denied source file is suppressed (metadata stays visible).
+Most symbol and graph metadata comes from the loaded in-memory KB index, but
+this is not a blanket no-filesystem guarantee: `kb_search` loads source
+slices from disk by default, and `kb_knowledge` may fall back to the on-disk
+knowledge store (directly, when `space` is given, or on a runtime-cache
+miss). Content that mirrors a denied source file is suppressed in the
+filtered channels (metadata stays visible — see
+[Security and permissions](../guides/security-and-permissions.md)).
 
 | Tool | Purpose |
 |---|---|
@@ -142,10 +168,10 @@ that mirrors a denied source file is suppressed (metadata stays visible).
 | `kb_symbol` | Look up a symbol by exact identifier; all matching candidates |
 | `kb_outline` | File outline from the KB index — name / kind / lines / signature / parent / child count per symbol; cheaper than `read` for "what's in this file?"; returns a `tag` for edit safety |
 | `kb_neighbors` | Legacy one-hop **outgoing** call-graph neighbors of a symbol (what it calls; no direction parameter — use `kb_callchain` with `direction=backward`/`both` for callers) |
-| `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops, capped at `max_nodes` |
-| `kb_class` | Class / interface / struct lookup: signature, doc string, members, super-classes, direct implementations |
+| `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops. `max_nodes` applies independently to each selected direction; the BFS budget includes the starting node (omitted from the results), so each direction returns at most `max_nodes - 1` other nodes |
+| `kb_class` | Class / interface / struct / enum lookup: signature, doc string, members, super-classes, direct implementations |
 | `kb_refs` | Reverse lookup: callers, importers, deriving classes (`kind=call\|import\|inherit\|any`) |
-| `kb_implements` | Given an interface or base class, list every class / struct deriving from it |
+| `kb_implements` | Given an interface or base class, list its DIRECT implementers / direct subclasses recorded by the graph (one hop, not a transitive closure — query results again to walk deeper) |
 
 ## KB knowledge tools
 
@@ -195,17 +221,18 @@ skipped with a warning. See
 
 Every code-discovery path favours the KB index over fresh parsing:
 
-- `kb_outline`, `kb_symbol`, and the graph tools read directly from the
-  index — no filesystem hit, no reparse. `kb_search` ranks via BM25 from
-  the index, but by default loads a ±15-line source slice for the top 3
-  results from the filesystem (bounded by read permissions; disable with
-  `with_slice=false`).
+- `kb_outline`, `kb_symbol`, and the graph tools read from the loaded
+  in-memory index. `kb_search` also ranks via BM25 from the index, but by
+  default loads a ±15-line source slice for the top 3 results **from the
+  filesystem** (skipped for files over 512 KiB, bounded by read
+  permissions; disable with `with_slice=false`).
 - `read` on a code file prepends the KB-sourced outline so the agent sees
   structure before content.
 - `bash grep/find/cat` and direct `read` calls get a
-  `[kb-first policy hint]` prepend — **once per LLM call** while no KB tool
-  has run yet in that call (bash, read, and standalone find/grep each carry
-  their own hint); once any KB tool runs, the hints stop for the rest of
+  `[kb-first policy hint]` prepend while no KB tool has run yet in that LLM
+  call — at most one hint per LLM call for each of: bash, read, and the
+  shared standalone-search bucket (find / grep / generic ast_grep share one
+  bucket). Once any KB tool runs, the generic hints stop for the rest of
   that LLM call, signalling that subsequent bash/read fallbacks are
   intentional.
 - `ast_grep` with a single exact identifier emits the same hint toward
@@ -232,13 +259,26 @@ Examples:
 
 ## Stale-anchor protection (`tag`)
 
-`read` and `kb_outline` results include a `tag` — the first 8 hex chars of
-the file hash **recorded in the KB index at indexing time** (not a fresh
-hash of the just-read bytes; files outside the index get no tag). `edit`
+Three distinct things are called a "tag" — keep them apart:
+
+1. **The index-snapshot tag returned by `read` / `kb_outline`** — the first
+   8 hex chars of the file hash **recorded in the KB file registry at
+   indexing time** (not a hash recomputed from the just-read bytes; files
+   outside the index, or outside the tool registry's recognized-extension
+   whitelist, get no tag).
+2. **A user-passed tag on `edit`** — `edit` compares that snapshot tag
+   against a fresh hash of the current on-disk content, so a stale index
+   (file changed since the last `/kb init`/`update`) can reject a valid
+   edit even though the file did not change after your read.
+3. **The user-passed single tag on `ast_edit`** — compared against every
+   target file (see `ast_edit` above; single-file rewrites only). Separately
+   from any user tag, `ast_edit` records its own per-file hash for each
+   proposal, and `resolve` re-validates those per-file tags at apply time. `edit`
 compares it against a hash of the current on-disk content, so a stale index
 (file changed since the last `/kb init`/`update`) can reject a valid edit —
 run `/kb update` and read/kb_outline again to refresh the indexed tag, or
-omit the tag in that case. Echo it into subsequent `edit` or `ast_edit` calls
+omit the tag in that case. Echo it into subsequent `edit` calls (single-file
+`ast_edit` only)
 and the tool rejects the change if the file was modified since the tag was
 minted:
 
@@ -248,9 +288,21 @@ edit({path:"src/foo.js", old_string:..., new_string:..., tag:"a1b2c3d4"})
   → ok on match, error: "stale tag: file changed since read..." on mismatch
 ```
 
-`resolve` re-validates tags at apply time; on failure it attempts to
-restore already-written files — best-effort, not a transactional guarantee
-(a rollback write that itself fails is ignored).
+`resolve` re-validates the per-file tags the proposal recorded at preview
+time; on failure it attempts to restore already-written files —
+best-effort, non-transactional (a rollback write that itself fails is
+currently ignored and not separately surfaced).
+
+**Proposal lifecycle**: proposals live in process memory only — they are
+lost on exit or crash, expire after a 10-minute TTL, and are capped at 16
+active proposals per process (LRU eviction beyond that). Re-using an
+expired, evicted, failed, or already-resolved id returns an
+unknown/expired-style error; run `ast_edit` again to mint a fresh proposal.
+
+**Known limitation**: `ast_edit`'s directory expansion walks at most 2000
+candidate files per root and currently does **not** report the truncation
+in its result — a proposal over a very large tree may silently cover only
+the first 2000 walked files. Narrow `paths` when targeting big trees.
 
 ## Deferred capabilities
 

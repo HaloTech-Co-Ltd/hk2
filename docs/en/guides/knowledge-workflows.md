@@ -11,7 +11,7 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
 ## Build and refresh the index
 
 ```bash
-/kb init                                  # build (resumable, auto-summaries)
+/kb init                                  # build (resumable; LLM summaries when a model is configured)
 /kb init --skip-summary                   # skip the 3 LLM summary entries
 /kb init --checkpoint-interval=50         # checkpoint every 50 files
 /kb init --no-resume                      # ignore an existing checkpoint
@@ -61,9 +61,11 @@ The unified deep-study command auto-selects between two modes:
 - **DOC mode** — `--file=<path>` or a `--base-dir` that is not an indexed
   subdirectory. Deep-studies Markdown / PDF / Word / PowerPoint / text
   documents into the chosen space. Files may live outside the project; large
-  files are split into sequential parts so nothing is silently truncated, and
-  every document is guaranteed a batch (planner omissions get single-file
-  fallback batches).
+  files are split into sequential parts so extracted text is not silently
+  truncated. Every study part that is successfully read, parsed, and
+  non-empty is reconciled into some batch (planner omissions get single-file
+  fallback batches) — but read failures, parse failures, empty text, and
+  other errors can still skip content.
 
 With the default `HK2_KB_LEARN_VALIDATE=1`, proposed entries are validated
 against the existing KB before writing (duplicate → skipped, related →

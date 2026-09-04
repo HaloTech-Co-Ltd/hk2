@@ -55,7 +55,8 @@
   推理模型仍可能超过 `/kb knowledge learn` 的 300 秒规划预算。
 - **解决**：learn 命令加 `--plan-timeout-ms=600000`，或设置
   `HK2_PLAN_TIMEOUT_MS`；用 `HK2_LLMAPI_TIMEOUT_MS` /
-  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` 全局调整。显式 `0` 表示不设超时。
+  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` 全局调整（显式 `0` 仅对这两个 LLM 超时
+  变量表示“不设超时”；`HK2_PLAN_TIMEOUT_MS` 的 `0` 会回到默认值）。
 - **参见**：[环境变量](../reference/environment-variables.md)。
 
 ### 瞬时失败自动重试——请求会不会执行两次？
@@ -69,13 +70,17 @@
   受 `HK2_LLMAPI_NUMOFRETRIES`（默认 10）约束。
 - **参见**：[环境变量](../reference/environment-variables.md)。
 
-### 阶段模型不可达
+### 阶段模型不可达 / 引用过期
 
-- **症状**：输出告警；`rewrite-query` / `request-assess` 改用会话模型重跑
-  或被跳过。
-- **原因**：`HK2_ENABLE_PHASEMODEL_FALLBACK`（默认 1）让这些阶段改用会话
-  模型；设为 0 则跳过。审查阶段（`plan-review`、`code-review`）在模型
-  不可达时始终跳过——绝不静默替换审查者。
+- **症状**（调用失败）：输出告警；`rewrite-query` / `request-assess` 改用
+  会话模型重跑或被跳过。
+- **原因**（调用失败）：`HK2_ENABLE_PHASEMODEL_FALLBACK`（默认 1）让这些
+  阶段改用会话模型；设为 0 则跳过。审查阶段（`plan-review`、
+  `code-review`）在模型不可达时始终跳过——绝不静默替换审查者。
+- **症状**（引用过期）：*没有*告警，阶段静默使用会话模型。
+- **原因**（引用过期）：ref 指向未知提供商 / 模型（`resolveModelRef`
+  返回 null）时，当前被静默视为"未配置覆盖"，不走告警 / fallback 路径——
+  已知运行时限制。
 - **解决**：用 `/model list` 检查阶段引用，或
   `/model set-phase --phase=<name> --clear` 清除覆盖。每次回退 / 跳过都
   记入会话记录供审计。

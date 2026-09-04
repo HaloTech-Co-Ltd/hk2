@@ -63,7 +63,9 @@ here come from the shipped code.
   `/kb knowledge learn` planning budget (300s).
 - **Fix**: `--plan-timeout-ms=600000` on the learn command, or set
   `HK2_PLAN_TIMEOUT_MS`; adjust `HK2_LLMAPI_TIMEOUT_MS` /
-  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` globally. Explicit `0` disables the timer.
+  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` globally. An explicit `0` means "no
+  timer" for those two LLM timeout variables only; `HK2_PLAN_TIMEOUT_MS=0`
+  falls back to the default instead.
 - **See**: [Environment variables](../reference/environment-variables.md).
 
 ### Transient failures retry — did my request run twice?
@@ -80,14 +82,20 @@ here come from the shipped code.
   `HK2_LLMAPI_NUMOFRETRIES` (default 10).
 - **See**: [Environment variables](../reference/environment-variables.md).
 
-### A phase model is unreachable
+### A phase model is unreachable / its ref is stale
 
-- **Symptom**: warning printed; `rewrite-query` / `request-assess` either
-  re-ran on the session model or was skipped.
-- **Cause**: `HK2_ENABLE_PHASEMODEL_FALLBACK` (default 1) reruns those
-  phases on the session model; `0` skips them. Review phases
-  (`plan-review`, `code-review`) always skip on an unreachable model — never
-  silently substituting the reviewer.
+- **Symptom** (call failure): warning printed; `rewrite-query` /
+  `request-assess` either re-ran on the session model or was skipped.
+- **Cause** (call failure): `HK2_ENABLE_PHASEMODEL_FALLBACK` (default 1)
+  reruns those phases on the session model; `0` skips them. Review phases
+  (`plan-review`, `code-review`) always skip on an unreachable model —
+  never silently substituting the reviewer.
+- **Symptom** (stale ref): *no* warning — the phase silently runs on the
+  session model.
+- **Cause** (stale ref): a ref naming an unknown provider/model
+  (`resolveModelRef` returns null) is currently treated silently as "no
+  override configured", skipping the warn/fallback path entirely — a known
+  runtime limitation.
 - **Fix**: check the phase ref with `/model list`, or clear the override
   with `/model set-phase --phase=<name> --clear`. Every fallback/skip is
   recorded in the session transcript for auditing.

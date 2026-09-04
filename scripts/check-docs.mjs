@@ -27,7 +27,7 @@
  */
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = path.join(ROOT, 'docs');
@@ -130,6 +130,7 @@ async function targetExists(fromFile, target) {
   }
 }
 
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 /* ------------------------------------------------------------------ */
 /* 1. Bilingual structure parity                                       */
 /* ------------------------------------------------------------------ */
@@ -280,3 +281,5 @@ if (problems.length === 0) {
 console.error(`docs:check FAILED — ${problems.length} problem(s):`);
 for (const p of problems) console.error(`  - ${p}`);
 process.exit(1);
+
+}

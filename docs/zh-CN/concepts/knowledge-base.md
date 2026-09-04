@@ -22,6 +22,18 @@ Supreme Code）。
 而变化的内容；Eden 存放天然频繁变化的内容；Index 是随时可从源码重建的
 派生数据。
 
+确认行为取决于**写入路径**，而不只是空间：
+
+| 路径 | 当前确认行为 |
+|---|---|
+| `/kb knowledge add --space=holy` | 显式用户命令——直接写入，不再走通用 y/N |
+| `/kb init` / `/kb update` | 显式命令——不经自动学习 / 自动更新确认流程 |
+| `kb_save_knowledge` → Holy | 始终需要交互确认；无确认回调时拒绝 |
+| `kb_save_knowledge` → Eden | `HK2_ENABLE_AUTO_LEARN=1` 时自动写入，否则确认 |
+| 轮末知识提案 | 仅当轮末流程触发时产生；按目标空间策略确认 |
+| `/kb knowledge learn --space=holy`（DOC 模式） | 运行前确认 |
+| `/kb transform`、导入 → Holy、`del` / `empty` / `/kb drop` | 各自保留破坏性确认提示 |
+
 ## 每个空间存放什么
 
 - **Holy Space**——设计原则、架构决策、项目法则与最高准则条目。写入途径：
@@ -94,8 +106,10 @@ Supreme Code）。
 `/kb init` 与 `/kb knowledge learn` 会生成互补的、由 LLM 撰写的 Eden 条目
 集合——无需手写。
 
-**`/kb init`** 在**已配置模型且未传 `--skip-summary`** 时重写 3 个固定 id
-的结构条目（未配置 LLM 时索引照常构建，仅跳过这些条目）：
+**`/kb init`** 在**已配置模型且未传 `--skip-summary`** 时尝试生成 3 个
+固定 id 的结构条目（未配置 LLM 时索引照常构建，摘要被跳过）。每个摘要是
+独立的 LLM 调用：仅当对应调用返回非空内容才写入该条目，成功写入会覆盖
+该固定 id 的旧版本，某一个摘要失败不代表其余失败：
 
 | 条目 id | 内容 |
 |---|---|

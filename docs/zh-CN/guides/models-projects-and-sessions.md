@@ -88,12 +88,17 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 /model set-phase --phase=code-review --clear
 ```
 
-未设置时阶段使用会话模型。已配置的阶段模型先经注册表解析——无法解析的
-引用（未知的提供商 / 模型）根本不会发起网络调用：`rewrite-query` /
-`request-assess` 输出告警并按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认
-改用会话模型重跑，设 `0` 则跳过）；审查阶段始终只告警并跳过，绝不静默替换
-审查者。真实调用后的不可达故障遵循同一策略划分。见
-[规划与审查](planning-and-review.md)。
+未设置时阶段使用会话模型。两类不同的失败：
+
+- **过期 / 无法解析的注册表引用**（未知提供商或模型——`resolveModelRef`
+  返回 null）：当前被**静默**视为"未配置覆盖"——阶段直接使用会话模型，
+  无告警、也不走 fallback/skip 路径，该引用形同消失。
+- **解析成功但调用失败**（传输 / HTTP / 超时）：`rewrite-query` /
+  `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认告警并
+  改用会话模型重跑；`0` = 告警并跳过）；审查阶段始终只告警并跳过，绝不
+  静默替换审查者。
+
+见[规划与审查](planning-and-review.md)；静默的过期引用行为是已知限制。
 
 ## Claude Code 首启导入
 

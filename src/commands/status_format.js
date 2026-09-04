@@ -227,10 +227,11 @@ export function finalizePlanProgress(session, { turnCompleted = false } = {}) {
  *
  * Format: `<phase> │ <proj>|<kb>|<model> │ ↑1.4k ↓120 0.1%/1.0M │ <elapsed>`
  *
- * Token numbers (↑↓ and the %) are aggregated across the current loop = the
- * user prompt currently being processed. They are NOT the latest single LLM
- * call's numbers — a multi-step task with N tool-call rounds shows the sum
- * across all N calls.
+ * Token numbers (↑↓ and the %) are PEAK values across the current loop = the
+ * user prompt currently being processed: the largest single-call input and
+ * output observed so far (formatUsage reads loopPeakIn/loopPeakOut, falling
+ * back to the single call's numbers). They are neither the latest call's
+ * numbers nor the sum over all calls.
  */
 /**
  * The mid-task instruction input box line (REPL StatusBar inputRenderer):
