@@ -67,6 +67,7 @@ import { cmdTheme } from './theme.js';
 import { cmdRemember, cmdForget } from './remember.js';
 import { printCommandHelp, HELP_TEXT } from './help.js';
 import { dynamicSlot, invalidateDynamicCache } from './completions.js';
+import { looksLikeSlashCommand, isPlausibleCommandName, suggestCommand } from '../../lib/slash_command.js';
 
 export const SLASH_COMMANDS = [
   { name: '/model',   handler: cmdModel,   description: 'Manage models.json (list / use / set-default / set / add / del / show)' },
@@ -125,7 +126,11 @@ async function cmdCompact(args, ctx) {
  */
 export async function dispatchSlash(line, ctx) {
   const trimmed = line.trim();
-  if (!trimmed.startsWith('/')) return false;
+  // Shape guard first: a leading '/' alone does NOT make a command. Registered
+  // names are single-segment ASCII identifiers; lines like `/Users/.../x.md已更新…`
+  // (path glued to prose) are ordinary agent input and must NOT be swallowed
+  // by the Unknown-command branch below.
+  if (!looksLikeSlashCommand(trimmed)) return false;
   // Tokenize with shell-style quote support so flag values can contain spaces:
   //   /kb knowledge add --title="SPI Extension Pattern" --intro="..."
   // becomes ['kb', 'knowledge', 'add', '--title=SPI Extension Pattern', '--intro=...'].
@@ -133,7 +138,15 @@ export async function dispatchSlash(line, ctx) {
   const name = tokens[0];
   const cmd = SLASH_COMMANDS.find(c => c.name === name);
   if (!cmd) {
-    ctx.print(`Unknown command: ${name} (type /help for the list, or /help <command> for details)`);
+    // The head is shaped like a command but unregistered. Keep the hard
+    // handler boundary (`return true`) only for heads that plausibly ARE a
+    // typo'd command; otherwise let the line flow to the agent as text.
+    if (!isPlausibleCommandName(name)) return false;
+    const suggestion = suggestCommand(name, SLASH_COMMANDS.map(c => c.name));
+    const hint = suggestion
+      ? `Unknown command: ${name} (did you mean ${suggestion}? type /help for the list)`
+      : `Unknown command: ${name} (type /help for the list, or /help <command> for details)`;
+    ctx.print(hint);
     return true;
   }
   try {

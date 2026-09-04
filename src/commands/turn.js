@@ -65,7 +65,7 @@ import * as style from '../../lib/agent/style.js';
 import { saveTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 import {
   buildResumeContext, buildSessionDigest, buildMidTaskInjection, disarmMidTaskCapture,
-  isContinuationCue, detectFollowupFast, reloadAll,
+  isContinuationCue, detectFollowupFast, shouldUpgradeToContinuation, reloadAll,
 } from './session_ctx.js';
 import { getKbMeta } from '../../lib/index/registry.js';
 import {
@@ -373,8 +373,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // owns it. A fresh-task input arriving with a stale block from the previous
   // task does NOT count (the stale block is retired at the digest-build
   // boundary below) — otherwise the new task's final turn would fire the
-  // Code Review gate for a plan it never worked on.
-  const planActiveAtStart = opts.continuation ? !!session.planProgress : false;
+  // Code Review gate for a plan it never worked on. `let` (not const): the
+  // tier-2 continuation upgrade inside the assessment phase can revise this
+  // from false to true — the upgrade means the input actually advances the
+  // plan-owning task, so its completing turn DOES deserve the review gate.
+  let planActiveAtStart = opts.continuation ? !!session.planProgress : false;
   // Deferred plan/lastTask lifecycle: the OLD code cleared planProgress (in
   // handleUserLine) and overwrote session.lastTask (below) BEFORE the clarity
   // assessment ran, so a misclassified follow-up ("执行下一步") lost its task
@@ -515,7 +518,13 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   const fastLane = enableRewrite && envFlag('HK2_ENABLE_FOLLOWUP_FASTLANE', 1)
     ? detectFollowupFast(userText, session)
     : null;
-  if (fastLane) {
+  // Tier-2 continuation upgrade gate (HK2_ENABLE_CONTINUATION_UPGRADE,
+  // default 1, mirroring HK2_ENABLE_FOLLOWUP_FASTLANE's A/B convention):
+  // when the tier-1 regex says "fresh task" but the Pass-1.5 assessor comes
+  // back followup:true with an in-flight task to continue, upgrade the
+  // classification and roll back the deferred fresh-task commit. Set 0 to
+  // keep tier 1 (the regex) as the sole decision-maker.
+  const enableUpgrade = envFlag('HK2_ENABLE_CONTINUATION_UPGRADE', 1);  if (fastLane) {
     await session.transcript?.logMeta('followupFastLane', { rule: fastLane, input: userText.slice(0, 160) });
     // Follow-up turns start straight on the model wait (no rewrite, no KB
     // retrieval, no assessment — the referent lives in the conversation).
@@ -716,13 +725,23 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       }
       // Session task context (in-flight task / plan progress / recent turns)
       // so follow-ups that are terse in isolation but unambiguous given the
-      // conversation are not flagged unclear. This is the point of no return
-      // for the deferred fresh-task transition: from here on, lastTask must
-      // point at THIS request (a later interruption must resume it), and the
-      // stale plan block (when the cue classification said "fresh") can be
-      // retired. When the assessor is disabled the transition happens below
+      // conversation are not flagged unclear. The deferred fresh-task commit
+      // runs right AFTER the digest is built (the digest must still see the
+      // ORIGINAL request) and is — for a cue-classified fresh task — normally
+      // final: lastTask points at THIS request (a later interruption must
+      // resume it) and the stale plan block is retired. The ONE exception is
+      // the tier-2 continuation upgrade below: when the assessor's followup
+      // verdict says this input actually advances the in-flight task, the
+      // commit is rolled back from the pre-commit snapshot. When the assessor
+      // is disabled the transition happens at the pass-2 boundary below
       // without this block, so every path commits exactly once.
       const sessionDigest = buildSessionDigest(session, userText, { continuation: !!opts.continuation });
+      // Snapshot the pre-commit continuation state BEFORE the deferred
+      // fresh-task commit below runs — the tier-2 upgrade (if it fires) must
+      // see planProgress/lastTask as they were at the digest boundary, and
+      // restores these exact references when rolling the commit back.
+      const preCommitPlan = session.planProgress;
+      const preCommitLastTask = session.lastTask;
       commitFreshTaskIfPending();
       // Same HK2_ENABLE_PHASEMODEL_FALLBACK policy as the rewrite phase, but
       // evaluated INDEPENDENTLY: the request-assess override may be a
@@ -745,6 +764,54 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // already printed) -> assessment stays null, no clarification round,
       // the turn falls through to the agent loop on the pass-1 rewrite+graph.
       const assessment = assessRun.skipped ? null : assessRun.result;
+
+      // Tier-2 continuation upgrade (HK2_ENABLE_CONTINUATION_UPGRADE,
+      // default 1): tier 1 (the isContinuationCue regex) is high-precision but
+      // enumerative — phrasings like "那么按照刚才的方案推进吧" fall through
+      // as fresh tasks, and the deferred commit above has ALREADY retired the
+      // live plan block + overwritten lastTask. The assessor judged this
+      // request with the session digest in view; when it comes back
+      // followup:true (with confidence) and the session HAD an in-flight task
+      // at the digest boundary, roll the fresh-task commit back and treat the
+      // turn as the continuation it actually is.
+      const upgrade = !fastLane && !opts.continuation && enableUpgrade
+        ? shouldUpgradeToContinuation(assessment, {
+            continuation: !!opts.continuation,
+            inFlight: !!preCommitPlan || !!preCommitLastTask
+              || (session.messages || []).some(m => m.role === 'user' || m.role === 'assistant'),
+          })
+        : null;
+      if (upgrade) {
+        // Roll the fresh-task commit back: the stale plan block (if any)
+        // belongs to the task this input actually advances, and lastTask must
+        // keep pointing at the ORIGINAL request (a later interruption must
+        // resume that, not the follow-up phrasing).
+        planAction = 'keep';
+        session.planProgress = preCommitPlan;
+        session.lastTask = preCommitLastTask;
+        // planActiveAtStart mirrors the continuation semantics: the upgrade
+        // asserts this input advances the plan-owning task, so the completing
+        // turn counts for the end-of-turn Code Review gate.
+        if (preCommitPlan) planActiveAtStart = true;
+        // Resume context — the same injection a tier-1 continuation gets at
+        // the top of the turn (buildResumeContext), so the model knows it is
+        // advancing the interrupted in-flight task, not starting fresh. It
+        // lands here (before the user message is pushed at agent-loop entry)
+        // rather than at the top of runTurn because the classification only
+        // became known now. Appended (not replacing) buildResumeContext so
+        // tests can pin this injection without brittleness around ordering.
+        if (session.lastTask) {
+          const resumeMsg = buildResumeContext(session);
+          if (resumeMsg) session.messages.push({ role: 'system', content: resumeMsg });
+        }
+        await session.transcript?.logMeta('followupUpgrade', {
+          input: userText.slice(0, 160),
+          reason: upgrade.reason,
+          confidence: upgrade.confidence,
+          hadPlan: !!preCommitPlan,
+        });
+      }
+
       if (assessment) {
         await session.transcript?.logMeta('assess', {
           clear: assessment.clear,
@@ -1503,6 +1570,19 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // clears the panel even when some or all plan_step calls were skipped, so
     // this cleanup is not proof that every displayed step was executed.
     if (!session.planProgress) {
+      // Snapshot the completed task's ORIGINAL request before clearing
+      // lastTask: /review code reads session.lastCompletedTask as the
+      // authoritative task requirement (the lastTask snapshot was taken at
+      // the task's first turn and was never overwritten by continuation
+      // turns or mid-task injections — exactly the semantics /review needs).
+      if (session.lastTask && typeof session.lastTask.userRequest === 'string'
+          && session.lastTask.userRequest.trim()) {
+        session.lastCompletedTask = {
+          userRequest: session.lastTask.userRequest,
+          capturedAt: session.lastTask.capturedAt || null,
+          completedAt: new Date().toISOString(),
+        };
+      }
       session.lastTask = null;
       await clearTaskState(session.project?.id);
     }

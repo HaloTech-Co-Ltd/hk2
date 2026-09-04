@@ -19,7 +19,7 @@ import './_learn_setup.js';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { runTurn } from '../src/commands/turn.js';
-import { createSession, buildCtx, buildSessionDigest, isContinuationCue, detectFollowupFast } from '../src/commands/session_ctx.js';
+import { createSession, buildCtx, buildSessionDigest, isContinuationCue, detectFollowupFast, shouldUpgradeToContinuation } from '../src/commands/session_ctx.js';
 
 /* ----- helpers ------------------------------------------------------ */
 
@@ -422,4 +422,159 @@ test('detectFollowupFast: rule table', () => {
   assert.equal(detectFollowupFast('好的，那么再帮我看看另一个问题', withPlan), null);
   // 执行 followed by a concrete object is a fresh task, not plan advance
   assert.equal(detectFollowupFast('执行迁移脚本', withPlan), null);
+});
+
+/* ----- Tier-2 continuation upgrade: shouldUpgradeToContinuation ---------- */
+
+test('shouldUpgradeToContinuation: rule table', () => {
+  const followupVerdict = { clear: true, followup: true, confidence: 0.9, reason: 'advances the plan just proposed' };
+  const noFollowupVerdict = { clear: true, followup: false, confidence: 0.9 };
+  const lowConfVerdict = { clear: true, followup: true, confidence: 0.3, reason: 'maybe' };
+
+  // Fires: regex said fresh, assessor says followup with confidence, task in flight
+  const up = shouldUpgradeToContinuation(followupVerdict, { continuation: false, inFlight: true });
+  assert.ok(up, 'upgrade fires');
+  assert.equal(up.reason, 'advances the plan just proposed');
+  assert.equal(up.confidence, 0.9);
+
+  // Tier 1 already classified continuation → nothing to do
+  assert.equal(shouldUpgradeToContinuation(followupVerdict, { continuation: true, inFlight: true }), null);
+  // No assessment / no followup verdict → tier 1 stands
+  assert.equal(shouldUpgradeToContinuation(null, { continuation: false, inFlight: true }), null);
+  assert.equal(shouldUpgradeToContinuation({}, { continuation: false, inFlight: true }), null);
+  assert.equal(shouldUpgradeToContinuation(noFollowupVerdict, { continuation: false, inFlight: true }), null);
+  // Low confidence → no upgrade (default threshold 0.6)
+  assert.equal(shouldUpgradeToContinuation(lowConfVerdict, { continuation: false, inFlight: true }), null);
+  // Confidence omitted → default 1 (same default assessRequest applies)
+  const upNoConf = shouldUpgradeToContinuation(
+    { clear: true, followup: true, reason: '' },
+    { continuation: false, inFlight: true }
+  );
+  assert.ok(upNoConf, 'omitted confidence defaults to 1 → upgrade fires');
+  // No in-flight task (fresh session) → a follow-up has no referent
+  assert.equal(shouldUpgradeToContinuation(followupVerdict, { continuation: false, inFlight: false }), null);
+  // Boundary: confidence exactly at the threshold fires (>=)
+  const boundary = shouldUpgradeToContinuation(
+    { clear: true, followup: true, confidence: 0.6 },
+    { continuation: false, inFlight: true }
+  );
+  assert.ok(boundary, 'confidence == threshold fires');
+});
+
+test('shouldUpgradeToContinuation: HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE is honored', () => {
+  process.env.HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE = '0.9';
+  try {
+    const v = { clear: true, followup: true, confidence: 0.7 };
+    assert.equal(shouldUpgradeToContinuation(v, { continuation: false, inFlight: true }), null,
+      '0.7 below the raised 0.9 threshold → no upgrade');
+  } finally {
+    delete process.env.HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE;
+  }
+});
+
+/* ----- Tier-2 continuation upgrade: runTurn integration ------------------- */
+
+test('tier-2 upgrade: followup verdict rolls back the fresh-task commit and injects resume context', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '1';
+  process.env.HK2_ENABLE_FOLLOWUP_FASTLANE = '0'; // deterministic rules deliberately miss this phrasing
+  try {
+    const agentTimeSnapshots = [];
+    const seenSystemMsgs = [];
+    let sessionRef = null;
+    const followupText = '那么按照刚才的方案推进吧';
+    const llm = {
+      async *stream(messages) {
+        const sys = messages?.[0]?.content || '';
+        if (/assessing a user's request/i.test(sys)) {
+          yield { type: 'delta', text: JSON.stringify({ clear: true, followup: true, confidence: 0.9, reason: 'advances the just-proposed plan' }) };
+          return;
+        }
+        if (/query rewriter/i.test(sys)) {
+          yield { type: 'delta', text: JSON.stringify({ intent: 'advance plan', functionNames: [], keywords: ['plan'] }) };
+          return;
+        }
+        agentTimeSnapshots.push({
+          lastTask: sessionRef?.lastTask?.userRequest ?? null,
+          hasPlan: !!sessionRef?.planProgress,
+          systemMsgs: messages.filter(m => m.role === 'system').map(m => m.content.slice(0, 60)),
+        });
+        yield { type: 'delta', text: 'resuming the plan' };
+        yield { type: 'usage', input: 42, output: 7 };
+      },
+    };
+    const session = makeSession(llm, { rt: fakeRt() });
+    sessionRef = session;
+    session.lastTask = { userRequest: '分析并改进 request assessing 机制' };
+    session.planProgress = makePlan();
+    session.messages = [
+      { role: 'user', content: '分析并改进 request assessing 机制' },
+      { role: 'assistant', content: '分析完成，三步计划已制定。输入“下一步”即可开始。' },
+    ];
+    const ctx = buildCtx(session);
+    const ui = fakeUi({ canPrompt: true });
+    await runTurn(followupText, session, ctx, ui);
+
+    assert.ok(agentTimeSnapshots.length >= 1, 'the main agent call fired');
+    const snap = agentTimeSnapshots[0];
+    // The deferred fresh-task commit was ROLLED BACK: the original task and
+    // the live plan block survive into the agent loop (continuation semantics).
+    assert.equal(snap.lastTask, '分析并改进 request assessing 机制',
+      'upgrade restores the ORIGINAL lastTask (interrupt recovery anchor)');
+    assert.equal(snap.hasPlan, true, 'upgrade keeps the live plan block through the agent loop');
+    // Resume context was injected (same message a tier-1 continuation gets).
+    assert.ok(snap.systemMsgs.some(s => /Resuming an interrupted task/.test(s)),
+      'tier-2 upgrade injects the resume-context system message');
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_FOLLOWUP_FASTLANE;
+  }
+});
+
+test('tier-2 upgrade: HK2_ENABLE_CONTINUATION_UPGRADE=0 keeps tier 1 as the sole decision-maker', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '1';
+  process.env.HK2_ENABLE_FOLLOWUP_FASTLANE = '0';
+  process.env.HK2_ENABLE_CONTINUATION_UPGRADE = '0';
+  try {
+    const agentTimeSnapshots = [];
+    let sessionRef = null;
+    const llm = {
+      async *stream(messages) {
+        const sys = messages?.[0]?.content || '';
+        if (/assessing a user's request/i.test(sys)) {
+          yield { type: 'delta', text: JSON.stringify({ clear: true, followup: true, confidence: 0.95, reason: 'advances the plan' }) };
+          return;
+        }
+        if (/query rewriter/i.test(sys)) {
+          yield { type: 'delta', text: JSON.stringify({ intent: 'x', functionNames: [], keywords: [] }) };
+          return;
+        }
+        agentTimeSnapshots.push({
+          lastTask: sessionRef?.lastTask?.userRequest ?? null,
+          hasPlan: !!sessionRef?.planProgress,
+        });
+        yield { type: 'delta', text: 'working' };
+        yield { type: 'usage', input: 42, output: 7 };
+      },
+    };
+    const session = makeSession(llm, { rt: fakeRt() });
+    sessionRef = session;
+    session.lastTask = { userRequest: '旧任务' };
+    session.planProgress = makePlan();
+    session.messages = [
+      { role: 'user', content: '旧任务' },
+      { role: 'assistant', content: '计划已制定。' },
+    ];
+    const ctx = buildCtx(session);
+    const ui = fakeUi({ canPrompt: true });
+    await runTurn('那么按照刚才的方案推进吧', session, ctx, ui);
+    const snap = agentTimeSnapshots[0];
+    // Disabled → the deferred fresh-task commit stands (tier-1 semantics).
+    assert.equal(snap.lastTask, '那么按照刚才的方案推进吧',
+      'upgrade off: lastTask commits to THIS request (fresh-task semantics)');
+    assert.equal(snap.hasPlan, false, 'upgrade off: stale plan block retired');
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_FOLLOWUP_FASTLANE;
+    delete process.env.HK2_ENABLE_CONTINUATION_UPGRADE;
+  }
 });

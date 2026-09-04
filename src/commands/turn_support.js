@@ -53,7 +53,7 @@ import { runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
 import { reviewCode, buildCodeReviewContent, createVerdictFilter } from '../../lib/agent/code_review.js';
 import * as style from '../../lib/agent/style.js';
 import { fmtTok } from './status_format.js';
-import { confirmThreeWay } from './session_ctx.js';
+import { confirmThreeWay, extractTaskRequirement } from './session_ctx.js';
 
 /**
  * Parse a 0/1 env flag. Returns defaultValue if unset; treats 0/no/false/off as false.
@@ -857,9 +857,21 @@ export async function learnNewKnowledge(session, ctx, { autoLearn }) {
     ctx.print('[kb learn] no LLM available, skipping knowledge capture.');
     return;
   }
-  const lastUser = [...session.messages].reverse().find(m => m.role === 'user');
+  // The task the extraction is about: the ORIGINAL request, not the last
+  // user message. Mid-task injections and continuation cues land as later
+  // user messages, so the old reverse-find picked a queued addition (or a
+  // bare "continue") as "the task that was just completed". Prefer the
+  // turn-pipeline snapshots, falling back to the deterministic scan. ORDER:
+  // this runs at end-of-turn BEFORE the pipeline clears lastTask (and stamps
+  // lastCompletedTask), so lastTask still names THIS task; lastCompletedTask
+  // is only the fallback for paths that run after the clear (e.g. a manual
+  // /kb knowledge learn later in the session).
+  const taskReq = session.lastTask?.userRequest
+    || session.lastCompletedTask?.userRequest
+    || extractTaskRequirement(session.messages).original || '';
+  const lastUser = { role: 'user', content: taskReq };
   const lastAssistant = [...session.messages].reverse().find(m => m.role === 'assistant' && typeof m.content === 'string');
-  if (!lastUser || !lastAssistant) {
+  if (!lastUser.content.trim() || !lastAssistant) {
     ctx.print('[kb learn] no conversation to learn from, skipping.');
     return;
   }
