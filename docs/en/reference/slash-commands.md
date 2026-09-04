@@ -123,7 +123,7 @@ pin is session-local; without a pin, the shared `projects.json.current` pointer 
 |---|---|
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation; checkpointed and resumable; summary generation is attempted only when a model is configured and `--skip-summary` is not passed, with each non-empty success written independently |
 | `update` | Incremental update (sha256 diff) of changed files — rebuilds the derived symbol indexes/graphs and **synchronizes parser-owned `doc:<relpath>` Eden entries** for indexed documents (new/changed docs written or replaced, deleted/excluded docs' parser-owned entries removed, Eden knowledge index possibly rebuilt); legacy KBs are backed up to `backup/pre-upgrade-<ts>/` then migrated (a parser-version change triggers a full re-index) |
-| `status` | Per-space statistics; normally read-only, but a legacy KB missing the permanent Supreme Code entry is self-healed by writing an empty entry first |
+| `status` | Per-space statistics; normally reads and displays statistics. For a legacy KB missing Supreme Code, it attempts a best-effort creation of an empty permanent entry first; a failure is ignored and not separately reported |
 | `search <query> [--top-k=N]` | Direct BM25 + reranking symbol search (default top-k 20; no LLM rewrite or source slices) |
 | `symbol <name>` | Look up symbols by exact name |
 | `neighbors <symbol_id>` | Call-graph neighbors (symbol id looks like `<fileId>:<line>`) |
@@ -305,4 +305,4 @@ Exit the REPL. Same as Ctrl+D. `/exit` is an alias of `/quit`.
 
 ### Status self-healing
 
-`/kb status` normally reads and displays statistics. For an older KB missing the permanent `hk2-supreme-code` entry, it first creates an empty permanent entry, so this special case has a write-to-disk side effect. Initial `KBRuntime` loading has the same missing-entry self-heal.
+`/kb status` normally reads and displays statistics. For an older KB missing the permanent `hk2-supreme-code` entry, it attempts a best-effort creation of an empty permanent entry first. A self-heal failure is ignored and not separately reported, so this special case may have a write-to-disk side effect. Initial `KBRuntime` loading has the same missing-entry self-heal attempt.

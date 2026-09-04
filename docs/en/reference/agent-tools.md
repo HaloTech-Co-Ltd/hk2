@@ -193,7 +193,7 @@ filtered channels (metadata stays visible — see
 | Tool | Purpose |
 |---|---|
 | `kb_knowledge` | Look up a knowledge entry by id — searches Holy and Eden, returns the full entry (title, intro, keyFiles, keySymbols, keywords, space) |
-| `kb_search_knowledge` | Search both knowledge spaces by natural-language query; each whitespace token contributes at most one equal-weight point across id/title/intro/keywords, default 5 results clamped 1–20 — use to check whether the KB already documents a concept |
+| `kb_search_knowledge` | Search both knowledge spaces by natural-language query; each whitespace token occurrence contributes at most one equal-weight point across one combined id/title/intro/keywords haystack, duplicate tokens can contribute again, ties preserve `allKnowledge()` order, and superseded Eden entries are not filtered. Falsy `top_k` values including 0 default to 5; other numeric values are bounded to 1–20 |
 | `kb_save_knowledge` | Persist a knowledge entry to Holy (requires user approval) or Eden (auto-learn eligible); the KB runtime is hot-reloaded immediately. Caveat: an identical `kb_knowledge`/`kb_search_knowledge` call already cached earlier in the same `runLoop` may keep returning the stale cached result until a cache-busting call or a new loop. Saving via this tool marks the turn's knowledge capture as handled |
 
 ## Session tools

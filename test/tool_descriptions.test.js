@@ -75,7 +75,8 @@ test('plan_step: top description, guidelines, and step param all current-step se
     assert.match(text, /current/i);
   }
   assert.match(stepDesc, /compatibility\/reporting hint/i);
-  assert.match(t.description, /still advances/i, 'invalid values still advance the current step');
+  assert.match(t.description, /reporting hint.*ignored/i, 'step remains a reporting hint');
+  assert.match(t.description, /without a progress callback.*no progress state/i);
   assert.doesNotMatch(stepDesc, /mark done/i, 'param must not claim step selection');
 });
 

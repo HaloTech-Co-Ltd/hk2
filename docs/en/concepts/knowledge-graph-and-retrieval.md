@@ -121,8 +121,10 @@ The Agent `kb_search` tool can attempt an inline LLM rewrite independently of
 the turn-start `HK2_ENABLE_QUERYREWRITE` flag; `with_slice=false` disables its
 source slices. Knowledge entries use a separate flat token-overlap algorithm: `kb_search_knowledge`
 scans `rt.allKnowledge()` and joins id, title, intro, and keywords into one
-haystack. Each whitespace token contributes at most one equal-weight point,
-with no title/keyword bonus; its default is 5 results, clamped to 1–20. It also
+haystack. Each whitespace token occurrence contributes at most one equal-weight point,
+with no title/keyword bonus; duplicate tokens can contribute again, ties preserve input
+order, and falsy `top_k` values (including 0) default to 5 while other numeric values
+are bounded to 1–20. It also
 does not filter `supersededBy` Eden entries. Turn-start `matchPrinciples()` is
 different: Holy and active Eden are matched separately, head fields (topic/title/
 keywords) are the primary signal, intro is capped at 2000 characters and weighted

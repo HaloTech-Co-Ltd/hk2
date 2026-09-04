@@ -118,9 +118,9 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 
 | 子命令 | 作用 |
 |---|---|
-| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；仅在已配置模型且未传 `--skip-summary` 时尝试生成摘要，每个非空成功结果独立写入 |
+| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；仅在已配置模型且未传 `--skip-summary` 时尝试生成摘要，每个非空成功结果独立写入；空值 `--checkpoint-interval=` 回到环境变量/默认值包装，禁用请用 `--no-checkpoint` |
 | `update` | 增量更新（sha256 差异）——重建派生的符号索引与图谱，并**同步解析器管理的 `doc:<relpath>` Eden 条目**（新增/变化文档写入或覆盖，已删除或被排除文档的 parser-owned 条目被移除，Eden 知识索引可能重建）；旧版知识库先备份到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
-| `status` | 各空间统计；通常只读，但旧 KB 缺少永久 Supreme Code 条目时会先自愈写入空条目 |
+| `status` | 各空间统计；通常读取并展示统计。旧 KB 缺少 Supreme Code 时会先尽力创建空的永久条目；失败会被忽略且不单独报告 |
 | `search <查询> [--top-k=N]` | 直接 BM25 + 重排序的符号搜索（默认 top-k=20；不做 LLM 改写、不附加源码切片） |
 | `symbol <名称>` | 按精确名称查找符号 |
 | `neighbors <symbol_id>` | 调用图邻居（符号 id 形如 `<fileId>:<line>`） |
@@ -286,4 +286,4 @@ key（解析优先级：精确工具名 > 分组 key > `*` > 内置默认）：`
 
 ### status 自愈写入
 
-`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，它会先创建空的永久条目，因此这个特殊情况有写盘副作用。首次加载 `KBRuntime` 也有同样的缺失条目自愈。
+`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，它会先尽力创建空的永久条目；失败会被忽略且不单独报告，因此这个特殊情况可能有写盘副作用。首次加载 `KBRuntime` 也会尝试同样的缺失条目自愈。

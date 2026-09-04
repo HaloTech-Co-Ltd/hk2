@@ -35,8 +35,9 @@
 交互式 `/kb init` 会把环境变量未设置、空值、`0` 或非数字转换为 100；正整数照用，
 负数原样传入并导致近乎每文件保存。显式 flag 直接解析，因此 `0`、负数或 `NaN`
 同样几乎每个文件保存。`/kb update` 以及自动/legacy 直接 indexer 路径没有交互式
-`|| 100` 包装：环境值 `0`、负数或非法值原样到达 `Checkpoint`。文档化的禁用方式
-只有 `/kb init --no-checkpoint`。
+`|| 100` 包装：环境值 `0`、负数或非法值原样到达 `Checkpoint`。显式空值
+`--checkpoint-interval=` 会回到环境变量或默认值包装，而不是变成 `NaN`。文档化的
+禁用方式只有 `/kb init --no-checkpoint`。
 
 ## 查询知识库
 

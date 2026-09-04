@@ -110,7 +110,8 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 `HK2_ENABLE_QUERYREWRITE`；`with_slice=false` 可关闭源码切片。知识条目由
 `kb_search_knowledge` 使用独立的平铺 token 重叠算法：扫描 `rt.allKnowledge()`，将 id、
 标题、简介和关键词拼成一个 haystack。每个空白分隔 token 最多贡献 1 个同等分值，
-没有标题/关键词额外权重；默认返回 5 条，钳制到 1–20，且不会过滤带
+没有标题/关键词额外权重；重复 token 可以重复贡献，平分保留输入顺序；`top_k` 为假值
+（包括 0）时默认返回 5 条，其余数值钳制到 1–20，且不会过滤带
 `supersededBy` 的 Eden 条目。轮次开始的 `matchPrinciples()` 则不同：Holy 与 active Eden
 分开匹配，topic/标题/关键词等 head 字段是主信号，简介最多取 2000 字符并按 0.3
 加权，只返回前 2 条；`buildRequestGraph()` 会排除已退休 Eden 并抑制 Holy 冲突。

@@ -552,9 +552,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
 
   // Same mechanism for the request-clarity assessment phase ('assessing
   // request'): /model set-phase --phase=request-assess <ref> runs the assessor
-  // on that model instead of the session model. Resolved once per turn;
-  // resolve failure falls back to session.llm with a warning (never silently
-  // run on the wrong model).
+  // on that model instead of the session model. Resolved once per turn. A
+  // stale/unresolvable ref returns null and silently means no override; only
+  // an exception while resolving is warned about. Actual call failures enter
+  // the configured phase fallback policy.
   let assessLlm = null;
   if (canAssess) {
     try {
@@ -928,9 +929,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       session.hadPlanThisTurn = true;
       session.lastPlanText = confirmed;
       if (!envFlag('HK2_ENABLE_PLANREVIEW', 0) || !session.llm) return confirmed;
-      // Resolve a per-phase model override for the plan-review phase; fall
-      // back to the session model when unset or unresolvable (with a warn,
-      // matching the rewrite-query phase handling).
+      // An unset or stale/unresolvable ref returns null and silently leaves
+      // the session model selected. A resolved reviewer uses skip-on-unreachable
+      // if its actual call fails; an exception during resolution is warned about
+      // and uses the session model.
       let reviewLlm = session.llm;
       let usingPhaseModel = false;
       try {
@@ -1206,12 +1208,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   ui.phase('waiting for model');
 
   let assistantText = '';
+  let assistantAttemptStart = 0;
   // Per-LLM-call renderers (markdown + reasoning) live inside ui.stream;
   // initialize the pair here (mirroring the original eager construction) —
   // every onTurnStart resets them fresh.
   ui.stream.reset();
   const callbacks = {
     onTurnStart: (_turnIdx) => {
+      assistantAttemptStart = assistantText.length;
       // Each LLM stream call inside the agent loop starts a new "turn".
       // Commit the previous call's per-call maxima to the cumulative session
       // total, then reset callIn/callOut. loopIn/loopOut are NOT touched
@@ -1362,6 +1366,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // partial output; the ui drops the orphaned partial render and tells the
     // user why the stream visibly restarts.
     onRetry: (evt) => {
+      // A retry restarts the current LLM call. Keep prior completed rounds,
+      // but remove text emitted by the failed attempt from answer-bearing state.
+      assistantText = assistantText.slice(0, assistantAttemptStart);
       ui.retryNotice(evt);
     },
   };
@@ -1394,8 +1401,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         enableReasoning: session.modelCfg.enableReasoning,
       },
       // No fixed maxTurns — the loop runs until the task is done, with
-      // stuck-detection (identical-repeat / no-progress) and a high
-      // absolute safety cap as backstops. See lib/agent/loop.js.
+      // identical-repeat (the effective guard) and a high absolute safety cap
+      // as backstops. The no-progress branch is currently unreachable; see
+      // lib/agent/loop.js.
     });
 
     // Final flush of the markdown renderer in case the last LLM call left a
@@ -1491,23 +1499,20 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // still shows" bug). The catch path below stays conservative.
     finalizePlanProgress(session, { turnCompleted: true });
     ui.statusRefresh();
-    // Task completed normally and (if a plan existed) all steps are done:
-    // clear the persisted task state so the next session doesn't resume a
-    // finished task. We only clear when there's no planProgress left, because a
-    // multi-step plan that's mid-flight should remain recoverable across turns.
+    // A normal final answer is this turn's completion signal. Finalization
+    // clears the panel even when some or all plan_step calls were skipped, so
+    // this cleanup is not proof that every displayed step was executed.
     if (!session.planProgress) {
       session.lastTask = null;
       await clearTaskState(session.project?.id);
     }
 
     // ---- Code Review (HK2_ENABLE_CODEREVIEW, default 0) -------------------
-    // After a plan completes, review the ENTIRE result (working-tree diff +
-    // final answer) for correctness / completeness / quality. Runs only when
-    // the plan is actually complete (planProgress cleared) AND a plan was
-    // involved this turn: either confirmed this turn, or a multi-turn plan that
-    // was already active at turn start. A plan confirmed but still mid-flight
-    // keeps planProgress non-null and does NOT trigger review. Best-effort;
-    // never blocks the turn.
+    // On a normal return, review the ENTIRE result (working-tree diff + final
+    // answer) when a plan was confirmed this turn or was active at turn start.
+    // Clearing the panel is a completion-by-normal-return signal, not proof
+    // that every plan_step ran; an ordinary mid-plan final question can also
+    // trigger review. Best-effort; never blocks the turn.
     const planCompleted = !session.planProgress && (session.hadPlanThisTurn || planActiveAtStart);
     if (envFlag('HK2_ENABLE_CODEREVIEW', 0) && session.llm && planCompleted) {
       await runCodeReview(session, ctx, ui, {

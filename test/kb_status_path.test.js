@@ -35,7 +35,13 @@ test('/kb status displays the effective HK2_KB_DIR path', () => {
   });
   assert.match(output, /kb dir:\s+.*custom-kb-root[\\/]status-project[\\/]/);
   assert.ok(!output.includes('~/.hk2/kb/status-project'));
-  assert.match(output, /selfheal=.*hk2-supreme-code/);
+  const selfheal = output.match(/selfheal=(\{.*\})/s);
+  assert.ok(selfheal, 'status should create a self-healed entry');
+  const parsed = JSON.parse(selfheal[1]);
+  assert.equal(parsed.id, 'hk2-supreme-code');
+  assert.deepEqual(parsed.codes, []);
+  assert.equal(parsed.protected, true);
+  assert.equal(parsed.permanent, true);
 });
 
 test('/kb status does not rewrite an existing Supreme Code entry', () => {
@@ -52,15 +58,21 @@ test('/kb status does not rewrite an existing Supreme Code entry', () => {
     await fs.mkdir(path.join(dir, 'holy'), { recursive: true });
     await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ sourcePath: '/tmp/example-project' }));
     const file = path.join(dir, 'holy', 'hk2-supreme-code.json');
-    const before = JSON.stringify({ id: 'hk2-supreme-code', title: 'Supreme Code', intro: '', codes: ['rule'] });
+    const before = JSON.stringify({ id: 'hk2-supreme-code', title: 'Supreme Code', intro: '', codes: ['rule'], protected: true, permanent: true });
     await fs.writeFile(file, before);
+    const oldMtime = new Date('2020-01-02T03:04:05.678Z');
+    await fs.utimes(file, oldMtime, oldMtime);
+    const beforeStat = await fs.stat(file);
     const { cmdKb } = await import(${JSON.stringify(path.join(repo, 'src/slash/kb.js'))});
     await cmdKb(['status'], { getCurrentProject: async () => ({ id, name: id }), print: () => {} });
-    console.log(await fs.readFile(file, 'utf8'));
+    const stat = await fs.stat(file);
+    console.log(JSON.stringify({ bytes: await fs.readFile(file, 'utf8'), beforeMtimeMs: beforeStat.mtimeMs, mtimeMs: stat.mtimeMs }));
     await fs.rm(home, { recursive: true, force: true });
   `;
   const output = execFileSync(process.execPath, ['--input-type=module', '--eval', script], { cwd: repo, encoding: 'utf8', env: { ...process.env, HK2_HOME: '', HK2_KB_DIR: '' } });
-  assert.match(output, /\"rule\"/);
+  const result = JSON.parse(output.trim());
+  assert.equal(result.bytes, JSON.stringify({ id: 'hk2-supreme-code', title: 'Supreme Code', intro: '', codes: ['rule'], protected: true, permanent: true }));
+  assert.equal(result.mtimeMs, result.beforeMtimeMs, 'status did not rewrite the file or touch its mtime');
 });
 
 test('legacy one-shot build-kb reports the effective custom KB root', () => {

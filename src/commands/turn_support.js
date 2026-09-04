@@ -538,6 +538,10 @@ export async function maybeAutoCompact(session, ctx) {
  * that evolve with the codebase).
  */
 export async function maybeOfferKbUpdate(session, ctx) {
+  // A qualifying bash source-search is the common outer gate for both the
+  // refresh offer/auto-update and fallback knowledge extraction. The save and
+  // cooldown checks below are nested within that gate; conflict sync and Code
+  // Review are separate end-of-turn paths.
   if (!session.project) return;
   if (!session.bashSearchCommands || session.bashSearchCommands.length === 0) return;
 
@@ -706,8 +710,11 @@ async function runKbUpdate(session, ctx) {
 }
 
 /**
- * End-of-turn Code Review (HK2_ENABLE_CODEREVIEW, default 0). Runs after the
- * agent finishes executing a plan and the plan block has been finalized. It
+ * End-of-turn Code Review (HK2_ENABLE_CODEREVIEW, default 0). Runs after a
+ * normal agent return when finalization has cleared the plan panel and this
+ * turn either confirmed a plan or started while continuing one. This is a
+ * completion-by-normal-return signal, not proof that every plan_step was
+ * called or every displayed step was executed. It
  * collects the working-tree result (diff + changed files) and the final answer,
  * reviews them with a configurable phase model
  * (`/model set-phase --phase=code-review`), and prints any issues one-by-one.
@@ -718,8 +725,10 @@ async function runKbUpdate(session, ctx) {
 export async function runCodeReview(session, ctx, ui, { planText, assistantText, resolvePhaseLlm, signal }) {
   if (!session.llm) return;
 
-  // Resolve a per-phase model override for the code-review phase; fall back to
-  // the session model when unset or unresolvable (matching plan-review).
+  // An unset or stale/unresolvable ref returns null and silently selects the
+  // session model. If a resolved reviewer later becomes unreachable, review
+  // uses skip-on-unreachable rather than substituting the session model. An
+  // exception from resolution itself is warned about and uses session model.
   let reviewLlm = session.llm;
   let usingPhaseModel = false;
   try {

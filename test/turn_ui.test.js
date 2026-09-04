@@ -60,6 +60,7 @@ function fakeUi() {
     finishStream() { rec('finishStream')(); },
     noticeLines(lines) { rec('noticeLines')(lines.length); },
     notice(text) { rec('notice')(text); },
+    retryNotice(evt) { rec('retryNotice')(evt.attempt); },
     userEcho(lines) { rec('userEcho')(lines.length); },
     usageLine(text) { rec('usageLine')(text); },
     cancelled() { rec('cancelled')(); },
@@ -146,6 +147,75 @@ test('runTurn: provider error -> ui.failed, phase=error, capture disarmed', asyn
     assert.equal(session.phase, 'error', 'session marked error');
     assert.equal(session.agentTurnActive, false, 'mid-task capture disarmed on error too');
     assert.ok(ui.events.some(e => e[0] === 'progress.done'), 'spinner finalized');
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+  }
+});
+
+test('runTurn: retry rolls back only the current attempt in answer and transcript', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '0';
+  process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+  try {
+    const session = mkSession({
+      async *stream() {
+        yield { type: 'delta', text: 'BROKEN-' };
+        yield { type: 'retry', attempt: 1 };
+        yield { type: 'delta', text: 'RETRY-OK' };
+      },
+    });
+    const assistantEvents = [];
+    session.transcript = {
+      logUser: async () => {},
+      logSystemPrompt: async () => {},
+      logAssistant: async (text) => assistantEvents.push(text),
+      logMeta: async () => {},
+      logTurn: async () => {},
+    };
+    const ctx = buildCtx(session);
+    const ui = fakeUi();
+    await runTurn('retry this', session, ctx, ui);
+    assert.equal(session.lastAnswer, 'RETRY-OK', JSON.stringify(ui.events));
+    assert.deepEqual(assistantEvents, ['RETRY-OK']);
+    assert.ok(!assistantEvents.join('').includes('BROKEN-'));
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+  }
+});
+
+test('runTurn: retry rollback preserves text from an earlier tool round', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '0';
+  process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+  try {
+    let calls = 0;
+    const session = mkSession({
+      async *stream() {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'delta', text: 'PREFIX-' };
+          yield { type: 'tool_call', id: 'step-1', name: 'plan_step', arguments: '{}' };
+        } else {
+          yield { type: 'delta', text: 'BROKEN-' };
+          yield { type: 'retry', attempt: 1 };
+          yield { type: 'delta', text: 'FINAL' };
+        }
+      },
+    });
+    const assistantEvents = [];
+    session.transcript = {
+      logUser: async () => {},
+      logSystemPrompt: async () => {},
+      logAssistant: async (text) => assistantEvents.push(text),
+      logMeta: async () => {},
+      logToolCall: async () => {},
+      logTurn: async () => {},
+    };
+    const ui = fakeUi();
+    await runTurn('retry after a tool round', session, buildCtx(session), ui);
+    assert.equal(session.lastAnswer, 'PREFIX-FINAL', JSON.stringify(ui.events));
+    assert.deepEqual(assistantEvents, ['PREFIX-FINAL']);
+    assert.ok(!assistantEvents[0].includes('BROKEN-'));
   } finally {
     delete process.env.HK2_ENABLE_QUERYREWRITE;
     delete process.env.HK2_ENABLE_REQUEST_ASSESS;

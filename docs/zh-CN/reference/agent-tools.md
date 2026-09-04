@@ -125,7 +125,8 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 内部归一化会把缺失或非字符串 `summary` 变为空字符串；只强制至少 2 个有效步骤、
 每步至少 2 个有效策略，不强制最大数量。recommended 数量异常时会归一化为第一个
 策略。工具在交互模式呈现逐步选择，非交互模式自动接受推荐项；接受返回
-`{confirmed, plan}`，取消返回 `{cancelled}`，不可用形状返回 `{error}`。写入：否。
+`{confirmed, plan}`，非交互自动接受时还返回 `autoAccepted:true`；取消返回
+`{cancelled}`，不可用形状返回 `{error}`。写入：否。
 
 ### `plan_step`
 
@@ -161,7 +162,7 @@ in-progress 步骤仍会被推进）。交互模式使用真实状态机；无�
 | 工具 | 用途 |
 |---|---|
 | `kb_knowledge` | 按 id 查找知识条目——同时检索 Holy 与 Eden，返回完整条目（标题、简介、keyFiles、keySymbols、keywords、space） |
-| `kb_search_knowledge` | 按自然语言查询搜索两个知识空间；查询的每个空白分隔 token 在 id/标题/简介/关键词中统一最多贡献 1 分，默认 5 条、钳制到 1–20——用于判断知识库是否已有某概念的文档 |
+| `kb_search_knowledge` | 按自然语言查询搜索两个知识空间；每个空白分隔 token 出现次数在合并的 id/标题/简介/关键词 haystack 中各最多贡献 1 个同等分值，重复 token 可重复贡献，平分按 `allKnowledge()` 顺序保留，且不筛除 superseded Eden 条目。`top_k` 为假值（包括 0）时默认 5，其余数值钳制到 1–20 |
 | `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载，但不清除 runLoop 只读缓存：同一循环内此前已成功缓存过的相同调用可能继续返回旧结果，直到缓存失效调用或进入新循环；失败结果不缓存 |
 
 ## 会话工具

@@ -39,8 +39,27 @@ test('matchPrinciples uses head hits as primary and intro hits at weight 0.3', (
   assert.equal(hits.length, 2, 'turn-start matcher returns at most two');
 });
 
-test('the two knowledge retrieval paths have distinct ranking contracts', () => {
-  const doc = `kb_search_knowledge uses flat token overlap; matchPrinciples uses head fields and weighted intro matches`;
-  assert.match(doc, /flat token overlap/);
-  assert.match(doc, /weighted intro/);
+test('knowledge tool and turn-start matcher rank the same entries differently', async () => {
+  const entries = [
+    entry('intro-only', 'unrelated', 'alpha', [], 'eden'),
+    entry('head-hit', 'alpha', 'unrelated', [], 'eden'),
+  ];
+  const tool = buildTools({ allKnowledge: () => entries }, {}).find(t => t.name === 'kb_search_knowledge');
+  const flat = await tool.execute({ query: 'alpha', top_k: 2 });
+  assert.deepEqual(flat.results.map(r => r.id), ['intro-only', 'head-hit']);
+  assert.deepEqual(flat.results.map(r => r.score), [1, 1]);
+  const weighted = matchPrinciples(entries, 'alpha');
+  assert.deepEqual(weighted.map(r => r.principle.id), ['head-hit', 'intro-only']);
+});
+
+test('knowledge search counts duplicate token occurrences and reports pre-limit count', async () => {
+  const entries = [
+    entry('one', 'alpha', 'alpha', [], 'eden'),
+    entry('two', 'alpha', '', [], 'eden'),
+  ];
+  const tool = buildTools({ allKnowledge: () => entries }, {}).find(t => t.name === 'kb_search_knowledge');
+  const r = await tool.execute({ query: 'alpha alpha', top_k: 1 });
+  assert.equal(r.count, 2);
+  assert.equal(r.results.length, 1);
+  assert.equal(r.results[0].score, 2);
 });

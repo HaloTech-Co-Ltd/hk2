@@ -189,6 +189,7 @@ Both default to `0` (off). See
 ### Status self-healing
 
 `/kb status` normally reads and reports statistics. For a legacy KB missing the
-permanent `hk2-supreme-code` entry, it first creates an empty permanent entry;
-that exceptional compatibility path writes to disk. Initial `KBRuntime` loading
-has the same missing-entry self-heal behavior.
+permanent `hk2-supreme-code` entry, it attempts a best-effort creation of an
+empty permanent entry first; a failure is ignored and not separately reported.
+This exceptional compatibility path may write to disk. Initial `KBRuntime`
+loading has the same missing-entry self-heal attempt.

@@ -74,6 +74,15 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 正数分钟：若本会话任务的知识捕获在该窗口内已处理（智能体保存、已回答的提案、或模型跳过），则跳过轮末 `[kb learn]` 询问。锚点经 `--resume` 恢复。智能体本轮通过 `kb_save_knowledge` 保存时始终跳过询问 | `0`（关闭） | |
 | `HK2_KB_LEARN_VALIDATE` | `1`：学习的条目写盘前对照现有知识库校验（预筛 + 一次语义判定）——重复跳过、相近合并、冲突裁决（Holy 交由用户）。尽力而为 | `1` | |
 
+### 按入口解析检查点
+
+交互式 `/kb init` 对环境值使用 `parseInt(value, 10) || 100`：未设置、空值、`0` 和
+非数字为 100，正整数照用，负整数原样传入并导致近乎每文件保存。显式
+`--checkpoint-interval=<value>` 直接 `parseInt()`；`0`、负数或 `NaN` 同样导致近乎每
+文件保存。显式空值 `--checkpoint-interval=` 是假值，会回到环境变量/默认值包装，
+而不是变成 `NaN`。`/kb update`、自动更新和 legacy 直接 indexer 调用不经过该
+`|| 100` 包装；禁用请使用 `/kb init --no-checkpoint`。
+
 ## 压缩
 
 | 变量 | 用途 | 默认值 | 说明 |

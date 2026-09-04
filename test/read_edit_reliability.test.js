@@ -144,6 +144,26 @@ test('edit: single-line oldText (no \\n) on a CRLF file still matches verbatim a
   await fs.rm(tree, { recursive: true, force: true });
 });
 
+test('edit: CRLF adaptation preserves evolving multi-edit order', async () => {
+  const tree = await makeTree();
+  const f = path.join(tree, 'crlf_evolving.js');
+  await fs.writeFile(f, 'A\r\nB\r\n');
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({ path: f, edits: [
+      { oldText: 'A\nB', newText: 'C\nD' },
+      { oldText: 'C\nD', newText: 'E\nF' },
+    ] });
+    assert.equal(r.error, undefined, `combined edit should succeed: ${JSON.stringify(r)}`);
+    assert.equal(r.applied, 2);
+    assert.ok(Array.isArray(r.eolAdapted) && r.eolAdapted.length === 2);
+    const after = await fs.readFile(f, 'utf8');
+    assert.equal(after, 'E\r\nF\r\n');
+    assert.ok(!/(^|[^\r])\n/.test(after), 'no mixed LF endings');
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
 test('edit: verbatim LF oldText on an LF file is untouched by the fallback (no behavior change)', async () => {
   const tree = await makeTree();
   const f = path.join(tree, 'lf_edit.js');

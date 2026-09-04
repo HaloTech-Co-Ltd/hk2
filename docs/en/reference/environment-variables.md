@@ -87,7 +87,9 @@ remain negative and therefore make `Checkpoint.saveIfDue()` save on nearly
 every file. An explicit `--checkpoint-interval=<value>` goes directly through
 `parseInt()`: `0` and negative values save nearly every file, while a
 non-numeric or missing value becomes `NaN` and has the same frequent-save
-cadence. Use `/kb init --no-checkpoint` to disable checkpointing.
+cadence. An explicitly empty `--checkpoint-interval=` is falsey and falls back
+to the environment/default wrapper rather than becoming `NaN`. Use
+`/kb init --no-checkpoint` to disable checkpointing.
 
 `/kb update`, end-of-turn automatic updates, legacy `--mode=build-kb` and
 `--mode=update-kb`, and other direct `buildIndex()` callers use the indexer's

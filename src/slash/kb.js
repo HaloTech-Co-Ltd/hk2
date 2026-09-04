@@ -133,16 +133,26 @@ async function getProjectOrFail(ctx) {
   return p;
 }
 
+/** Preserve the interactive /kb init checkpoint parsing contract. */
+export function resolveInitCheckpointConfig(tokens = [], env = process.env) {
+  const flags = parseFlags(tokens);
+  const checkpointInterval = flags['checkpoint-interval']
+    ? parseInt(flags['checkpoint-interval'], 10)
+    : (parseInt(env.HK2_KB_CHECKPOINT_INTERVAL, 10) || 100);
+  return {
+    checkpointInterval,
+    enabled: flags['no-checkpoint'] === undefined,
+  };
+}
+
 async function initKb(rest, ctx) {
   const p = await getProjectOrFail(ctx);
   if (!p) return;
   const flags = parseFlags(rest);
   const full = flags.full !== false;
-  const checkpointInterval = flags['checkpoint-interval']
-    ? parseInt(flags['checkpoint-interval'], 10)
-    : (parseInt(process.env.HK2_KB_CHECKPOINT_INTERVAL, 10) || 100);
+  const checkpointInterval = resolveInitCheckpointConfig(rest).checkpointInterval;
   const resume = flags.resume !== false && flags['no-resume'] === undefined;
-  const checkpoint = flags['no-checkpoint'] === undefined;
+  const checkpoint = resolveInitCheckpointConfig(rest).enabled;
   const skipSummary = flags['skip-summary'] !== undefined;
 
   ctx.print(`[kb init] project=${p.name}  source=${p.sourcePath}`);
@@ -242,8 +252,9 @@ async function statusKb(ctx) {
     return;
   }
   const stats = await readStats(p.id);
-  // The permanent supreme-code entry — self-heal when missing (projects
-  // initialized before the feature), then report its item count.
+  // The permanent supreme-code entry — attempt a best-effort self-heal when
+  // missing (projects initialized before the feature), then report its count.
+  // A failed self-heal is intentionally ignored so status can continue.
   let supremeCount = 0;
   try {
     await ensureSupremeCode(p.id, { createdVia: 'kb-status-selfheal' });

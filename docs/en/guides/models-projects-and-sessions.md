@@ -107,7 +107,11 @@ When unset, a phase uses the session model. Two distinct failure classes:
   / `request-assess` follow `HK2_ENABLE_PHASEMODEL_FALLBACK` (warn + re-run
   on the session model by default; `0` = warn + skip), while the review
   phases always warn and skip rather than silently substitute a different
-  reviewer.
+reviewer.
+
+If resolving the registry reference itself throws, the current caller prints a
+warning and uses the session model; that exception path is distinct from a
+stale reference, which resolves to `null` silently.
 
 See [Planning and review](planning-and-review.md); the silent-stale-ref
 behavior is a known limitation.
