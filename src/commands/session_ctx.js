@@ -70,6 +70,7 @@ import * as style from '../../lib/agent/style.js';
 import { safeParseArgs, toolHeader, formatPlanProgressLines, digestLine, plainPlanLines } from './status_format.js';
 import { compactMessages, collectWorkingTreeDiff, estimateMessagesTokens, applyCompactTokenEstimate } from './turn_support.js';
 import { ensureSessionFactsMessage } from '../../lib/agent/session_facts.js';
+import { looksLikeSlashCommand } from '../../lib/slash_command.js';
 
 /**
  * Build a bare session object (no readline / status bar). Shared by
@@ -1296,7 +1297,7 @@ export function captureMidTaskInput(session, line) {
   if (!session || !session.agentTurnActive) return false;
   if (!line || typeof line !== 'string') return false;
   if (!line.trim()) return false;
-  if (line.trim().startsWith('/')) return false;
+  if (looksLikeSlashCommand(line)) return false;
   if (!Array.isArray(session.userInputQueue)) session.userInputQueue = [];
   session.userInputQueue.push(line);
   return true;
