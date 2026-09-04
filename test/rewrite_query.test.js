@@ -302,7 +302,9 @@ test('assessRequest honors HK2_ASSESS_MIN_CONFIDENCE threshold override (P0-3)',
   }
 });
 
-test('assessRequest: HK2_ASSESS_REASONING=1 enables reasoning on the call (P2)', async () => {
+test('assessRequest: reasoning is ALWAYS enabled on the call (P2)', async () => {
+  // HK2_ASSESS_REASONING was removed when always-on became the policy (same
+  // as plan review / code review): the env var must have NO effect anymore.
   let seenOpts = null;
   const llm = {
     stream: async function* (_messages, opts) {
@@ -314,12 +316,52 @@ test('assessRequest: HK2_ASSESS_REASONING=1 enables reasoning on the call (P2)',
   try {
     delete process.env.HK2_ASSESS_REASONING;
     await assessRequest(llm, 'do it');
-    assert.equal(seenOpts.enableReasoning, false, 'reasoning off by default');
+    assert.equal(seenOpts.enableReasoning, true, 'reasoning on by default');
+    assert.equal(seenOpts.maxChars, undefined, 'no maxChars budget (thinking must not be starved)');
+    process.env.HK2_ASSESS_REASONING = '0';
+    await assessRequest(llm, 'do it');
+    assert.equal(seenOpts.enableReasoning, true, 'a leftover HK2_ASSESS_REASONING=0 cannot turn it off');
     process.env.HK2_ASSESS_REASONING = '1';
     await assessRequest(llm, 'do it');
-    assert.equal(seenOpts.enableReasoning, true, 'HK2_ASSESS_REASONING=1 turns it on');
+    assert.equal(seenOpts.enableReasoning, true, 'HK2_ASSESS_REASONING=1 is now a no-op');
   } finally {
     if (prev === undefined) delete process.env.HK2_ASSESS_REASONING;
     else process.env.HK2_ASSESS_REASONING = prev;
+  }
+});
+
+test('assessRequest: with reasoning on, the request body carries no maxChars-derived truncation budget', async () => {
+  // Guard the coupling that motivated removing maxChars: OpenAI derives
+  // max_tokens = maxChars/4 (2048 -> 512 truncates the verdict JSON once
+  // thinking tokens count against output); Anthropic derives thinking
+  // budget_tokens = maxChars/4*0.4 (2048 -> 204 < the API's 1024 minimum ->
+  // HTTP 400). With maxChars unset the adapters must NOT arm a small derived
+  // budget. We verify through the REAL OpenAI adapter's body construction.
+  const { streamOpenAI } = await import('../lib/llm/openai_adapter.js');
+  let capturedBody = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    capturedBody = JSON.parse(init?.body ?? '{}');
+    // Minimal SSE: usage chunk then [DONE], so the stream finishes cleanly.
+    const sse = 'data: ' + JSON.stringify({ choices: [{ delta: {} }], usage: {} }) + '\n\ndata: [DONE]\n\n';
+    return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const iter = streamOpenAI({
+      baseUrl: 'http://x.example',
+      apiKey: 'sk-x',
+      model: 'm',
+      messages: [{ role: 'user', content: 'q' }],
+      temperature: 0.1,
+      enableReasoning: true,          // what assessRequest now passes
+      // maxChars deliberately UNSET — mirroring the new assessRequest call
+      timeoutMs: 5000,
+    });
+    for await (const _evt of iter) { /* drain */ }
+    assert.ok(capturedBody, 'request was issued');
+    assert.equal(capturedBody.max_tokens, undefined, 'no maxChars-derived max_tokens cap');
+    assert.equal(capturedBody.chat_template_kwargs, undefined, 'enable_thinking:false must NOT be sent');
+  } finally {
+    globalThis.fetch = origFetch;
   }
 });
