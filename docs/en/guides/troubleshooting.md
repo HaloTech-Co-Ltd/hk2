@@ -15,9 +15,10 @@ here come from the shipped code.
   binaries, or a skipped `npm install`.
 - **Fix**: hk2 already fell back to its regex parsers — languages with a
   fallback parser continue at lower symbol precision; languages without one
-  (notably C#) yield no symbols. For full precision: use Node 20 LTS,
-  or recompile the bindings from source with `npm rebuild` inside the
-  install dir (default `~/.hk2`).
+  (notably C#) yield no symbols. Use a currently supported Node release
+  (Node 24 Active LTS is recommended; Node 22 Maintenance LTS is a fallback)
+  and verify the native binding on your platform; recompile it with
+  `npm rebuild` inside the install dir (default `~/.hk2`) if needed.
 - **See**: [Installation](../getting-started/installation.md),
   [CLI and language support](../reference/cli-and-language-support.md).
 

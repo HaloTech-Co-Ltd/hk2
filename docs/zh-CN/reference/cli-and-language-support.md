@@ -5,6 +5,10 @@
 hk2 命令行界面（参数、一次性模式、互斥关系）与各语言解析支持级别的参考。
 CLI 事实源是 `src/cli.js`；语言事实源是 `package.json` 与 `lib/parser/*`。
 
+工具层的 `SOURCE_EXT_RE` 是启发式白名单，不是完整的 parser/indexer 支持清单；
+它影响 bash/read 的 KB-first hint 分类、`read` 自动附加 outline/tag、`ast_grep`
+和 `ast_edit`。它不决定已经索引的文件能否由直接 `kb_outline` 查询。
+
 ## CLI
 
 ### 交互模式（默认）

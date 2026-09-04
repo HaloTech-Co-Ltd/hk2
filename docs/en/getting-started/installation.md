@@ -8,18 +8,19 @@ behavior, optional PDF/Word parsing, verification, and uninstalling.
 
 ## Requirements
 
-- Node.js **>= 18** (Node 20 LTS recommended for Tree-sitter native compatibility)
+- Technical minimum declared by the package: Node.js **>= 18**. Node 18 and
+  20 are EOL; in September 2026 use a currently supported release, preferably
+  Node 24 Active LTS. Node 22 Maintenance LTS is a compatibility choice after
+  verifying the native Tree-sitter bindings on your platform.
 - `npm install` to build the Tree-sitter native bindings (14 language packages)
 
-> **Tree-sitter compatibility note**: very new Node versions (e.g. Node 25+)
-> may have N-API / V8 ABI mismatches with the prebuilt Tree-sitter binaries
-> on some platforms. If `/kb init` logs `tree-sitter parse failed`, hk2
-> transparently falls back to its regex-based parsers: languages with a
-> regex fallback keep working at lower symbol precision, but languages
-> **without** a fallback parser (notably C#) yield no symbols at all — see
+> **Tree-sitter compatibility note**: native bindings must be verified on the
+> Node/platform combination you deploy. This repository does not maintain a
+> cross-version, all-platform binding matrix. If `/kb init` logs
+> `tree-sitter parse failed`, try `npm rebuild` in the actual install directory;
+> hk2 falls back to regex-based parsers where one exists, while languages
+> without a fallback (notably C#) yield no symbols — see
 > [CLI and language support](../reference/cli-and-language-support.md).
-> For maximum precision, install on Node 20 LTS or run `npm rebuild` to
-> recompile from source.
 
 hk2 is not published to npm. Install from source.
 

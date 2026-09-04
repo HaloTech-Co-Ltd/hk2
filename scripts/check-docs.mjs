@@ -104,7 +104,7 @@ function stripCode(text) {
  * Matches [label](target) and ![alt](target); skips http(s)/mailto/auto-link
  * targets and pure #anchors. Returns targets with query/fragment stripped.
  */
-function extractLocalLinks(text) {
+export function extractLocalLinks(text) {
   const targets = [];
   const re = /(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   let m;
@@ -266,16 +266,22 @@ for (const [abs, raw] of rawContents) {
     }
     // Language switch must appear in the first non-empty block after the H1.
     if (abs.startsWith(DOCS) && abs !== path.join(DOCS, 'README.md')) {
-      const h1Newline = body.indexOf('\n', body.indexOf('# '));
-      const afterH1 = body.slice(h1Newline + 1);
-      const firstBlock = afterH1.trim().split(/\n\s*\n/)[0] || '';
       const partner = abs.startsWith(EN)
         ? zhCounterpart(abs)
         : abs.startsWith(ZH) ? enCounterpart(abs) : null;
-      if (partner) {
-        const rel = path.relative(path.dirname(abs), partner);
-        const linkRe = new RegExp(']\\(' + escapeRe(rel) + '\\)');
-        if (!linkRe.test(firstBlock)) {
+      // Use the H1 match already found above. Do not search for a new literal
+      // "# " anchor: prose, non-standard spacing, or fenced headings must not
+      // move the first-block boundary. A page with multiple H1s already gets
+      // its structural error; skip this secondary location diagnostic.
+      if (partner && h1s.length === 1) {
+        const h1 = h1s[0];
+        const h1Newline = body.indexOf('\n', h1.index);
+        const afterH1 = h1Newline < 0 ? '' : body.slice(h1Newline + 1);
+        const firstBlock = afterH1.trim().split(/\n\s*\n/)[0] || '';
+        const linkedTargets = extractLocalLinks(firstBlock)
+          .map(target => safeResolve(abs, target))
+          .filter(Boolean);
+        if (!linkedTargets.includes(partner)) {
           problem(abs, 'language-switch link not in the first block under the H1');
         }
       }

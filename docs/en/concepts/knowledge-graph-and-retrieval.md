@@ -35,15 +35,17 @@ flowchart LR
    generic regex parser. Documents (Markdown, JSON, YAML, HTML, SGML, PDF,
    Word, PowerPoint, plain text) go through `lib/parser/doc_parser.js` and
    are routed into Eden Space as `doc:<relpath>` entries.
-3. **Symbol extraction** — every parse returns `Symbol[]` records: name,
-   kind (function / method / class / interface / struct / field), line
-   range, signature, qualified name, parent, super-classes, implemented
-   interfaces, imports, and doc comments.
+3. **Symbol extraction** — each source-code parser path returns a common
+   `Symbol[]` shape: name, kind (function / method / class / interface /
+   struct / field), and line range, with signature and richer fields such as
+   `qualName`, parent, inheritance, imports, and `docString` when applicable
+   and exposed by the extractor. Document parsing follows a separate
+   document-entry/document-graph path rather than the ordinary Symbol parse.
 4. **Index build** — the BM25 inverted index (`lib/index/bm25.js`, tokenizer
    in `lib/index/text_tokenizer.js`, including a CN/EN dictionary for
    mixed-language queries), the legacy callgraph, the knowledge graph
    (`lib/graph/builder.js`), and the file/symbol registries are written to
-   `~/.hk2/kb/<projectId>/`.
+   `$HK2_KB_DIR/<projectId>/`, defaulting to `$HK2_HOME/kb/<projectId>/`.
 5. **Summaries** — at the end of `/kb init`, **when a model is configured
    and `--skip-summary` is not passed**, an LLM authors the three structural
    Eden entries. Without a configured LLM the index is still built; only the
@@ -67,7 +69,7 @@ one (notably C#).
 On `/kb init`, hk2 builds a code knowledge graph from the Symbols:
 
 ```text
-~/.hk2/kb/<projectId>/graph/
+$HK2_KB_DIR/<projectId>/graph/  # default: $HK2_HOME/kb/<projectId>/
   nodes.json            id → node record (function / method / class / interface / struct / field)
   edges.calls.json      srcId → [calleeIds, ...]
   edges.imports.json    srcId → [importedFileNodeIds, ...]
@@ -104,17 +106,23 @@ The REPL-side equivalents are `/kb neighbors` (1-hop) and the tools above.
 
 ## BM25 retrieval
 
-`/kb search <query>` and the `kb_search` tool rank symbols by BM25 over the
-inverted index, then rerank by name match. By default the user query is first
-rewritten by an LLM into English function names + keywords
-(`HK2_ENABLE_QUERYREWRITE`, default on; `kb_search` accepts `skip_rewrite`
-when you already have identifiers). Top results can carry a ±15-line source
-slice so the agent often needs no follow-up `read`.
+Both interfaces query the same BM25 symbol index, but they are different
+wrappers with different defaults:
 
-Knowledge entries are searched separately by `kb_search_knowledge` (keyword
-overlap over Holy + Eden titles, keywords, **and intro bodies** — title and
-keyword hits dominate the ranking, while intro hits surface entries that
-mention the fact only in their body).
+| Interface | Rewrite | Default results | Source slices |
+|---|---:|---:|---:|
+| `/kb search` | No | 20 | No |
+| Agent `kb_search` | When an LLM is attached and `skip_rewrite` is not true | 10, clamped 5–50 | Top 3 by default |
+
+`/kb search <query>` passes the user's query directly to `codeSearch()` and
+prints names, kinds, files, line numbers, scores, and signatures. It does not
+read `HK2_ENABLE_QUERYREWRITE`, rewrite the query, or attach ±15-line slices.
+The Agent `kb_search` tool can attempt an inline LLM rewrite independently of
+the turn-start `HK2_ENABLE_QUERYREWRITE` flag; `with_slice=false` disables its
+source slices. Knowledge entries are searched separately by
+`kb_search_knowledge` (keyword overlap over Holy + Eden titles, keywords, and
+intro bodies — title and keyword hits dominate the ranking, while intro hits
+surface entries that mention the fact only in their body).
 
 ## Per-request context injection
 
@@ -145,8 +153,11 @@ injected context while pure metadata stays visible (see
 ## Incremental updates, checkpoints, and recovery
 
 - **Incremental update** — `/kb update` re-hashes files (sha256) and
-  re-parses only the changed ones, then rebuilds the derived indexes. It also
-  auto-detects a legacy KB layout: knowledge entries are backed up to
+  incrementally parses changed source files, rebuilds symbol/index/graph
+  derived structures, rebuilds `doc_index.json`, and synchronizes
+  parser-owned `doc:<relpath>` Eden entries (including removing stale entries
+  for deleted or excluded documents). It also auto-detects a legacy KB layout:
+  knowledge entries are backed up to
   `backup/pre-upgrade-<ts>/` first, then the migration is applied (a
   parser-version change triggers a full re-index).
 - **Checkpoints** — `/kb init` saves a checkpoint every N files

@@ -9,6 +9,7 @@
  *-------------------------------------------------------------------------*/
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { buildTools } from '../lib/agent/tools.js';
 import { buildSystemPrompt } from '../lib/agent/system_prompt.js';
 
@@ -160,4 +161,71 @@ test('system prompt: conditional prefetch, hint buckets, plan_step backstop, per
   assert.doesNotMatch(initSummary, /api-docs/, 'api-docs must not be a /kb init summary');
   assert.match(prompt, /offer, or automatically run/i, 'kb update offer/auto line');
   assert.match(prompt, /doc: entries/i, 'doc: sync disclosed in the prompt');
+});
+
+
+test('plan runtime accepts minimums without a maximum and normalizes recommended flags', async () => {
+  const plan = byName('plan');
+  const strategies = Array.from({ length: 5 }, (_, i) => ({
+    name: `strategy-${i + 1}`,
+    description: 'candidate',
+    ...(i < 2 ? { recommended: true } : {}),
+  }));
+  const steps = Array.from({ length: 6 }, (_, i) => ({
+    goal: `goal-${i + 1}`,
+    strategies,
+  }));
+  const result = await plan.execute({ steps });
+  assert.equal(result.confirmed, true, 'six steps/five strategies are not hard-rejected');
+  assert.match(result.plan, /Step 1: goal-1 -> strategy-1/);
+  assert.match(result.plan, /Step 6: goal-6 -> strategy-1/);
+  const noSummary = await plan.execute({ steps: steps.slice(0, 2) });
+  assert.equal(noSummary.confirmed, true, 'missing summary normalizes to empty text');
+
+  const invalid = await plan.execute({ steps: [{ goal: 'only-one', strategies }] });
+  assert.match(invalid.error, /at least 2 usable steps/i);
+  assert.doesNotMatch(invalid.error, /2-4|exactly one recommended|summary string/i);
+});
+
+test('plan schema marks step and strategy counts as recommended shape', () => {
+  const t = byName('plan');
+  const steps = t.parameters.properties.steps;
+  const strategies = steps.items.properties.strategies;
+  assert.match(steps.description, /Recommended shape.*2-5/i);
+  assert.match(steps.description, /no maximum/i);
+  assert.match(strategies.description, /Recommended shape.*2-4/i);
+  assert.match(strategies.description, /no maximum/i);
+});
+
+test('remember failure is explicit when persistence callback is absent', async () => {
+  const noPersistence = buildTools({}, { projectId: 'p-test' });
+  const remember = noPersistence.find(t => t.name === 'remember');
+  assert.ok(remember);
+  const result = await remember.execute({ fact: 'staging endpoint 192.0.2.10' });
+  assert.equal(result.ok, false);
+  assert.match(remember.description, /After successful persistence/i);
+  assert.doesNotMatch(`${remember.snippet} ${remember.description}`, /10\.1\.2\.3/);
+});
+
+test('kb_outline and system prompt distinguish source-content reads and rewrite conditions', () => {
+  const outline = byName('kb_outline');
+  assert.match(outline.description, /no source-content read/i);
+  assert.match(outline.description, /Filesystem metadata/i);
+  assert.match(outline.description, /does not use SOURCE_EXT_RE/i);
+  const prompt = buildSystemPrompt({ project: { name: 'p' }, tools: [] });
+  assert.match(prompt, /When an LLM is attached and skip_rewrite is not true/);
+  assert.match(prompt, /no source-content read/);
+  assert.match(prompt, /reporting hint/);
+});
+
+test('concept docs keep /kb search separate from Agent kb_search', () => {
+  for (const lang of ['en', 'zh-CN']) {
+    const doc = readFileSync(new URL(`../docs/${lang}/concepts/knowledge-graph-and-retrieval.md`, import.meta.url), 'utf8');
+    const table = doc.slice(doc.indexOf('## BM25'), doc.indexOf('## ', doc.indexOf('## BM25') + 5));
+    assert.match(table, /\/kb search/);
+    assert.match(table, /20/);
+    assert.match(table, /Agent `kb_search`/);
+    assert.match(table, /5.?50/);
+    assert.doesNotMatch(table, /\/kb search.*rewrite.*default/i);
+  }
 });

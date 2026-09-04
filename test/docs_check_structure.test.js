@@ -87,3 +87,35 @@ test('heading level skip is caught', () => {
   assert.match(r.out, /heading level skips from H2 to H4/);
   rmSync(root, { recursive: true, force: true });
 });
+
+
+test('language switch uses resolved target and only the first post-H1 block', () => {
+  const { root } = makeRepo();
+  // The checker must resolve the actual link target rather than comparing a
+  // platform-specific path.relative() string (Windows uses backslashes).
+  writeFileSync(path.join(root, 'docs/en/x/p.md'),
+    '# Page\n\nEnglish | [简体中文](../../zh-CN/x/p.md)\n\n## Body\n');
+  const r = run(root);
+  assert.equal(r.code, 0, r.out);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('wrong language partner path fails even when its label is correct', () => {
+  const { root } = makeRepo();
+  writeFileSync(path.join(root, 'docs/en/x/p.md'),
+    '# Page\n\nEnglish | [简体中文](../../zh-CN/x/missing.md)\n');
+  const r = run(root);
+  assert.match(r.out, /broken local link: \.\.\/\.\.\/zh-CN\/x\/missing\.md/);
+  assert.match(r.out, /no language-switch link to zh-CN counterpart/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('multiple H1s report structure only, not a misleading first-block error', () => {
+  const { root } = makeRepo();
+  writeFileSync(path.join(root, 'docs/en/x/p.md'),
+    '# First\n\nEnglish | [简体中文](../../zh-CN/x/p.md)\n\n# Second\n');
+  const r = run(root);
+  assert.match(r.out, /has 2 ATX H1/);
+  assert.doesNotMatch(r.out, /language-switch link not in the first block/);
+  rmSync(root, { recursive: true, force: true });
+});

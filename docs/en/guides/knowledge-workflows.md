@@ -23,9 +23,9 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
   implementation — the `--full` flag is accepted but redundant; use
   `/kb update` for incremental refreshes. Interrupted builds resume from
   the checkpoint.
-- `/kb update` incrementally re-parses changed files, rebuilds the derived
-  symbol indexes/graphs, and synchronizes parser-owned `doc:<relpath>` Eden
-  entries (new/changed docs written or replaced, deleted/excluded docs'
+- `/kb update` incrementally re-parses changed source files, rebuilds the
+  derived symbol/index/graph structures and `doc_index.json`, and synchronizes
+  parser-owned `doc:<relpath>` Eden entries (new/changed docs written or replaced, deleted/excluded docs'
   parser-owned entries removed). It auto-detects a
   legacy KB: knowledge entries are backed up to `backup/pre-upgrade-<ts>/`
   first, then the migration is applied (a parser-version change triggers a
@@ -60,7 +60,10 @@ The unified deep-study command auto-selects between two modes:
   `usage-examples`) — it runs only when NOT `--dry-run`, NOT `--base-dir`,
   and NOT `--no-survey` (`--base-dir` scopes to the subdirectory and skips
   the whole-project survey; `--dry-run` and `--no-survey` skip it too);
-  Phase 1 plans topic batches; Phase 2 extracts one entry per topic.
+  Phase 1 plans topic batches; Phase 2 performs one extraction call per batch
+  and may produce zero or more proposed knowledge entries. Each proposal is
+  validated independently and may be skipped, merged, conflict-resolved, or
+  written.
 - **DOC mode** — `--file=<path>` or a `--base-dir` that is not an indexed
   subdirectory. Deep-studies Markdown / PDF / Word / PowerPoint / text
   documents into the chosen space. Files may live outside the project; large

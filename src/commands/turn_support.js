@@ -671,7 +671,8 @@ async function runKbUpdate(session, ctx) {
     const { buildIndex } = await import('../../lib/index/indexer.js');
     const { markKbBuilt } = await import('../../lib/config/home.js');
     const { dropRuntime } = await import('../../lib/retrieval/kb_runtime.js');
-    // Legacy-KB upgrade check: fix stale layout signals losslessly before the
+    // Legacy-KB upgrade check: back up knowledge entries first, then migrate
+    // (best-effort — not a zero-risk guarantee) before the
     // incremental re-index (same flow as /kb update and --mode=update-kb).
     let full = false;
     try {

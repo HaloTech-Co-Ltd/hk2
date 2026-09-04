@@ -105,9 +105,13 @@ write-oriented tools read the existing file as part of their operation:
 - `resolve` re-checks `w` at apply time, then reads each file to re-validate
   its tag before writing.
 
-> Deny both `r` and `w` — usually `deny: "rwx"` — for confidential paths,
-> and remove or rebuild any KB data already derived from them (see the
-> indexed-data warning above). `bash` checks remain a best-effort lexical
+> Deny both `r` and `w` — usually `deny: "rwx"` — for confidential paths.
+> `setting.json` permissions are not an indexing-exclusion mechanism. A denied
+> path can still be ingested by `/kb init` or `/kb update` when project roots
+> and globs select it. Remove the path from the indexed source set first by
+> adjusting `sourceRoot`, complete include/exclude globs, or the project roots;
+> then delete the existing KB or affected knowledge entries and rebuild with
+> the filtered scan range. `bash` checks remain a best-effort lexical
 > scan, not an OS sandbox, and external MCP servers are not constrained by
 > the local path-permission service at all.
 
@@ -135,9 +139,11 @@ operands require `r` (read-only commands) or `w` (mutating commands like
 `rm` / `mv` / redirects).
 
 > **A shell is Turing-complete.** This scan is a guardrail against
-> accidental damage, not a hard sandbox — a command can construct paths the
-> scanner cannot see. The dedicated file tools are the hardened path; treat
-> `bash` permission checks as best-effort.
+> accidental damage, not a hard sandbox. It is a lexical heuristic: a bare
+> relative filename without `/` may not be recognized, and dynamic path
+> construction, variable expansion, subshells, or obfuscated commands can
+> evade the scan. The dedicated file tools are the hardened path; treat `bash`
+> permission checks as best-effort.
 
 ### Agent read-only configuration
 
@@ -172,13 +178,15 @@ mirror file content:
   and the full entries returned by `kb_knowledge` (which may read the
   on-disk knowledge store directly).
 
-> **Confidentiality warning**: a read deny is **not** currently a complete
-> confidentiality boundary for data indexed before the rule was applied. It
-> suppresses the explicitly filtered mirrored-content channels listed
-> above, but source-derived signatures, graph metadata, and stored
-> Holy/Eden entry bodies may remain visible. When confidentiality requires
-> removing already-indexed material, rebuild or delete the affected KB
-> data.
+> **Confidentiality warning**: `setting.json` is not an index-ingestion
+> exclusion mechanism. Even a `deny:r` present before `/kb init` can leave
+> symbol names, qualified names, kinds, signatures, line ranges, imports,
+> inheritance, containment, file hashes, outline tags, parser-owned
+> `doc:<relpath>` bodies, and Holy/Eden knowledge bodies in the KB when the
+> selected roots/globs include the path. `kb_outline` filters `docString`, but
+> still returns symbol metadata and a file-registry tag. To remove sensitive
+> data, first remove the path from the scan roots/globs, delete the existing KB
+> or relevant entries, and run `/kb init` again.
 
 ## Credentials and file permissions
 
@@ -198,7 +206,9 @@ What this model is designed to provide:
 
 - a hard boundary for the **structured file tools** outside the project;
 - protection of the permission configuration itself from agent writes;
-- enforcement of source-file read permissions through KB-derived content.
+- suppression of explicitly filtered mirrored-content channels, not a complete
+  confidentiality boundary for all index-derived metadata or stored knowledge
+  bodies.
 
 What it does **not** provide:
 

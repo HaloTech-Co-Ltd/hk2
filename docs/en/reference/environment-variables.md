@@ -19,7 +19,7 @@ its own parsing rule.
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_HOME` | Config / data home | `~/.hk2` | Holds models.json, projects.json, kb/, sessions/, logs/ |
+| `HK2_HOME` | Config / data home | `~/.hk2` | Holds models.json, projects.json, sessions/, logs/; KBs live under `HK2_HOME/kb/` only when `HK2_KB_DIR` is unset |
 | `HK2_KB_DIR` | KB root override | `$HK2_HOME/kb` | Caveat: legacy `--mode` commands detect the current project's KB via the default `$HK2_HOME/kb` path — with a custom `HK2_KB_DIR` that auto-detection can miss the real KB and fall back to `default`; set `HK2_KB_NAME` explicitly in that setup |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands. Resolution: a non-empty `HK2_KB_NAME` wins; else the shared current project's UUID **when its KB dir already has `meta.json`**; else the literal `default` | non-empty value / project UUID / `default` | |
 | `HK2_PREFIX` | Install prefix used by `install.sh` for the symlink | `/usr/local` | install.sh only |
@@ -64,14 +64,14 @@ its own parsing rule.
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
 | `HK2_ENABLE_PLANREVIEW` | `1`: after the user confirms a plan, an LLM reviews it (requirement checklist, per-point coverage, ordering, feasibility, risks) before execution; issues confirmed one-by-one; unparseable verdict = UNKNOWN. Interactive TTY only; best-effort | `0` | |
-| `HK2_ENABLE_CODEREVIEW` | `1`: after a plan finishes executing, a code review checks the working-tree diff, changed files, and final summary; issues listed one-by-one; unparseable verdict = UNKNOWN. Interactive TTY only; best-effort | `0` | |
+| `HK2_ENABLE_CODEREVIEW` | `1`: after a normal agent return when this turn confirmed a plan or started while continuing one, finalization may clear the panel and trigger a code review of the diff, changed files, and final summary; an ordinary mid-plan question can therefore also trigger it. Issues listed one-by-one; unparseable verdict = UNKNOWN. Interactive TTY only; best-effort | `0` | |
 
 ## KB build and learn
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` checkpoint cadence in files, parsed as `parseInt(value \|\| '100')`. `0` does **not** disable checkpointing — the save check degenerates and a checkpoint is written on every file; use the `--no-checkpoint` flag to disable. Negative/non-numeric values are not meaningfully validated — do not use them | `100` | Per-run `--checkpoint-interval=N` / `--no-checkpoint` |
-| `HK2_INDEX_PARALLEL` | Parallelism of the KB parse pool; `0`/unset = auto (host CPU count) | `0` | |
+| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` checkpoint cadence in files. `parseInt(value \|\| '100')` is passed directly to `Checkpoint.interval`: positive N saves every N marks; `0` and negative values save on almost every file; a non-numeric value becomes `NaN` and the comparison also causes frequent saves. Use `--no-checkpoint` to disable; do not rely on invalid values | `100` | Per-run `--checkpoint-interval=N` / `--no-checkpoint` |
+| `HK2_INDEX_PARALLEL` | Parallelism of the KB parse pool. Only a strict positive integer string (`1`, `4`, `+8`) takes effect; unset, empty, `0`, negative, invalid, decimal (`1.5`), and scientific notation (`1e3`) use auto: `availableParallelism()`, then `cpus().length`, then 4 | `0` | |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning timeout (ms). Parsed as `parseInt(value) \|\| 300000`: `0` and non-numeric values fall back to the default (this is NOT a "0 = disable" variable, unlike the LLM timeouts) | `300000` | Per-run `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`: silently run an incremental `/kb update` at end of any turn where the agent fell back to bash to search source files. The update rebuilds the derived indexes AND synchronizes parser-owned `doc:<relpath>` Eden entries (see `/kb update`) | `0` | Otherwise prompts y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`: silently save the end-of-turn extracted knowledge entry to Eden. Holy ALWAYS prompts y/N regardless | `0` | |
@@ -111,7 +111,7 @@ These are not hk2-specific; hk2 reads them the way terminal tools usually do:
 | Variable | Used for |
 |---|---|
 | `NO_COLOR` | Disables ANSI colors (same effect as `HK2_NO_COLOR=1`) |
-| `TERM` | Color-mode and TUI capability detection: `dumb` disables color and blocks the TUI; `xterm-256color` (and `linux`/empty) feed 256-color and Windows UTF-8 inference |
+| `TERM` | Color-mode and TUI capability detection: `dumb` disables color and blocks the TUI; `linux` or empty selects ANSI 256-color; other TERM values, including `xterm-256color`, fall through to truecolor. `xterm-256color` is also an independent Windows UTF-8 inference signal |
 | `COLORTERM` | Truecolor detection (`truecolor` / `24bit` → 24-bit color mode) |
 | `WT_SESSION` | Windows Terminal detection: truecolor inference + Windows UTF-8 capability inference |
 | `TERM_PROGRAM` | `vscode` feeds the Windows UTF-8 capability inference (not truecolor detection) |

@@ -33,13 +33,15 @@ flowchart LR
    （Markdown、JSON、YAML、HTML、SGML、PDF、Word、PowerPoint、纯文本）
    经 `lib/parser/doc_parser.js` 处理，以 `doc:<relpath>` 条目归入 Eden
    空间。
-3. **符号提取**——每次解析返回 `Symbol[]` 记录：名称、种类（函数 / 方法 /
-   类 / 接口 / 结构体 / 字段）、行范围、签名、限定名、父级、基类、实现
-   接口、导入与文档注释。
+3. **符号提取**——每条源码解析路径都返回统一形状的 `Symbol[]`：名称、种类
+   （函数 / 方法 / 类 / 接口 / 结构体 / 字段）和行范围；签名以及 `qualName`、
+   parent、继承、imports、`docString` 等丰富字段，只有在适用且 extractor 提供
+   时才存在。文档解析走独立的 document-entry / document-graph 路径，不是普通
+   Symbol parse。
 4. **索引构建**——BM25 倒排索引（`lib/index/bm25.js`，分词器在
    `lib/index/text_tokenizer.js`，含中英混查词典）、旧版调用图、知识图谱
    （`lib/graph/builder.js`）与文件 / 符号注册表写入
-   `~/.hk2/kb/<projectId>/`。
+   `$HK2_KB_DIR/<projectId>/`，默认是 `$HK2_HOME/kb/<projectId>/`。
 5. **摘要**——`/kb init` 结束时，**在已配置模型且未传 `--skip-summary` 的
    情况下**，LLM 才会撰写三个结构性 Eden 条目。未配置 LLM 时索引照常构建，
    仅跳过摘要条目。
@@ -60,7 +62,7 @@ Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路�
 `/kb init` 时，hk2 基于 Symbol 构建代码知识图谱：
 
 ```text
-~/.hk2/kb/<projectId>/graph/
+$HK2_KB_DIR/<projectId>/graph/  # 默认：$HK2_HOME/kb/<projectId>/
   nodes.json            id -> 节点记录（函数 / 方法 / 类 / 接口 / 结构体 / 字段）
   edges.calls.json      srcId -> [calleeIds, ...]
   edges.imports.json    srcId -> [被导入文件节点 ids, ...]
@@ -94,15 +96,19 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 
 ## BM25 检索
 
-`/kb search <query>` 与 `kb_search` 工具按 BM25 倒排索引对符号排序，再按
-名称匹配重排。默认先由 LLM 把用户查询改写为英文函数名 + 关键词
-（`HK2_ENABLE_QUERYREWRITE`，默认开启；`kb_search` 接受 `skip_rewrite`
-在你已有标识符时跳过改写）。头部结果可携带 ±15 行源码切片，智能体通常
-无需再 `read`。
+两个接口查询同一个 BM25 符号索引，但包装层和默认值不同：
 
-知识条目由 `kb_search_knowledge` 单独检索（对 Holy + Eden 的标题、关键词
-**与 intro 正文**做重叠匹配——标题 / 关键词命中主导排序，intro 命中让仅在
-正文提到该事实的条目也能浮现）。
+| 接口 | 改写 | 默认结果数 | 源码切片 |
+|---|---:|---:|---:|
+| `/kb search` | 否 | 20 | 否 |
+| Agent `kb_search` | 有 LLM 且 `skip_rewrite` 不为 true 时 | 10，有效范围 5–50 | 默认前 3 条 |
+
+`/kb search <query>` 将用户查询原样传给 `codeSearch()`，输出名称、种类、文件、
+行号、分数与签名；它不读取 `HK2_ENABLE_QUERYREWRITE`，不改写查询，也不附加
+±15 行切片。Agent `kb_search` 的工具内改写独立于轮次开始的
+`HK2_ENABLE_QUERYREWRITE`；`with_slice=false` 可关闭源码切片。知识条目由
+`kb_search_knowledge` 单独检索（在 Holy + Eden 的标题、关键词与简介正文上做
+关键词重叠排序；标题和关键词命中优先，简介命中用于浮现正文提到该事实的条目）。
 
 ## 按请求注入上下文
 
@@ -127,10 +133,11 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 
 ## 增量更新、检查点与恢复
 
-- **增量更新**——`/kb update` 对文件重新计算 sha256，仅重新解析变化的
-  文件，然后重建派生索引。它还会自动检测旧版知识库布局：先把
-  知识条目备份到 `backup/pre-upgrade-<ts>/`，再按当前迁移代码处理（解析器
-  版本变化会触发全量重建）。
+- **增量更新**——`/kb update` 对文件重新计算 sha256，仅增量解析变化的源码
+  文件，重建符号 / 索引 / 图谱派生结构与 `doc_index.json`，并同步解析器管理的
+  `doc:<relpath>` Eden 条目（删除或排除的文档对应的过期条目也会移除）。它还会
+  自动检测旧版知识库布局：先把知识条目备份到 `backup/pre-upgrade-<ts>/`，再按
+  当前迁移代码处理（解析器版本变化会触发全量重建）。
 - **检查点**——`/kb init` 每处理 N 个文件保存一次检查点
   （`--checkpoint-interval=N`，默认 `HK2_KB_CHECKPOINT_INTERVAL=100`）。中断
   后重新运行从*最近一次*已保存的检查点恢复：其中记录的文件被跳过，而该

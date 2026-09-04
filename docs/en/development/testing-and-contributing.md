@@ -9,9 +9,10 @@ branch policy is imposed beyond what you see here.
 
 ## Requirements
 
-- Node.js >= 18 (Node 20 LTS recommended — see
-  [Installation](../getting-started/installation.md) for the Tree-sitter
-  compatibility notes)
+- Technical minimum: Node.js >= 18. Node 18 and 20 are EOL; use a currently
+  supported release (Node 24 Active LTS recommended, Node 22 Maintenance LTS
+  as a compatibility choice) and verify Tree-sitter bindings on your platform
+  — see [Installation](../getting-started/installation.md).
 - A checkout of the repository with dependencies installed:
 
 ```bash

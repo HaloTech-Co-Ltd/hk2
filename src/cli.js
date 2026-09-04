@@ -167,12 +167,12 @@ Session resume:
 Config locations:
   ~/.hk2/models.json           Multi-provider model registry
   ~/.hk2/projects.json         Project registry + current pointer
-  ~/.hk2/kb/<projectId>/       Per-project KB (holy / eden / index spaces)
+  $HK2_KB_DIR/<projectId>/     Per-project KB (default: $HK2_HOME/kb/<projectId>/)
   ~/.hk2/sessions/<projectId>/<sessionId>.jsonl   Session transcripts
 
 Environment variables:
   HK2_HOME              Override ~/.hk2 location
-  HK2_KB_DIR            Override KB root (default ~/.hk2/kb)
+  HK2_KB_DIR            Override KB root (default $HK2_HOME/kb)
   HK2_KB_NAME           KB name for legacy --mode commands
   HK2_PROJECT_SOURCE    Project source root for tool sandbox
   HK2_PLAN_TIMEOUT_MS   /kb knowledge learn Phase 1 planning timeout (ms;

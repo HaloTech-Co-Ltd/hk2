@@ -51,8 +51,10 @@ it.
 
 ## Requirements
 
-- Node.js >= 18 (Node 20 LTS recommended for Tree-sitter native
-  compatibility)
+- Technical minimum declared by the package: Node.js >= 18. Node 18 and 20
+  are EOL; in September 2026 use a currently supported release, preferably
+  Node 24 Active LTS. Node 22 Maintenance LTS is a compatibility choice after
+  verifying the native Tree-sitter bindings on your platform.
 - `npm install` builds the Tree-sitter native bindings; without them hk2
   falls back to regex parsers
 

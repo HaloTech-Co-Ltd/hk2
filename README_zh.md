@@ -41,7 +41,10 @@
 
 ## 环境要求
 
-- Node.js >= 18（推荐 Node 20 LTS，以获得 Tree-sitter 原生兼容性）
+- 软件包声明的技术最低版本：Node.js >= 18。Node 18 与 20 已 EOL；截至
+  2026 年 9 月应使用 Node.js 项目仍维护的版本，首选 Node 24 Active LTS。
+  Node 22 Maintenance LTS 可作为兼容选择，但应先在目标平台核验
+  Tree-sitter 原生绑定。
 - `npm install` 构建 Tree-sitter 原生绑定；缺失时 hk2 回退到正则解析器
 
 ## 安装

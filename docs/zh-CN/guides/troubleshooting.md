@@ -12,8 +12,9 @@
 - **原因**：Tree-sitter 原生绑定缺失或 ABI 不匹配——通常是过新的 Node
   版本（如 Node 25+）对上预编译二进制，或跳过了 `npm install`。
 - **解决**：hk2 已自动回退到正则解析器——有回退解析器的语言以较低符号精度继续；没有回退的语言（尤其是 C#）不产出符号。
-  要恢复完整精度：改用 Node 20 LTS，或在安装目录（默认 `~/.hk2`）内执行
-  `npm rebuild` 从源码重新编译绑定。
+  请使用仍受支持的 Node 版本（Node 24 Active LTS 首选，Node 22 Maintenance
+  LTS 可作兼容选择），并在目标平台核验原生绑定；必要时在安装目录（默认
+  `~/.hk2`）内执行 `npm rebuild` 从源码重新编译绑定。
 - **参见**：[安装](../getting-started/installation.md)、
   [CLI 与语言支持](../reference/cli-and-language-support.md)。
 

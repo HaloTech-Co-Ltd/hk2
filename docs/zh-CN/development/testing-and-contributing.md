@@ -8,8 +8,9 @@ CLA、DCO 或分支策略要求。
 
 ## 环境要求
 
-- Node.js >= 18（推荐 Node 20 LTS——Tree-sitter 兼容性说明见
-  [安装](../getting-started/installation.md)）
+- 技术最低版本：Node.js >= 18。Node 18 与 20 已 EOL；使用仍受支持的版本
+  （首选 Node 24 Active LTS，Node 22 Maintenance LTS 可作兼容选择），并在
+  目标平台核验 Tree-sitter 绑定——见[安装](../getting-started/installation.md)。
 - 一份仓库检出并已安装依赖：
 
 ```bash

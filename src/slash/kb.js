@@ -41,14 +41,17 @@
 /**
  * /kb command family — lifecycle and queries for the current project's KB.
  *
- * Three-space model:
- *   Holy Space   — stable knowledge (design principles, key algorithms).
- *                  Updates always require user approval (y/N), even when
- *                  HK2_ENABLE_AUTOUPDATEKB or HK2_ENABLE_AUTO_LEARN is 1.
- *   Eden Space   — frequently-updated knowledge (function lists, SQL command
- *                  catalogs). Auto-updatable when HK2_ENABLE_AUTO_LEARN=1.
- *   Index Space  — code index + per-space indexes + callgraph. Auto-updatable
- *                  when HK2_ENABLE_AUTOUPDATEKB=1.
+ * Three-space model (update behavior is per write path):
+ *   Holy Space   — stable knowledge. Agent-proposed writes confirm; explicit
+ *                  user commands (/kb knowledge add --space=holy) are the
+ *                  user's own intent; DOC learn --space=holy prompts once per
+ *                  run (merges/overwrites of existing entries confirm per entry).
+ *   Eden Space   — frequently-updated knowledge. Agent kb_save_knowledge
+ *                  auto-writes under HK2_ENABLE_AUTO_LEARN; parser-owned
+ *                  doc:<relpath> entries are synced by /kb init and /kb update.
+ *   Index Space  — code index + per-space indexes + callgraph. Explicit
+ *                  init/update run immediately; the end-of-turn auto update
+ *                  is gated on HK2_ENABLE_AUTOUPDATEKB.
  *
  * Usage:
  *   /kb init [--full]                  Build KB for the current project (full re-index)
@@ -72,7 +75,7 @@ import { buildIndex } from '../../lib/index/indexer.js';
 import { addKbForProject, getKbMeta } from '../../lib/index/registry.js';
 import {
   readStats, listKnowledge, readKnowledge, deleteKnowledge, moveKnowledge,
-  writeKnowledge, rebuildKnowledgeIndex,
+  writeKnowledge, rebuildKnowledgeIndex, kbDir,
 } from '../../lib/store/kb_store.js';
 import {
   SUPREME_CODE_ID, SUPREME_CODE_MAX_ITEMS, isSupremeCode,
@@ -143,7 +146,7 @@ async function initKb(rest, ctx) {
 
   ctx.print(`[kb init] project=${p.name}  source=${p.sourcePath}`);
   if (p.sourceRoot) ctx.print(`           sourceRoot=${p.sourceRoot}`);
-  ctx.print(`           kb dir=~/.hk2/kb/${p.id}/`);
+  ctx.print(`           kb dir=${kbDir(p.id)}/`);
   ctx.print(`           checkpoint: ${checkpoint ? `every ${checkpointInterval} files, resume=${resume}` : 'disabled'}`);
   ctx.print(`           summary:    ${skipSummary ? 'skipped' : 'auto-generated (project-overview / architecture-diagram / architecture-decisions)'}`);
 
@@ -191,8 +194,9 @@ async function updateKb(rest, ctx) {
   ctx.print(`[kb update] source: ${meta.sourcePath}`);
   if (meta.sourceRoot) ctx.print(`           sourceRoot: ${meta.sourceRoot}`);
 
-  // Legacy-KB upgrade check: detect stale layout signals and fix them
-  // losslessly (knowledge snapshot first) before the incremental re-index.
+  // Legacy-KB upgrade check: snapshot knowledge first, then attempt migration
+  // before the incremental re-index. Disk, permission, or process failures can
+  // still leave a partial state; this is not a crash-safe transaction.
   let full = false;
   try {
     const { migrateKb } = await import('../../lib/store/kb_migrate.js');
@@ -252,7 +256,7 @@ async function statusKb(ctx) {
   ctx.print(`project: ${p.name} (${p.id})`);
   ctx.print(`  source:       ${meta.sourcePath}`);
   ctx.print(`  sourceRoot:   ${meta.sourceRoot || '(none)'}`);
-  ctx.print(`  kb dir:       ~/.hk2/kb/${p.id}/`);
+  ctx.print(`  kb dir:       ${kbDir(p.id)}/`);
   ctx.print(`  updatedAt:    ${meta.updatedAt || '?'}`);
   ctx.print(``);
   ctx.print(`  Holy Space:   ${holyCount} entr${holyCount === 1 ? 'y' : 'ies'} (stable; updates require approval)`);
@@ -408,8 +412,8 @@ async function knowledgeKb(rest, ctx) {
  *                     --intro-file=/tmp/sql.md --keywords=sql,commands
  *
  * Note: this is an explicit user-initiated write — no y/N prompt is needed
- * (the user typed the command). Holy Space's "always requires approval" rule
- * applies to AUTO paths (auto-update-kb, auto-learn), not to direct user
+ * (the user typed the command). Holy Space's approval rule applies to
+ * agent-proposed and automatic paths, not to direct user
  * commands. Use /kb knowledge del to remove if you make a mistake.
  */
 async function knowledgeAddKb(rest, ctx) {
@@ -578,7 +582,7 @@ async function knowledgeShowKb(rest, ctx) {
  *
  *   CODE mode  (no --file/--base-dir, or --base-dir pointing at an indexed
  *     subdirectory of the project):
- *     deep-study the project's indexed source files. Phase 0 generates three
+ *     deep-study the project's indexed source files. Phase 0 attempts three
  *     project-wide survey entries (api-docs / code-walkthrough / usage-
  *     examples, skipped under --base-dir), Phase 1 asks the LLM to plan topic
  *     batches, Phase 2 executes each batch to extract Eden entries.

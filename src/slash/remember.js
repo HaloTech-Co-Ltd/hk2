@@ -84,7 +84,7 @@ export async function cmdRemember(args, ctx) {
   if (!text) {
     const facts = await loadSessionFacts(pid, sid);
     if (facts.length === 0) {
-      ctx.print('No session facts yet. Usage: /remember <fact>  (e.g. /remember 测试环境地址 10.1.2.3)');
+      ctx.print('No session facts yet. Usage: /remember <fact>  (e.g. /remember staging endpoint 192.0.2.10)');
       return;
     }
     ctx.print(`Session facts (${facts.length}):`);

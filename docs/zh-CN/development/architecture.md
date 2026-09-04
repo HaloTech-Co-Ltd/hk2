@@ -183,7 +183,8 @@ flowchart TB
    Tree-sitter 或正则；文档走 `doc_parser.js`）。
 3. 构建 BM25 索引（`bm25.js`）、图谱（`graph/builder.js`）、文件注册表与
    分片符号表；每 N 个文件存一次检查点（`checkpoint.js`）。
-4. 全部写入 `~/.hk2/kb/<projectId>/`（`store/*`）。
+4. 全部写入 `$HK2_KB_DIR/<projectId>/`（默认 `$HK2_HOME/kb/<projectId>/`；
+   `store/*`）。
 5. 可选地让 LLM 撰写三个摘要条目（`summarize.js`）。
 
 ## 持久化状态

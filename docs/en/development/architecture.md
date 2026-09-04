@@ -199,7 +199,8 @@ flowchart TB
 3. Build the BM25 index (`bm25.js`), the graph (`graph/builder.js`), the
    file registry and sharded symbol table; checkpoint every N files
    (`checkpoint.js`).
-4. Write everything under `~/.hk2/kb/<projectId>/` (`store/*`).
+4. Write everything under `$HK2_KB_DIR/<projectId>/` (default
+   `$HK2_HOME/kb/<projectId>/`; `store/*`).
 5. Optionally author the three LLM summary entries (`summarize.js`).
 
 ## Persisted state

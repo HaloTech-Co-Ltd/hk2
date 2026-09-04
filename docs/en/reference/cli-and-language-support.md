@@ -5,7 +5,10 @@ English | [简体中文](../../zh-CN/reference/cli-and-language-support.md)
 Reference for hk2's command-line interface (flags, one-shot modes, mutual
 exclusions) and for which languages get which level of parsing support. The
 CLI fact source is `src/cli.js`; the language fact sources are
-`package.json` and `lib/parser/*`.
+`package.json` and `lib/parser/*`. `SOURCE_EXT_RE` is a tool-level heuristic
+whitelist for bash/read KB-first hints, `read` auto outline/tag, `ast_grep`, and
+`ast_edit`; it is not the complete parser or indexer support list and does not
+control direct `kb_outline` queries for already indexed files.
 
 ## CLI
 

@@ -7,7 +7,8 @@
 Supreme Code）。
 
 每个项目在 `/project init` 注册、`/kb init` 构建后拥有独立的知识库，以
-项目 UUID 隔离在 `~/.hk2/kb/<projectId>/` 下。项目之间互不共享；移除项目
+项目 UUID 隔离在 `$HK2_KB_DIR/<projectId>/` 下（默认
+`$HK2_HOME/kb/<projectId>/`；`HK2_KB_DIR` 可移动根目录）。项目之间互不共享；移除项目
 注册会保留其知识库目录，直到你显式删除。
 
 ## 三空间模型
@@ -127,10 +128,17 @@ id——仅在非 `--dry-run`、无 `--base-dir`、无 `--no-survey` 时生成�
 | `api-docs` | 0 | 对全项目最重要的公开 / 导出符号的编号参考。 |
 | `code-walkthrough` | 0 | 4–8 个章节，逐步剖析最核心的抽象。 |
 | `usage-examples` | 0 | 3–5 个使用真实公开符号的编号快速上手示例。 |
-| `<主题 id>`（动态） | 2 | 每个 LLM 规划的主题一个条目，每个聚焦一个连贯的子系统（如 `buffer-pool`、`transaction-mgmt`、`wal-replay`）。 |
+| `<主题 id>`（动态） | 2 | 每个规划 batch 执行一次提取调用，每次可产生零个或多个候选条目；每个候选条目独立校验。 |
 
 可通过 `kb_knowledge("<id>")` 或 `kb_search_knowledge("overview")` 检索其中
 任意条目。
+
+## 解析器管理的 `doc:*` 条目
+
+`doc:<relpath>` 是索引器为解析文档管理的 Eden 条目 id。磁盘文件名会被安全化，
+但条目 id 保留 `doc:` 前缀。`/kb init` 与 `/kb update` 可以覆盖同一文档的
+parser-owned 条目；删除或排除文档时可以删除对应条目。不要手工创建 `doc:*` id：
+同名手工条目可能被后续索引覆盖。手工文档知识应使用其他 id。
 
 ## 自动学习与自动更新的边界
 

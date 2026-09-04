@@ -22,7 +22,7 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
 │   └── <project-id>/setting.json     # 托管的项目级权限覆盖
 ├── theme.json                        # 工具卡片颜色自定义（/theme）
 ├── history.jsonl                     # REPL 输入历史（上限 1000 条）
-├── kb/
+├── kb/                               # HK2_KB_DIR 未设置时才存在
 │   └── <projectId>/                  # 每个项目的知识库（见下文）
 ├── sessions/
 │   └── <projectId>/
@@ -119,8 +119,10 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
 
 字段说明：
 
-- `current`——共享 / 全局默认项目指针（UUID）。经 `hk2 --project=<名称>`
-启动的会话仅固定本会话项目，不改写该指针。
+- `current`——共享 registry 的默认项目指针（UUID）；`/project list` 用 `*`
+标记它，`/project set current` 修改它。`hk2 --project=<名称>` /
+`--project-id=<id>` 只固定当前会话，不改写该指针；多个进程可以同时使用不同
+的 session pin。
 - `sourcePath`——项目所在路径；`sourceRoot`——被索引的子目录（为空时整棵
   树）。
 - `includeGlobs` / `excludeGlobs`——`/kb init` 使用的 glob 集合；默认值
@@ -153,7 +155,7 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
 ## 知识库布局
 
 ```text
-~/.hk2/kb/<projectId>/
+$HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
 ├── meta.json                 # 知识库元数据
 ├── holy/                     # Holy Space——稳定的知识条目
 │   └── <entry-id>.json
@@ -180,6 +182,10 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
 ├── summaries/                # 每符号摘要（按需）
 └── backup/                   # 升级前知识快照
 ```
+
+解析器管理的文档条目使用 `doc:<relpath>` Eden 命名空间。磁盘文件名会被安全化，
+但条目 id 保留 `doc:` 前缀；文档变化、删除或排除后，`/kb init` 与 `/kb update`
+可能覆盖或移除这些条目。手工撰写的文档知识应使用其他 id。
 
 ## 会话与日志
 

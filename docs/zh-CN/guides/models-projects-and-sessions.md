@@ -132,8 +132,10 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 
 ## 项目
 
-项目注册在 `~/.hk2/projects.json`，使用生成的 UUID；`current` 指针指向当前
-项目。
+项目注册在 `~/.hk2/projects.json`，使用生成的 UUID。`current` 是共享 registry
+中的默认项目指针：`/project list` 用 `*` 标记，`/project set current` 修改它。
+`hk2 --project=<名称>` 与 `--project-id=<id>` 只固定当前会话，因此会话 pin 可以
+不同于共享指针，多个进程也可使用不同 pin。
 
 ```text
 /project init --name=myapp --source=/path/to/repo --source-root=src
@@ -173,7 +175,7 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 - **`/project drop`** 移除注册时**没有确认提示**。知识库目录会留在磁盘上，
   但它挂在项目 UUID 之下——由于 `/project init` 每次生成**新的 UUID**，
   重新注册同一路径**不会**自动接回旧知识库，而是从新库开始。旧目录成为
-  `~/.hk2/kb/<旧 UUID>/` 下的孤立目录（需要的话请手动删除）。目前要复用
+  `$HK2_KB_DIR/<旧 UUID>/` 下的孤立目录（默认根目录为 `$HK2_HOME/kb/`；需要的话请手动删除）。目前要复用
   旧库只能恢复带原 UUID 的原项目记录，CLI 尚无对应命令。
 
 同样的注册也可在 shell 中完成：
@@ -199,8 +201,8 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 - `/session compact` 与 `/compact` 把之前的对话总结为简短摘要以释放上下文
   空间；自动压缩默认开启（`HK2_ENABLE_AUTOCOMPACT`，见
   [环境变量](../reference/environment-variables.md)）。
-- `/remember <事实>` 记录一条整个会话始终在上下文内且免受压缩影响的环境
-  事实；`/forget` 删除它。见
+- `/remember <事实>` 成功持久化后，会把环境事实保持在整个会话上下文内并按设计免受
+  压缩影响；`/forget` 删除它。见
   [斜杠命令](../reference/slash-commands.md#remember)。
 - `/clear` 只清空内存中的上下文——磁盘上的会话记录保留，之后可恢复。
 

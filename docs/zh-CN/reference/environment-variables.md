@@ -15,7 +15,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_HOME` | 配置 / 数据主目录 | `~/.hk2` | 存放 models.json、projects.json、kb/、sessions/、logs/ |
+| `HK2_HOME` | 配置 / 数据主目录 | `~/.hk2` | 存放 models.json、projects.json、sessions/、logs/；仅当未设置 `HK2_KB_DIR` 时 KB 才位于 `HK2_HOME/kb/` |
 | `HK2_KB_DIR` | 知识库根目录覆盖 | `$HK2_HOME/kb` | 注意：legacy `--mode` 命令按默认 `$HK2_HOME/kb` 路径检测当前项目知识库——自定义 `HK2_KB_DIR` 时该自动检测可能看不到真实 KB 而回退 `default`；此时请显式设置 `HK2_KB_NAME` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名。解析顺序：非空 `HK2_KB_NAME` 优先；否则当共享当前项目的知识库目录已有 `meta.json` 时用其 UUID；否则用字面量 `default` | 非空值 / 项目 UUID / `default` | |
 | `HK2_PREFIX` | `install.sh` 放置符号链接的安装前缀 | `/usr/local` | 仅 install.sh |
@@ -60,14 +60,14 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
 | `HK2_ENABLE_PLANREVIEW` | `1`：用户确认计划后、执行开始前，LLM 复审定稿计划（需求清单、逐点覆盖、顺序、可行性、风险）；问题逐一确认；无法解析判定 = UNKNOWN。仅交互式 TTY；尽力而为 | `0` | |
-| `HK2_ENABLE_CODEREVIEW` | `1`：整个计划执行完成后，代码审查检查工作区 diff、变更文件与最终总结；问题逐一列出；无法解析判定 = UNKNOWN。仅交互式 TTY；尽力而为 | `0` | |
+| `HK2_ENABLE_CODEREVIEW` | `1`：本轮确认了计划或开始时正在继续计划，且智能体正常返回时，收尾可能清除面板并触发对 diff、变更文件与最终摘要的代码审查；普通的计划中提问也可能触发。问题逐条列出；无法解析的结论 = UNKNOWN。仅交互式 TTY；尽力而为 | `0` | |
 
 ## 知识库构建与学习
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` 检查点保存间隔（文件数），按 `parseInt(value \|\| '100')` 解析。`0` **不会**禁用检查点——保存判断会退化成每个文件都写一次检查点；禁用请用 `--no-checkpoint`。负数 / 非法值没有可靠校验——请勿使用 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
-| `HK2_INDEX_PARALLEL` | 知识库解析池并行度；`0` / 未设置 = 自动（取宿主 CPU 数） | `0` | |
+| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` 检查点间隔。`parseInt(value \|\| '100')` 直接传给 `Checkpoint.interval`：正整数 N 每 N 次 mark 保存；0 与负数几乎每个文件保存一次；非法值为 `NaN`，比较结果也会导致频繁保存。禁用请用 `--no-checkpoint`，不要依赖非法值 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
+| `HK2_INDEX_PARALLEL` | 知识库解析池并行度。只有严格的正整数字符串（`1`、`4`、`+8`）生效；未设置、空串、`0`、负数、非法值、小数（`1.5`）和科学计数法（`1e3`）走自动：`availableParallelism()`，再 `cpus().length`，最后 4 | `0` | |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒）。按 `parseInt(value) \|\| 300000` 解析：`0` 与非法值都会回到默认值（与 LLM 超时不同，这**不是** "0 = 禁用" 变量） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`：当某轮智能体回退到 bash 搜索源文件时，轮末静默执行增量 `/kb update`。该更新重建派生索引，**并同步解析器管理的 `doc:<relpath>` Eden 条目**（见 `/kb update`） | `0` | 否则提示 y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`：轮末抽取的知识条目静默写入 Eden。Holy 无论此标志如何始终提示 y/N | `0` | |
@@ -107,7 +107,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | 变量 | 用途 |
 |---|---|
 | `NO_COLOR` | 禁用 ANSI 颜色（效果同 `HK2_NO_COLOR=1`） |
-| `TERM` | 颜色模式与 TUI 能力检测：`dumb` 禁用颜色并阻止 TUI；`xterm-256color`（及 `linux`/空值）参与 256 色与 Windows UTF-8 推断 |
+| `TERM` | 颜色模式与 TUI 能力检测：`dumb` 禁用颜色并阻止 TUI；`linux` 或空值选择 ANSI 256 色；其他 TERM（含 `xterm-256color`）回退到真彩色。`xterm-256color` 另作为 Windows UTF-8 推断信号 |
 | `COLORTERM` | 真彩色检测（`truecolor` / `24bit` → 24 位颜色模式） |
 | `WT_SESSION` | Windows Terminal 检测：真彩色推断 + Windows UTF-8 能力推断 |
 | `TERM_PROGRAM` | `vscode` 参与 Windows UTF-8 能力推断（不用于真彩色判定） |

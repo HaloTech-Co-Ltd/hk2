@@ -146,8 +146,11 @@ the agent as `mcp__<name>__<tool>`:
 
 ## Projects
 
-Projects are registered in `~/.hk2/projects.json` with a generated UUID; the
-`current` pointer names the active one.
+Projects are registered in `~/.hk2/projects.json` with a generated UUID. The
+`current` field is the shared registry's default pointer: `/project list` marks
+it with `*`, and `/project set current` changes it. `hk2 --project=<name>` and
+`--project-id=<id>` pin only the current session, so a pinned session may differ
+from the shared pointer and multiple processes may use different pins.
 
 ```text
 /project init --name=myapp --source=/path/to/repo --source-root=src
@@ -190,7 +193,8 @@ Registration options (`/project init`):
   prompt**. The KB directory stays on disk, but under the project's UUID —
   since `/project init` generates a **new UUID** each time, re-registering
   the same path does **not** reconnect the old KB; it starts a fresh one.
-  The old directory remains as an orphan under `~/.hk2/kb/<old-uuid>/`
+  The old directory remains as an orphan under
+`$HK2_KB_DIR/<old-uuid>/` (default `$HK2_HOME/kb/<old-uuid>/`)
   (delete it manually if you want). Reusing an old KB currently requires
   restoring the original project record with its UUID; there is no CLI
   command for that yet.
@@ -220,8 +224,8 @@ Sessions are stored as JSONL transcripts at
   short brief to free context space; auto-compact is on by default
   (`HK2_ENABLE_AUTOCOMPACT`, see
   [Environment variables](../reference/environment-variables.md)).
-- `/remember <fact>` records an environment fact that stays in scope for the
-  whole session and survives compaction; `/forget` removes it. See
+- `/remember <fact>` keeps an environment fact in scope for the whole session
+  after successful persistence and survives compaction; `/forget` removes it. See
   [Slash commands](../reference/slash-commands.md#remember).
 - `/clear` clears the in-memory context only — the transcript on disk is
   preserved and can be resumed later.

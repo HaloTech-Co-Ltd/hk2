@@ -25,7 +25,7 @@ other platforms).
 │   └── <project-id>/setting.json     # Managed per-project permission overrides
 ├── theme.json                        # Tool-card color customizations (/theme)
 ├── history.jsonl                     # REPL input history (capped at 1000 entries)
-├── kb/
+├── kb/                               # only when HK2_KB_DIR is unset
 │   └── <projectId>/                  # Per-project KB (see below)
 ├── sessions/
 │   └── <projectId>/
@@ -130,9 +130,11 @@ validate types, options, and refs.
 
 Field notes:
 
-- `current` — the shared/global default project pointer (a UUID). A
-  session started with `hk2 --project=<name>` pins its project for that
-  session without rewriting this pointer.
+- `current` — the shared registry's default project pointer (a UUID), marked
+  with `*` by `/project list` and changed by `/project set current`. A session
+  started with `hk2 --project=<name>` or `--project-id=<id>` pins its project
+  for that session without rewriting this pointer; multiple processes can use
+  different session pins at once.
 - `sourcePath` — where the project lives; `sourceRoot` — the indexed
   sub-directory (whole tree when empty).
 - `includeGlobs` / `excludeGlobs` — the glob sets used by `/kb init`;
@@ -168,7 +170,7 @@ When a project does not override them, `/kb init` walks with these defaults
 ## KB layout
 
 ```text
-~/.hk2/kb/<projectId>/
+$HK2_KB_DIR/<projectId>/  # default: $HK2_HOME/kb/<projectId>/
 ├── meta.json                 # KB metadata
 ├── holy/                     # Holy Space — stable knowledge entries
 │   └── <entry-id>.json
@@ -195,6 +197,11 @@ When a project does not override them, `/kb init` walks with these defaults
 ├── summaries/                # Per-symbol summaries (on-demand)
 └── backup/                   # Pre-upgrade knowledge snapshots
 ```
+
+Parser-owned document entries use the `doc:<relpath>` Eden namespace. Their
+on-disk filenames are sanitized, but the `doc:` id is retained; `/kb init` and
+`/kb update` may replace or remove these entries as documents change, are
+deleted, or are excluded. Use another id for hand-authored document knowledge.
 
 ## Sessions and logs
 

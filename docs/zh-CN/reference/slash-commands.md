@@ -121,7 +121,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；已配置模型且未传 `--skip-summary` 时生成 LLM 摘要条目 |
 | `update` | 增量更新（sha256 差异）——重建派生的符号索引与图谱，并**同步解析器管理的 `doc:<relpath>` Eden 条目**（新增/变化文档写入或覆盖，已删除或被排除文档的 parser-owned 条目被移除，Eden 知识索引可能重建）；旧版知识库先备份到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
 | `status` | 各空间统计 |
-| `search <查询> [--top-k=N]` | BM25 + 重排序的符号搜索 |
+| `search <查询> [--top-k=N]` | 直接 BM25 + 重排序的符号搜索（默认 top-k=20；不做 LLM 改写、不附加源码切片） |
 | `symbol <名称>` | 按精确名称查找符号 |
 | `neighbors <symbol_id>` | 调用图邻居（符号 id 形如 `<fileId>:<line>`） |
 | `knowledge <子命令> [...]` | 见 [`/kb knowledge`](#kb-knowledge) |
@@ -150,11 +150,14 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 空间（文件可在项目之外）；**代码模式（CODE mode）**（裸调用，或
 `--base-dir` 为已索引子目录）研读已索引源码——可选的阶段 0 概览（仅当
 非 `--dry-run`、无 `--base-dir`、无 `--no-survey` 时运行）、阶段 1 主题
-规划、阶段 2 提取。默认 `HK2_KB_LEARN_VALIDATE=1` 时候选条目写入前对照现有知识库校验
+规划、阶段 2 对每个 batch 执行一次提取调用，每次可产生零个或多个候选条目。默认 `HK2_KB_LEARN_VALIDATE=1` 时候选条目写入前对照现有知识库校验
 （设 `0` 改走旧式启发式路径）。参数：`--space`（默认 eden；代码模式始终
 写 Eden）、`--file`、`--base-dir`、`--per-batch-chars`（默认 100000）、
 `--dry-run`、`--no-survey`（跳过阶段 0）、`--model`、`--plan-timeout-ms`
 （默认 300000），以及传入每个 LLM 提示词的自由格式尾部指令。
+在 DOC mode 中，运行级确认只在目标为 Holy 且未设置 `--dry-run` 时生效。
+确认通过后，新 Holy 条目不再逐条提示；合并到或覆盖已有 Holy 条目时仍可能
+逐条确认。CODE mode 始终写入 Eden，并忽略 `--space=holy`。
 
 别名：`ls`→list、`get`→show、`create`/`set`→add、
 `study`/`init`/`bootstrap`/`scan`→learn、
@@ -195,8 +198,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 
 ## `/remember`
 
-用法：`/remember [事实] [--project|-p]`——记录一条整个会话始终在上下文
-内、且免受压缩影响的会话事实。
+用法：`/remember [事实] [--project|-p]`——记录一条成功持久化后在整个会话内保持上下文、并按设计免受压缩影响的会话事实。
 
 - 无参数——列出已记录的事实。
 - 带事实——持久化该条（每会话上限 100 条，每条裁剪到 500 字符；规范化

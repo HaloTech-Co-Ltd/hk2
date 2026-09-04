@@ -32,14 +32,15 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 ——这是 NUL 扫描启发式，不是完整的二进制格式识别。
 对符合条件（eligible）的已索引源文件，内容前附带结构性
 `## Outline (from KB)` 章节（`outline=false` 禁用），且结果可能携带用于
-陈旧锚点保护的 `tag`（见[陈旧锚点保护](#陈旧锚点保护tag)）；资格跟随工具
-注册表的启发式白名单（`SOURCE_EXT_RE`）——比索引器完整解析器/文档支持范围
-更窄：`.cs`、`.kts`、`.sgml`、`.doc`、`.ppt`、`.pptx` 与无扩展名惯例文件都
-不在其中（反过来说，白名单还包含 `.md`/`.json`/`.pdf` 等文档格式）。这只
-影响 `read` 的**自动**附加——直接调用 `kb_outline` 对任何已索引文件（含
-`.cs`/`.kts`）仍返回符号与 tag。另注意 `read` 按传入的原始路径匹配 KB 文件
-表，绝对路径或不同写法可能无法命中按项目相对路径保存的键。tag 只需文件表
-存有哈希；outline 还需至少一个符号。写入：否。
+陈旧锚点保护的 `tag`（见[陈旧锚点保护](#陈旧锚点保护-tag)）。`read` 自动
+附加需要 `outline !== false`、已加载 KB runtime、原始 path 命中工具注册表的
+`SOURCE_EXT_RE` 启发式白名单，以及原始 path 直接命中 KB 文件表。该白名单
+比索引器完整解析器 / 文档支持更窄：`.cs`、`.kts`、`.sgml`、`.doc`、`.ppt`、
+`.pptx` 与无扩展名惯例文件不在其中（反过来它包含 `.md` / `.json` / `.pdf`）。
+`tag` 还需要文件表存在 hash，outline 需要至少一个符号；绝对路径或不同拼写
+可能无法命中项目相对路径 key。直接调用 `kb_outline` 不使用 `SOURCE_EXT_RE`：
+文件只要存在于 KB 文件表即可查询，包括 `.cs` / `.kts`；即使没有符号，也可能
+返回空 outline 与有效 tag。写入：否。
 
 ### `write`
 
@@ -50,19 +51,18 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 在单个文件中做精确字符串替换。接受 `{edits:[{oldText,newText}]}`
 （推荐——一次调用完成多组互不相交的编辑）或 `{old_string,new_string}`
 （单处编辑）。每个 `oldText` 必须匹配唯一、互不重叠的区域。可选 `tag`
-（来自先前 `read`/`kb_outline` 的 shortHash）在文件自 tag 生成后发生变更
-时拒绝编辑。写入：是。
+（来自先前 `read`/`kb_outline` 的 shortHash）在当前文件 hash 与所提供的
+KB 索引快照 tag 不同的情况下拒绝编辑。写入：是。
 
 ## Shell 与搜索
 
 ### `bash`
 
 在当前工作目录执行 shell 命令。stdout 与 stderr 各自独立截断到约 8 KiB
-的缓冲预算（bash 没有单独的行数上限；stderr 上的 KB 提示会占用该流预算）。
-可选超时（秒）：默认 60、上限 60（更大值被钳制；`0` 回退默认；负数未校验
-——请勿使用）。权限检查为尽力而为（见[安全与权限](../guides/security-and-permissions.md)）。
-可选超时（秒）：默认 60、硬上限 60（更大的值会被钳制；`0` 回退为默认值）。
-写入：可能——请视为写入类工具。
+预算（没有 2000 行限制；stderr 中的 KB hint 会占用 stderr 预算）。timeout
+默认为 60 秒且最大为 60 秒；更大值会被钳制，`0` 回退默认值，负值未校验——
+请勿使用。权限检查为尽力而为（见[安全与权限](../guides/security-and-permissions.md)）。
+写入：可能会写入，请按写入工具对待。
 
 ### `find`
 
@@ -101,30 +101,29 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 会忽略该错误，不会单独报告。`action:"discard"` 丢弃暂存不写入。写入：
 是（apply 时）。
 
-**Proposal 生命周期**：proposal 只存在于进程内存——退出或崩溃即丢失；
-TTL 为 10 分钟；每进程最多 16 个活跃 proposal（超出按 LRU 淘汰）。apply、
-discard 与读取/tag/写入失败会消费 proposal；权限被拒的 apply 或非法 action
-当前不会消费它——它会保留到后续成功 resolve、另一次消费性失败、淘汰、过期
-或进程退出。复用已消费/过期的 id 会报错——请重新运行 `ast_edit` 获取新
-proposal。错误结果中的 `rolledBack` 表示进入恢复尝试的已写文件数，不是已
-验证恢复成功的数量。
+**Proposal 生命周期**：proposal 只存在于当前进程内存，进程退出或崩溃即丢失。
+10 分钟 TTL 从创建时间计算，不是滑动 TTL；`lastTouched` 只用于 LRU 排序，不会
+延长创建时间。每进程最多 16 个活跃 proposal，超出后按 LRU 淘汰。成功 apply、
+discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒的 apply 不消费；
+非法 action 会在读取 proposal 前返回，也不消费。过期、淘汰、已消费或进程退出后
+均不可恢复；请重新运行 `ast_edit`。错误结果中的 `rolledBack` 是进入恢复尝试的
+文件数量，不是确认恢复成功的数量。
 
-**已知限制**：`ast_edit` 的目录展开每个根最多遍历 2000 个候选文件，且
-当前不在结果中报告该截断——超大目录树上的 proposal 可能只静默覆盖前
-2000 个被遍历的文件。面向大树时请收窄 `paths`。
-
+**已知限制**：`ast_edit` 使用正则近似而不是精确 AST 匹配；每个根的目录展开最多
+2000 个候选文件，当前结果不报告截断。`SOURCE_EXT_RE` 还包含 `.pdf` 与 `.docx`，
+宽目录的 `ast_grep` / `ast_edit` 可能把文档或二进制内容当 UTF-8 文本处理；重写
+请使用明确的文本源码路径或 glob。
 ## 规划工具
 
 ### `plan`
 
-提交需用户确认的执行计划——分流助手判定任务足够复杂、需要策略决策时调用
-的接口。接受 `summary` 字符串与“2–5 个有序 `steps`、每步含 `goal` 与
-2–4 个候选 `strategies`（{name, description, recommended}——恰好一个
-推荐）”的预期形状——这是提示词对模型推荐的形状；运行时校验只强制
-“至少 2 个有效步骤、每步至少 2 个有效策略”的下限，不强制上限。
-该工具把计划呈现给用户逐步选择策略（非交互模式自动采纳推荐策略）并返回
-最终计划文本；接受返回 `{confirmed, plan}`，取消返回 `{cancelled}`，形状
-非法返回 `{error}`。写入：否。
+向用户提出执行计划供确认——这是分诊智能体判断任务需要策略选择时使用的接口。
+提示词推荐形状是一行 summary 加 2–5 个有序 `steps`，每步有 `goal` 与 2–4 个
+候选 `strategies`（`name`、`description`、`recommended`），并标记恰好一个推荐项。
+内部归一化会把缺失或非字符串 `summary` 变为空字符串；只强制至少 2 个有效步骤、
+每步至少 2 个有效策略，不强制最大数量。recommended 数量异常时会归一化为第一个
+策略。工具在交互模式呈现逐步选择，非交互模式自动接受推荐项；接受返回
+`{confirmed, plan}`，取消返回 `{cancelled}`，不可用形状返回 `{error}`。写入：否。
 
 ### `plan_step`
 
@@ -148,7 +147,7 @@ in-progress 步骤仍会被推进）。交互模式使用真实状态机；无�
 |---|---|
 | `kb_search` | 自然语言 / 关键词符号搜索——BM25 + 名称匹配重排，返回文件路径、行范围与摘要。有可用 LLM 时默认经 LLM 改写查询（`skip_rewrite=true` 跳过）；前 3 个结果携带 ±15 行源码切片（`with_slice=false` 禁用）。`top_k`：默认 10，有效范围钳制在 5–50（低于 5 的取值仍至少返回 5 条） |
 | `kb_symbol` | 按精确标识符查找符号；返回全部匹配候选 |
-| `kb_outline` | 来自知识库索引的文件大纲——每个符号的名称 / 种类 / 行号 / 签名 / 父类 / 子项数；对"这个文件里有什么？"比 `read` 更轻量；返回 `tag` 供编辑安全使用 |
+| `kb_outline` | 来自已加载知识库索引的文件大纲——每个符号的名称 / 种类 / 行号 / 签名 / 父类 / 子项数；无源码正文读取，但可能执行权限 / 路径元数据检查；不使用 `SOURCE_EXT_RE`，已索引文件均可查询，tag 仅在存在文件 hash 时返回 |
 | `kb_neighbors` | 某符号的旧版一跳**出向**调用图邻居（它调用了谁；无 direction 参数——要找调用者请用 `kb_callchain` 的 `direction=backward`/`both`） |
 | `kb_callchain` | 对调用图做有界 BFS——按 `max_depth` 跳数返回调用者 / 被调用者。`max_nodes` 独立应用于每个所选方向；BFS 预算包含起点（起点不在返回结果中），对推荐的 `max_nodes >= 2`，每个方向最多返回 `max_nodes - 1` 个其他节点；`0`/`1`/负数未校验 |
 | `kb_class` | 类 / 接口 / 结构体 / 枚举查询：`qual_name` 精确匹配，`name` 子串匹配取首个候选（歧义名称请用 `qual_name`）；返回签名、docString、成员、父类、直接实现 |
@@ -161,20 +160,21 @@ in-progress 步骤仍会被推进）。交互模式使用真实状态机；无�
 |---|---|
 | `kb_knowledge` | 按 id 查找知识条目——同时检索 Holy 与 Eden，返回完整条目（标题、简介、keyFiles、keySymbols、keywords、space） |
 | `kb_search_knowledge` | 按自然语言查询搜索两个知识空间（关键词重叠排序）——用于判断知识库是否已有某概念的文档 |
-| `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载。注意：同一 `runLoop` 内此前已成功缓存过的相同 `kb_knowledge`/`kb_search_knowledge` 调用，可能继续返回旧缓存，直到发生缓存失效调用或进入新循环。通过该工具保存即视为本轮知识捕获已处理 |
+| `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载，但不清除 runLoop 只读缓存：同一循环内此前已成功缓存过的相同调用可能继续返回旧结果，直到缓存失效调用或进入新循环；失败结果不缓存 |
 
 ## 会话工具
 
 ### `remember`
 
 持久化一条简短、自包含的会话事实（环境端点与地址、端口、版本、账号
-或机器名、部署约束、"总是用 X 跑测试"这类显式偏好）。事实通过一条紧跟
-主系统提示词之后的常驻 `## Session facts` system 消息注入后续每一轮，
-且**免受上下文压缩影响**。写入：仅会话事实文件。
+或机器名、部署约束、"总是用 X 跑测试"这类显式偏好）。成功持久化后，事实通过
+一条紧跟主系统提示词之后的常驻 `## Session facts` system 消息注入后续轮次，
+并按设计免受上下文压缩影响；无 callback 或写入失败会返回失败，不会记录事实。
+写入：仅会话事实文件。
 
 边界（由模型收到的工具准则约束）：
 
-- 每次调用一条事实，表述自包含（"测试环境地址 10.1.2.3"、
+- 每次调用一条事实，表述自包含（"staging endpoint 192.0.2.10"、
   "PostgreSQL 16.2"、"用 npm 不用 yarn"）。
 - 只要事实——绝不包括密钥本身。可复用的**代码**知识属于
   `kb_save_knowledge`，不在此处；任务步骤与代码发现不是事实。
@@ -198,7 +198,8 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 每条代码发现路径都优先使用知识库索引而非重新解析：
 
 - `kb_outline`、`kb_symbol` 与图谱工具主要读取已加载的内存索引，无需
-  重新解析。`kb_search` 的排序来自索引中的 BM25，但默认会为前 3 个结果
+  重新解析；`kb_outline` 不读取源码正文，但权限 / 路径元数据过滤可能访问
+  文件系统。直接 outline 查询不受 `SOURCE_EXT_RE` 限制。`kb_search` 的排序来自索引中的 BM25，但默认会为前 3 个结果
   从文件系统加载 ±15 行源码切片（受读取权限约束；`with_slice=false` 关闭）。
 - 对代码文件调用 `read` 会前置知识库大纲，使智能体在查看内容前先了解
   结构。
@@ -237,32 +238,24 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 
 ## 陈旧锚点保护（`tag`）
 
-三个不同的东西都被称为 "tag"——请区分：
+保护流程如下：
 
-1. **`read` / `kb_outline` 返回的索引快照 tag**——**索引时记录在 KB 文件
-   注册表中的**文件哈希的前 8 位十六进制字符（不是对刚读字节的现算
-   哈希；索引之外的文件、或不在工具注册表识别扩展名白名单内的文件，
-   没有 tag）。
-2. **`edit` 的用户传入 tag**——`edit` 把该快照 tag 与当前磁盘内容的现算
-   哈希比对，因此索引过期（文件在上次 `/kb init`/`update` 后变了）时，
-   即使文件在你读取之后没有再变，也可能拒绝一次有效编辑。
-3. **`ast_edit` 的用户传入单一 tag**——与每个目标文件比对（见上文
-   `ast_edit`；仅限单文件重写）。与用户 tag 无关，`ast_edit` 还会为
-   proposal 记录各自的逐文件哈希，`resolve` 在应用时复验这些逐文件
-   tag。
-4. **刷新过期 tag**——被拒绝时，先运行 `/kb update` 再重新
-   read/kb_outline 获取更新后的索引标签，或省略 tag。把 tag 回传到后续的
-   `edit` 调用（仅限单文件 `ast_edit`）中；若文件自 tag 生成以来已被修改，
-   工具将拒绝该变更：
+1. `read` 只有在 `outline !== false`、已加载 KB runtime、原始 path 命中
+   `SOURCE_EXT_RE` 且原始 path 直接命中 KB 文件表时才自动附加 tag。tag 是 KB
+   注册表中记录的文件 hash 前 8 个十六进制字符；outline 还需要至少一个符号。
+   绝对路径或不同拼写可能无法命中。
+2. 直接 `kb_outline` 不使用 `SOURCE_EXT_RE`；只要 path 存在于 KB 文件表即可查询，
+   没有符号时也可能返回空 outline 与有效 tag。
+3. `edit` 将用户提供的索引快照 tag 与当前文件的新 hash 比较；`ast_edit` 的单一
+   用户 tag 会用于所有目标文件，同时 proposal 自己保存每个文件的预览 hash。
+4. `resolve` 逐文件复验 proposal hash。失配时报错：
+   `stale tag: the current file hash differs from the supplied KB-index snapshot tag`。
+   运行 `/kb update` 后重新 `read` 或调用 `kb_outline` 获取新 tag；省略 tag 会跳过
+   这层额外保护。失败恢复是尽力而为、非事务性的，`rolledBack` 统计进入恢复尝试
+   的文件数，不是已确认恢复成功数。
 
-```text
-read({path:"src/foo.js"}) -> {tag:"a1b2c3d4", ...}
-edit({path:"src/foo.js", old_string:..., new_string:..., tag:"a1b2c3d4"})
-  -> 匹配则通过；不匹配则报错："stale tag: file changed since read..."
-```
-
-`resolve` 在应用时复验 tag；失败时尝试恢复已写入的文件——尽力而为，
-不是事务性保证（回滚写入自身失败会被忽略）。
+Proposal 生命周期只在上方说明一次：仅当前进程内存、创建时间起算的 10 分钟 TTL、
+`lastTouched` 只影响 LRU、最多 16 个，并按上文规则消费或保留。
 
 ## 暂缓的能力
 

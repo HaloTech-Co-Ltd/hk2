@@ -81,10 +81,12 @@ failure returns the already-confirmed plan unchanged.
 
 Two forms exist, sharing one implementation:
 
-- **Automatic** — `HK2_ENABLE_CODEREVIEW=1` (default off): after an entire
-  plan finishes executing, hk2 reviews the completed result — the
-  working-tree diff, the changed files, and the agent's final summary — for
-  correctness, completeness, and quality.
+- **Automatic** — `HK2_ENABLE_CODEREVIEW=1` (default off): on a normal agent
+  return, finalization can review the completed result — the working-tree
+  diff, the changed files, and the agent's final summary — when this turn
+  confirmed or continued a plan. A normal final text reply can therefore
+  finalize a panel and trigger review even if the model did not call
+  `plan_step` for every step.
 - **Manual** — `/review code` runs the same regression check on the
   just-completed task in the current conversation. Only the original task
   request and the completed result are sent to the review model — the task's

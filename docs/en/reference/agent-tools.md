@@ -35,17 +35,17 @@ decoded characters contain a NUL byte are rejected as binary
 this is a NUL-scan heuristic, not full binary-format detection. For
 eligible indexed source files, a structural `## Outline (from KB)` section is
 prepended (`outline=false` disables) and the result may carry a `tag` for
-stale-anchor protection (see [Stale-anchor protection](#stale-anchor-protection-tag));
-eligibility follows the tool registry's heuristic whitelist
-(`SOURCE_EXT_RE`) — narrower than the indexer's full parser/doc support:
-`.cs`, `.kts`, `.sgml`, `.doc`, `.ppt`, `.pptx`, and extension-less
-convention files are outside it (the whitelist conversely includes doc
-formats like `.md`/`.json`/`.pdf`). This limits `read`'s **auto**
-annotation only — a direct `kb_outline` call still returns symbols and a
-tag for any indexed file, including `.cs`/`.kts`. Note `read` matches the
-KB file table by the raw path you pass, so absolute or differently-spelled
-paths may miss the project-relative key. A tag needs a stored hash; an
-outline needs at least one symbol. Writes: no.
+stale-anchor protection (see [Stale-anchor protection](#stale-anchor-protection-tag)).
+`read` auto-annotation requires `outline !== false`, a loaded KB runtime, the
+original path matching the tool registry's `SOURCE_EXT_RE` heuristic whitelist,
+and an exact raw-path hit in the KB file table. The whitelist is narrower than
+the indexer's full parser/doc support: `.cs`, `.kts`, `.sgml`, `.doc`, `.ppt`,
+`.pptx`, and extension-less convention files are outside it (the whitelist
+conversely includes `.md`/`.json`/`.pdf`). A tag additionally needs a stored
+hash; an outline needs at least one symbol. Absolute or differently-spelled
+paths may miss the project-relative key. A direct `kb_outline` call does not
+use `SOURCE_EXT_RE`: any indexed file can be queried, including `.cs`/`.kts`,
+and it may return an empty outline with a valid tag when no symbol exists. Writes: no.
 
 ### `write`
 
@@ -58,23 +58,19 @@ Precise string replacement in a single file. Accepts
 `{edits:[{oldText,newText}]}` (preferred — multiple disjoint edits in one
 call) or `{old_string,new_string}` (single edit). Every `oldText` must match
 a unique, non-overlapping region. Optional `tag` (shortHash from a prior
-`read`/`kb_outline`) rejects the edit if the file changed since the tag was
-minted. Writes: yes.
+`read`/`kb_outline`) rejects the edit when the current file hash differs from
+the supplied KB-index snapshot tag. Writes: yes.
 
 ## Shell and search
 
 ### `bash`
 
 Execute a shell command in the current working directory. stdout and stderr
-are each independently truncated to an approximately 8 KiB buffer budget
-(there is no separate line limit for bash; a KB hint on stderr spends that
-stream's budget). Optional timeout in seconds: default 60, maximum 60
-(larger values clamped; `0` falls back to default; negative values are not
-validated — do not use them). Permission-checked
-best-effort (see [Security and permissions](../guides/security-and-permissions.md)).
-Optional timeout in seconds: default 60, hard-capped at 60 (larger values
-are clamped; `0` falls back to the default). Writes: potentially — treat as
-a writing tool.
+are each independently truncated to an approximately 8 KiB budget (there is
+no 2000-line limit; a KB hint in stderr consumes that stderr budget). The
+optional timeout defaults to 60 seconds and is capped at 60; larger values are
+clamped, `0` falls back to default, and negative values are not validated — do
+not use them. Permission check is best-effort (see [Security and permissions](../guides/security-and-permissions.md)). Writes: potentially — treat as a writing tool.
 
 ### `find`
 
@@ -120,15 +116,16 @@ non-transactional (a rollback write that itself fails is currently ignored
 and not separately surfaced). `action:"discard"` drops the stash without
 writing. Writes: yes (on apply).
 
-**Proposal lifecycle**: proposals live in process memory only — lost on
-exit or crash, expiring after a 10-minute TTL, capped at 16 active
-proposals per process (LRU eviction beyond that). Apply, discard, and
-read/tag/write failures consume the proposal; a permission-denied apply or
-an invalid action currently leaves it available until a later successful
-resolution, another consuming failure, eviction, expiration, or process
-exit. Re-using a consumed/expired id errors out — run `ast_edit` again for
-a fresh proposal. In error results, `rolledBack` reports how many written
-files entered the restoration attempt, not verified restoration successes.
+**Proposal lifecycle**: proposals live in process memory only — lost on exit or
+crash. The 10-minute TTL is measured from proposal creation, not sliding
+`lastTouched`; `lastTouched` is used for LRU ordering. Each process holds at
+most 16 active proposals, with older entries evicted beyond that limit. A
+successful apply, discard, or read/tag/write failure consumes the proposal. A
+permission-denied apply or an invalid action (checked before reading the
+proposal) does not consume it. Expired, evicted, consumed, or process-exited
+proposals cannot be recovered; run `ast_edit` again for a fresh proposal. In
+error results, `rolledBack` counts files that entered the restoration attempt,
+not confirmed restoration successes.
 
 **Known limitation**: `ast_edit`'s directory expansion walks at most 2000
 candidate files per root and does not report the truncation in its result —
@@ -140,17 +137,17 @@ walked files. Narrow `paths` when targeting big trees.
 ### `plan`
 
 Propose an execution plan for the user to confirm — the interface the triage
-assistant calls when it decides the task is complex enough to warrant a
-strategy decision. Takes a `summary` string and an intended shape of 2–5
-ordered `steps`, each with a `goal` and 2–4 candidate `strategies`
-({name, description, recommended} — exactly one recommended) — the
-recommended shape the prompt asks for; runtime validation enforces only a
-minimum of two usable steps and two usable strategies per step, with no
-maximum. The tool surfaces the plan for
-per-step strategy selection (auto-accepting the recommended strategy in
-non-interactive mode) and returns the finalized plan text; `{confirmed,
-plan}` on acceptance, `{cancelled}` on cancel, `{error}` on an invalid
-shape. Writes: no.
+assistant calls when it decides a task is complex enough to warrant a strategy
+decision. The prompt-recommended shape is a one-line summary plus 2–5 ordered
+`steps`, each with a `goal` and 2–4 candidate `strategies`
+({name, description, recommended}) with exactly one recommended. Runtime
+normalization treats a missing or non-string `summary` as an empty string and
+enforces only a minimum of two usable steps and two usable strategies per step,
+with no maximum; abnormal recommended counts are normalized by selecting the
+first strategy. The tool surfaces the plan for per-step strategy selection
+(auto-accepting the recommended strategy in non-interactive mode) and returns
+the finalized plan text; `{confirmed, plan}` on acceptance, `{cancelled}` on
+cancel, `{error}` on an unusable shape. Writes: no.
 
 ### `plan_step`
 
@@ -181,7 +178,7 @@ filtered channels (metadata stays visible — see
 |---|---|
 | `kb_search` | Natural-language / keyword symbol search — BM25 + name-match reranking, with file paths, line ranges, snippets. Query is LLM-rewritten by default when an LLM is available (`skip_rewrite=true` to skip); top-3 results carry a ±15-line source slice (`with_slice=false` to disable). `top_k`: default 10, clamped to an effective range of 5–50 (values below 5 still return at least 5) |
 | `kb_symbol` | Look up a symbol by exact identifier; all matching candidates |
-| `kb_outline` | File outline from the KB index — name / kind / lines / signature / parent / child count per symbol; cheaper than `read` for "what's in this file?"; returns a `tag` for edit safety |
+| `kb_outline` | File outline from the loaded KB index — no source-content read, though permission/path metadata checks may occur; direct queries do not use `SOURCE_EXT_RE`; name / kind / lines / signature / parent / child count per symbol; a `tag` is returned when the indexed file has a hash |
 | `kb_neighbors` | Legacy one-hop **outgoing** call-graph neighbors of a symbol (what it calls; no direction parameter — use `kb_callchain` with `direction=backward`/`both` for callers) |
 | `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops. `max_nodes` applies independently to each selected direction; the BFS budget includes the starting node (omitted from the results), so for the recommended `max_nodes >= 2` each direction returns at most `max_nodes - 1` other nodes; `0`/`1`/negatives are not validated |
 | `kb_class` | Class / interface / struct / enum lookup: `qual_name` exact, `name` substring with first-candidate match (prefer `qual_name` for ambiguous names); returns signature, doc string, members, super-classes, direct implementations |
@@ -202,14 +199,15 @@ filtered channels (metadata stays visible — see
 
 Persist a short, self-contained session fact (environment endpoints and
 addresses, ports, versions, account or machine names, deployment constraints,
-explicit preferences like "always run tests with X"). The fact is injected
-into every subsequent turn via a standing `## Session facts` system message
-placed right after the main system prompt, and is **immune to context
-compaction**. Writes: session facts file only.
+explicit preferences like "always run tests with X"). After successful
+persistence, the fact is injected into subsequent turns via a standing
+`## Session facts` system message placed right after the main system prompt and
+survives context compaction by design; a missing callback or failed write
+returns failure rather than recording it. Writes: session facts file only.
 
 Boundaries (enforced by the tool guidelines the model receives):
 
-- One fact per call, phrased self-contained ("测试环境地址 10.1.2.3",
+- One fact per call, phrased self-contained ("staging endpoint 192.0.2.10",
   "PostgreSQL 16.2", "用 npm 不用 yarn").
 - Facts only — never secrets themselves. Reusable **code** knowledge belongs
   to `kb_save_knowledge`, not here; task steps and code findings are not
@@ -283,49 +281,35 @@ Examples:
 
 ## Stale-anchor protection (`tag`)
 
-Three distinct things are called a "tag" — keep them apart:
+The protection has one numbered flow:
 
-1. **The index-snapshot tag returned by `read` / `kb_outline`** — the first
-   8 hex chars of the file hash **recorded in the KB file registry at
-   indexing time** (not a hash recomputed from the just-read bytes; files
-   outside the index, or outside the tool registry's recognized-extension
-   whitelist, get no tag).
-2. **A user-passed tag on `edit`** — `edit` compares that snapshot tag
-   against a fresh hash of the current on-disk content, so a stale index
-   (file changed since the last `/kb init`/`update`) can reject a valid
-   edit even though the file did not change after your read.
-3. **The user-passed single tag on `ast_edit`** — compared against every
-   target file (see `ast_edit` above; single-file rewrites only). Separately
-   from any user tag, `ast_edit` records its own per-file hash for each
-   proposal, and `resolve` re-validates those per-file tags at apply time.
+1. `read` automatically adds a tag only when `outline !== false`, a KB runtime
+   is loaded, the original path matches `SOURCE_EXT_RE`, and that raw path
+   directly hits the KB file table. The tag is the first 8 hex characters of
+   the file hash recorded in the KB registry; an outline additionally needs at
+   least one symbol. `read` may miss absolute or differently-spelled paths.
+2. Direct `kb_outline` does not use `SOURCE_EXT_RE`; any path present in the KB
+   file table is queryable. It can return an empty outline and a valid tag when
+   the indexed file has no symbols.
+3. `edit` compares a supplied index-snapshot tag with a fresh hash of the
+   current file. `ast_edit` applies one user-supplied tag to every target file,
+   while its proposal separately stores each file's preview hash.
+4. `resolve` re-validates each proposal hash file by file. A mismatch reports
+   `stale tag: the current file hash differs from the supplied KB-index snapshot tag`.
+   After `/kb update`, read or call `kb_outline` again to obtain a fresh tag.
+   Omitting a tag skips this extra protection. A resolve failure attempts
+   best-effort, non-transactional restoration; `rolledBack` counts files that
+   entered the restoration attempt, not confirmed successes.
 
-4. **Refreshing a stale tag** — when a mismatch is rejected, run `/kb
-   update` and read/kb_outline again to refresh the indexed tag, or omit
-   the tag. Echo tags into subsequent `edit` calls (single-file `ast_edit`
-   only); the tool rejects the change if the file changed since the tag was
-   minted:
+Proposal lifecycle is described once above: proposals are process-memory-only,
+use a creation-time 10-minute TTL, use `lastTouched` only for LRU ordering, cap
+at 16 active entries, and have the documented consuming/non-consuming outcomes.
 
-```text
-read({path:"src/foo.js"}) → {tag:"a1b2c3d4", ...}
-edit({path:"src/foo.js", old_string:..., new_string:..., tag:"a1b2c3d4"})
-  → ok on match, error: "stale tag: file changed since read..." on mismatch
-```
-
-`resolve` re-validates the per-file tags the proposal recorded at preview
-time; on failure it attempts to restore already-written files —
-best-effort, non-transactional (a rollback write that itself fails is
-currently ignored and not separately surfaced).
-
-**Proposal lifecycle**: proposals live in process memory only — they are
-lost on exit or crash, expire after a 10-minute TTL, and are capped at 16
-active proposals per process (LRU eviction beyond that). Re-using an
-expired, evicted, failed, or already-resolved id returns an
-unknown/expired-style error; run `ast_edit` again to mint a fresh proposal.
-
-**Known limitation**: `ast_edit`'s directory expansion walks at most 2000
-candidate files per root and currently does **not** report the truncation
-in its result — a proposal over a very large tree may silently cover only
-the first 2000 walked files. Narrow `paths` when targeting big trees.
+**Known limitation**: `ast_edit` uses regex approximation rather than AST-exact
+matching; directory expansion walks at most 2000 candidate files per root and
+currently does not report truncation. `SOURCE_EXT_RE` includes `.pdf` and
+`.docx`, so wide `ast_grep`/`ast_edit` operations can try to process document
+or binary content as UTF-8 text. Use explicit text-source paths or globs.
 
 ## Deferred capabilities
 

@@ -528,9 +528,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // session.llm (the default, unchanged behavior). The phase model is resolved
   // once per turn and reused for both the pass-1 rewrite and the post-
   // clarification pass-2 rewrite, so the two passes stay consistent.
-  // resolvePhaseLlm returns null when no override is configured or the
-  // override can't be resolved (in which case we fall back to session.llm and
-  // warn, rather than silently running on the wrong model).
+  // resolvePhaseLlm returns null when no override is configured OR the
+  // override can't be resolved (unresolvable ref → silently treated as
+  // "no override": the phase runs on session.llm with NO warning and no
+  // fallback/skip audit event — the warn/fallback policy below only applies
+  // to a resolved model whose actual call then fails).
   const resolvePhaseLlm = async (phase) => {
     const ref = getPhaseModelRef(session.project, phase);
     if (!ref) return null;

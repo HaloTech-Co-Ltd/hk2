@@ -7,7 +7,8 @@ This page explains hk2's per-project knowledge base: the three-space model
 Project Supreme Code — the protected entry that outranks everything else.
 
 A project registered with `/project init` gets its own KB once `/kb init`
-runs, isolated by project UUID under `~/.hk2/kb/<projectId>/`. Nothing is
+runs, isolated by project UUID under `$HK2_KB_DIR/<projectId>/` (default
+`$HK2_HOME/kb/<projectId>/`; `HK2_KB_DIR` can relocate the root). Nothing is
 shared between projects; dropping a project preserves its KB directory until
 you delete it explicitly.
 
@@ -15,7 +16,7 @@ you delete it explicitly.
 
 | Space | Contents | Current update behavior |
 |---|---|---|
-| **Holy** | Stable design knowledge (architecture, algorithms, key patterns). Manually authored or imported from authoritative sources. | Agent/automatic proposals always require approval (even with the auto flags set); explicit user commands carry their own semantics (see the write-path table below). |
+| **Holy** | Stable design knowledge (architecture, algorithms, key patterns). Manually authored or imported from authoritative sources. | Agent-proposed and automatic writes require approval (even with the auto flags set); explicit user commands carry their own semantics (see the write-path table below). |
 | **Eden** | Frequently-updated knowledge (function catalogs, command lists, observed patterns, module summaries, **parsed docs**, **auto-generated summaries**). | Agent knowledge capture follows `HK2_ENABLE_AUTO_LEARN`; parser-owned `doc:<relpath>` entries are additionally synchronized by `/kb init` and `/kb update` (see below). |
 | **Index** | Code index (BM25 over symbols), knowledge graph (call chains / class hierarchy / imports / inheritance), and per-space indexes over Holy/Eden entries. | Explicit `/kb init` / `/kb update` run immediately; the end-of-turn automatic update is gated on `HK2_ENABLE_AUTOUPDATEKB`. |
 
@@ -145,10 +146,20 @@ matrix):
 | `api-docs` | 0 | Numbered reference for the most important public / exported symbols across the whole project. |
 | `code-walkthrough` | 0 | 4–8 sections walking through the most central core abstractions. |
 | `usage-examples` | 0 | 3–5 numbered quickstart examples using real public symbols. |
-| `<topic-id>` (dynamic) | 2 | One entry per LLM-planned topic, each focused on a coherent subsystem (e.g. `buffer-pool`, `transaction-mgmt`, `wal-replay`). |
+| `<topic-id>` (dynamic) | 2 | One extraction call per planned batch may produce zero or more proposed entries; each is validated independently. |
 
 Retrieve any of them via `kb_knowledge("<id>")` or
 `kb_search_knowledge("overview")`.
+
+## Parser-owned `doc:*` entries
+
+`doc:<relpath>` is the indexer's managed Eden entry id for a parsed document.
+The on-disk filename is sanitized for safe storage, but the entry id retains
+the `doc:` prefix. `/kb init` and `/kb update` can replace the parser-owned
+entry for the same document, and deleting or excluding a document can remove
+that entry. Do not hand-create `doc:*` ids: a same-id manual entry may be
+overwritten by later indexing. Use another id for hand-authored document
+knowledge.
 
 ## Auto-learn and auto-update boundaries
 

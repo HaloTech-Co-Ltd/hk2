@@ -123,7 +123,7 @@ project's KB. All commands operate on the current project.
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation (`--full` is accepted but redundant; use `/kb update` for incremental), checkpointed and resumable; LLM summary entries when a model is configured and `--skip-summary` is not passed |
 | `update` | Incremental update (sha256 diff) of changed files — rebuilds the derived symbol indexes/graphs and **synchronizes parser-owned `doc:<relpath>` Eden entries** for indexed documents (new/changed docs written or replaced, deleted/excluded docs' parser-owned entries removed, Eden knowledge index possibly rebuilt); legacy KBs are backed up to `backup/pre-upgrade-<ts>/` then migrated (a parser-version change triggers a full re-index) |
 | `status` | Per-space statistics |
-| `search <query> [--top-k=N]` | BM25 + reranking symbol search |
+| `search <query> [--top-k=N]` | Direct BM25 + reranking symbol search (default top-k 20; no LLM rewrite or source slices) |
 | `symbol <name>` | Look up symbols by exact name |
 | `neighbors <symbol_id>` | Call-graph neighbors (symbol id looks like `<fileId>:<line>`) |
 | `knowledge <sub> [...]` | See [`/kb knowledge`](#kb-knowledge) |
@@ -161,6 +161,11 @@ heuristic path). Flags:
 `--base-dir`, `--per-batch-chars` (default 100000), `--dry-run`,
 `--no-survey` (skip Phase 0), `--model`, `--plan-timeout-ms` (default
 300000), and free-form trailing instructions passed to every LLM prompt.
+In DOC mode, the run-level confirmation applies only when the target is Holy
+and `--dry-run` is not set. After it is accepted, new Holy entries do not
+prompt individually; merges into or overwrites of existing Holy entries may
+still prompt per entry. CODE mode always writes Eden and ignores
+`--space=holy`.
 
 Aliases: `ls`→list, `get`→show, `create`/`set`→add,
 `study`/`init`/`bootstrap`/`scan`→learn,
@@ -202,13 +207,15 @@ Equivalent to `/session resume` — Claude Code's convention.
 
 ## `/remember`
 
-Usage: `/remember [fact] [--project|-p]` — record a session fact that stays
-in scope for the whole session and survives compaction.
+Usage: `/remember [fact] [--project|-p]` — record a session fact that, after successful persistence, stays
+in scope for the whole session and survives compaction by design.
 
 - No args — list the recorded facts.
 - With a fact — persist it (max 100 facts per session, each trimmed to 500
-  characters; normalized dedup). The fact is injected into every subsequent
-  turn via a standing `## Session facts` system message, refreshed live.
+  characters; normalized dedup). After successful persistence, the fact is
+  injected into every subsequent turn via a standing `## Session facts`
+  system message, refreshed live; failed or non-interactive saves are not
+  recorded.
 - `--project` / `-p` — additionally append the fact to the project-level
   Eden entry `env-facts` (cross-session, searchable via
   `kb_search_knowledge`; capped at 200 lines, append-deduped).

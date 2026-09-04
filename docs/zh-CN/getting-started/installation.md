@@ -7,16 +7,17 @@
 
 ## 环境要求
 
-- Node.js **>= 18**（推荐 Node 20 LTS，以获得最佳的 Tree-sitter 原生兼容性）
+- 软件包声明的技术最低版本：Node.js **>= 18**。Node 18 与 20 已 EOL；截至
+  2026 年 9 月应使用仍受 Node.js 项目维护的版本，首选 Node 24 Active LTS。
+  Node 22 Maintenance LTS 可作为兼容选择，但应先在目标平台核验
+  Tree-sitter 原生绑定。
 - 运行 `npm install` 构建 Tree-sitter 原生绑定（14 个语言包）
 
-> **Tree-sitter 兼容性提示**：过新的 Node 版本（如 Node 25+）在某些平台上
-> 可能与预编译的 Tree-sitter 二进制存在 N-API / V8 ABI 不匹配。若
-> `/kb init` 日志出现 `tree-sitter parse failed`，hk2 会透明地回退到基于
-> 正则的解析器：有正则回退的语言以较低的符号精度继续工作，但**没有**回退
-> 解析器的语言（尤其是 C#）将完全不产出符号——见
-> [CLI 与语言支持](../reference/cli-and-language-support.md)。如需最高精度，
-> 请在 Node 20 LTS 上安装，或运行 `npm rebuild` 从源码重新编译。
+> **Tree-sitter 兼容性提示**：必须在实际部署的 Node/平台组合上核验原生绑定；
+> 本仓库没有覆盖所有版本与平台的绑定矩阵。`/kb init` 日志出现
+> `tree-sitter parse failed` 时，请在实际安装目录运行 `npm rebuild`；hk2 会在
+> 存在正则回退的语言上继续工作，而没有回退的语言（尤其 C#）不会产生符号——
+> 见[CLI 与语言支持](../reference/cli-and-language-support.md)。
 
 hk2 未发布到 npm，请从源码安装。
 
