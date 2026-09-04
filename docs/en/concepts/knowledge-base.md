@@ -13,11 +13,11 @@ you delete it explicitly.
 
 ## The three-space model
 
-| Space | Contents | Update policy |
+| Space | Contents | Current update behavior |
 |---|---|---|
-| **Holy** | Stable design knowledge (architecture, algorithms, key patterns). Manually authored or imported from authoritative sources. | **Always requires explicit user approval**, even when `HK2_ENABLE_AUTOUPDATEKB=1` or `HK2_ENABLE_AUTO_LEARN=1`. |
-| **Eden** | Frequently-updated knowledge (function catalogs, command lists, observed patterns, module summaries, **parsed docs**, **auto-generated summaries**). | Auto-updatable when `HK2_ENABLE_AUTO_LEARN=1`; otherwise prompts y/N. |
-| **Index** | Code index (BM25 over symbols), knowledge graph (call chains / class hierarchy / imports / inheritance), and per-space indexes over Holy/Eden entries. | Auto-updatable when `HK2_ENABLE_AUTOUPDATEKB=1`; otherwise prompts y/N. |
+| **Holy** | Stable design knowledge (architecture, algorithms, key patterns). Manually authored or imported from authoritative sources. | Agent/automatic proposals always require approval (even with the auto flags set); explicit user commands carry their own semantics (see the write-path table below). |
+| **Eden** | Frequently-updated knowledge (function catalogs, command lists, observed patterns, module summaries, **parsed docs**, **auto-generated summaries**). | Agent knowledge capture follows `HK2_ENABLE_AUTO_LEARN`; parser-owned `doc:<relpath>` entries are additionally synchronized by `/kb init` and `/kb update` (see below). |
+| **Index** | Code index (BM25 over symbols), knowledge graph (call chains / class hierarchy / imports / inheritance), and per-space indexes over Holy/Eden entries. | Explicit `/kb init` / `/kb update` run immediately; the end-of-turn automatic update is gated on `HK2_ENABLE_AUTOUPDATEKB`. |
 
 The split is about **trust and churn**, not storage: Holy holds things that
 should only change when a human says so; Eden holds things that legitimately
@@ -32,7 +32,7 @@ Confirmation behavior depends on the **write path**, not just the space:
 | `kb_save_knowledge` → Holy | Always requires interactive confirmation; refused when no confirm callback exists |
 | `kb_save_knowledge` → Eden | Auto-writes with `HK2_ENABLE_AUTO_LEARN=1`, otherwise confirms |
 | End-of-turn knowledge proposal | Only arises when the end-of-turn flow triggers; confirms per target-space policy |
-| `/kb knowledge learn --space=holy` (DOC mode) | Confirms before running |
+| `/kb knowledge learn --space=holy` (DOC mode) | Prompts once per run before extraction; merges into / overwrites of existing Holy entries confirm per entry, while new entries after the gate write directly |
 | `/kb transform`, import → Holy, `del` / `empty` / `/kb drop` | Each keeps its own destructive/confirmation prompt |
 
 ## What each space stores
@@ -70,8 +70,9 @@ Confirmation behavior depends on the **write path**, not just the space:
    Eden↔Holy conflicts; `/kb transform` moves an entry between spaces
    (confirmation required).
 5. **Deletion** — `/kb knowledge del <id>` removes one entry (confirmation);
-   `/kb knowledge empty <scope>` removes *all* entries in a space
-   (irreversible, always confirms).
+   `/kb knowledge empty <scope>` removes every *ordinary* entry in a space
+   while preserving the permanent Supreme Code entry (irreversible, always
+   confirms). `/kb drop` deletes the whole project KB.
 
 ## Project Supreme Code (`hk2-supreme-code`)
 
@@ -157,10 +158,13 @@ Two env flags control what the agent may write to the KB without asking:
   silently. **Holy always prompts y/N**, regardless of this flag (this
   confirmation applies to agent-proposed captures; direct commands like
   `/kb knowledge add --space=holy` are your own explicit intent).
-- `HK2_ENABLE_AUTOUPDATEKB=1` — a silent incremental `/kb update` (Index
-  Space) runs at the end of any turn where the agent fell back to `bash` to
-  search source files. This only refreshes derived index data, never Holy or
-  Eden entries.
+- `HK2_ENABLE_AUTOUPDATEKB=1` — a silent incremental `/kb update` runs at
+  the end of any turn where the agent fell back to `bash` to search source
+  files. It refreshes the derived symbol indexes/graphs and also
+  synchronizes parser-owned `doc:<relpath>` Eden entries for indexed
+  documents (writes/replaces entries for new or changed docs, removes
+  parser-owned entries of deleted/excluded docs); it does not touch
+  hand-authored Holy or ordinary Eden entries.
 
 Both default to `0` (off). See
 [Environment variables](../reference/environment-variables.md).

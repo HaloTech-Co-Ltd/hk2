@@ -21,14 +21,15 @@
 
 - **原因**：`npm install --omit=optional` 中途失败（网络、工具链）——安装
   本身已完成，hk2 以正则解析器运行。
-- **解决**：底层问题解决后在 `~/.hk2` 执行 `cd ~/.hk2 && npm install`。
+- **解决**：底层问题解决后进入实际安装目录（默认 `~/.hk2`；若设置了
+  `HK2_INSTALL_DIR` 请进入该目录）执行 `npm install`。
   向 `install.sh` 传 `--no-npm-install` 则是有意跳过该步骤。
 
 ### 启动时出现 "AST dispatcher: tree-sitter not available" 警告
 
 - **原因**：`tree-sitter` 包完全不可加载（未安装，或使用了
   `--no-npm-install`）。
-- **解决**：在安装目录执行 `npm install`。该警告仅为提示；有正则回退的语言
+- **解决**：在实际安装目录执行 `npm install`。该警告仅为提示；有正则回退的语言
   以较低精度继续解析，没有回退的语言（尤其是 C#）在绑定恢复前不产出符号。
 
 ## 模型与提供商

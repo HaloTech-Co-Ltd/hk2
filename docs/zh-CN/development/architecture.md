@@ -82,8 +82,10 @@ flowchart TB
     REPL & TUI --> SI
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
-    SESSCTX --> FACTS
+    TURN --> FACTS
+    TSUP -. 压缩时抽取 .-> FACTS
     SI -. /remember /forget .-> FACTS
+    SESSCTX -. 摘要消费 .-> FACTS
     TURN --> TSTATE
     REPL & TUI --> SF
     IDX --> DGR
@@ -186,7 +188,8 @@ flowchart TB
 
 ## 持久化状态
 
-hk2 的全部持久化内容都在 `HK2_HOME`（默认 `~/.hk2`）下——完整目录树见
+hk2 的大部分配置与会话状态都在 `HK2_HOME`（默认 `~/.hk2`）下；知识库根
+目录本身可通过 `HK2_KB_DIR` 迁移——完整目录树见
 [配置](../reference/configuration.md)：模型与项目注册表、权限规则、项目级
 知识库（含 `doc_index.json` 与各空间知识索引）、会话记录、每会话事实
 （`<sid>.facts.json`）与中断任务状态（`taskstate.json`）、主题、输入历史

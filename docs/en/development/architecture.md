@@ -84,8 +84,10 @@ flowchart TB
     REPL & TUI --> SI
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
-    SESSCTX --> FACTS
+    TURN --> FACTS
+    TSUP -. compaction extraction .-> FACTS
     SI -. /remember /forget .-> FACTS
+    SESSCTX -. digest consumes .-> FACTS
     TURN --> TSTATE
     REPL & TUI --> SF
     IDX --> DGR
@@ -202,7 +204,8 @@ flowchart TB
 
 ## Persisted state
 
-Everything hk2 persists lives under `HK2_HOME` (default `~/.hk2`) — see
+Most configuration and session state lives under `HK2_HOME` (default
+`~/.hk2`; the KB root itself can be relocated with `HK2_KB_DIR`) — see
 [Configuration](../reference/configuration.md) for the full tree: the model
 and project registries, permission rules, per-project KBs (including
 `doc_index.json` and the per-space knowledge indexes), session transcripts,

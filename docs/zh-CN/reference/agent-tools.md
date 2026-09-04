@@ -33,11 +33,13 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 对符合条件（eligible）的已索引源文件，内容前附带结构性
 `## Outline (from KB)` 章节（`outline=false` 禁用），且结果可能携带用于
 陈旧锚点保护的 `tag`（见[陈旧锚点保护](#陈旧锚点保护tag)）；资格跟随工具
-注册表识别的扩展名白名单（`SOURCE_EXT_RE`），比索引器的完整解析器 /
-文档支持范围更窄——例如 `.cs`、`.kts`、`.sgml`、`.doc`、`.ppt`、
-`.pptx` 会被索引但不在 outline/tag 资格内，无扩展名的惯例文件
-（README/LICENSE 等）也永远没有 tag。白名单之外的文件仍会被索引，只是
-`read` 不为其附加 outline 或 tag，写入：否。
+注册表的启发式白名单（`SOURCE_EXT_RE`）——比索引器完整解析器/文档支持范围
+更窄：`.cs`、`.kts`、`.sgml`、`.doc`、`.ppt`、`.pptx` 与无扩展名惯例文件都
+不在其中（反过来说，白名单还包含 `.md`/`.json`/`.pdf` 等文档格式）。这只
+影响 `read` 的**自动**附加——直接调用 `kb_outline` 对任何已索引文件（含
+`.cs`/`.kts`）仍返回符号与 tag。另注意 `read` 按传入的原始路径匹配 KB 文件
+表，绝对路径或不同写法可能无法命中按项目相对路径保存的键。tag 只需文件表
+存有哈希；outline 还需至少一个符号。写入：否。
 
 ### `write`
 
@@ -55,8 +57,10 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 ### `bash`
 
-在当前工作目录执行 shell 命令；返回 stdout + stderr（截断），可选超时
-（秒）。权限检查为尽力而为（见[安全与权限](../guides/security-and-permissions.md)）。
+在当前工作目录执行 shell 命令。stdout 与 stderr 各自独立截断到约 8 KiB
+的缓冲预算（bash 没有单独的行数上限；stderr 上的 KB 提示会占用该流预算）。
+可选超时（秒）：默认 60、上限 60（更大值被钳制；`0` 回退默认；负数未校验
+——请勿使用）。权限检查为尽力而为（见[安全与权限](../guides/security-and-permissions.md)）。
 可选超时（秒）：默认 60、硬上限 60（更大的值会被钳制；`0` 回退为默认值）。
 写入：可能——请视为写入类工具。
 
@@ -98,9 +102,12 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 是（apply 时）。
 
 **Proposal 生命周期**：proposal 只存在于进程内存——退出或崩溃即丢失；
-TTL 为 10 分钟；每进程最多 16 个活跃 proposal（超出按 LRU 淘汰）。复用
-已过期、被淘汰、已失败或已 resolve 的 id 会报错；请重新运行 `ast_edit`
-获取新 proposal。
+TTL 为 10 分钟；每进程最多 16 个活跃 proposal（超出按 LRU 淘汰）。apply、
+discard 与读取/tag/写入失败会消费 proposal；权限被拒的 apply 或非法 action
+当前不会消费它——它会保留到后续成功 resolve、另一次消费性失败、淘汰、过期
+或进程退出。复用已消费/过期的 id 会报错——请重新运行 `ast_edit` 获取新
+proposal。错误结果中的 `rolledBack` 表示进入恢复尝试的已写文件数，不是已
+验证恢复成功的数量。
 
 **已知限制**：`ast_edit` 的目录展开每个根最多遍历 2000 个候选文件，且
 当前不在结果中报告该截断——超大目录树上的 proposal 可能只静默覆盖前
@@ -123,8 +130,9 @@ TTL 为 10 分钟；每进程最多 16 个活跃 proposal（超出按 LRU 淘汰
 
 把已确认计划的**当前** in_progress 步骤标记为完成并推进实时进度面板——
 每个步骤完成后调用一次。`step` 参数仅作为兼容/报告提示保留（状态机
-始终推进当前 in-progress 步骤；该取值不会选择任意步骤，非法、越界或乱序
-取值不改变任何行为）。无活动计划时为
+始终推进当前 in-progress 步骤；该取值不会选择**被推进的是哪一步**——当前
+in-progress 步骤仍会被推进）。交互模式使用真实状态机；无状态机时
+`plan_step` 仅回显（不维护进度状态）。无活动计划时为
 空操作；最后一步完成后面板自动清除，回合正常结束时还有收尾兜底清理未
 推进的面板。请勿在 `plan` 返回已确认计划之前调用。写入：否。
 
@@ -142,9 +150,9 @@ TTL 为 10 分钟；每进程最多 16 个活跃 proposal（超出按 LRU 淘汰
 | `kb_symbol` | 按精确标识符查找符号；返回全部匹配候选 |
 | `kb_outline` | 来自知识库索引的文件大纲——每个符号的名称 / 种类 / 行号 / 签名 / 父类 / 子项数；对"这个文件里有什么？"比 `read` 更轻量；返回 `tag` 供编辑安全使用 |
 | `kb_neighbors` | 某符号的旧版一跳**出向**调用图邻居（它调用了谁；无 direction 参数——要找调用者请用 `kb_callchain` 的 `direction=backward`/`both`） |
-| `kb_callchain` | 对调用图做有界 BFS——按 `max_depth` 跳数返回调用者 / 被调用者。`max_nodes` 独立应用于每个所选方向；BFS 预算包含起点（起点不在返回结果中），因此每个方向最多返回 `max_nodes - 1` 个其他节点 |
-| `kb_class` | 类 / 接口 / 结构体 / 枚举查询：签名、docString、成员、父类、直接实现 |
-| `kb_refs` | 反向查找：调用者、导入者、派生类（`kind=call\|import\|inherit\|any`） |
+| `kb_callchain` | 对调用图做有界 BFS——按 `max_depth` 跳数返回调用者 / 被调用者。`max_nodes` 独立应用于每个所选方向；BFS 预算包含起点（起点不在返回结果中），对推荐的 `max_nodes >= 2`，每个方向最多返回 `max_nodes - 1` 个其他节点；`0`/`1`/负数未校验 |
+| `kb_class` | 类 / 接口 / 结构体 / 枚举查询：`qual_name` 精确匹配，`name` 子串匹配取首个候选（歧义名称请用 `qual_name`）；返回签名、docString、成员、父类、直接实现 |
+| `kb_refs` | 直接（一跳）反向查找：调用者（深度 1）、直接导入者、直接派生类（`kind=call\|import\|inherit\|any`）——非传递闭包 |
 | `kb_implements` | 给定接口或基类，列出图谱记录的**直接**实现类 / 直接子类（一跳，非传递闭包——对结果再次查询可继续下钻） |
 
 ## 知识库知识工具
@@ -153,7 +161,7 @@ TTL 为 10 分钟；每进程最多 16 个活跃 proposal（超出按 LRU 淘汰
 |---|---|
 | `kb_knowledge` | 按 id 查找知识条目——同时检索 Holy 与 Eden，返回完整条目（标题、简介、keyFiles、keySymbols、keywords、space） |
 | `kb_search_knowledge` | 按自然语言查询搜索两个知识空间（关键词重叠排序）——用于判断知识库是否已有某概念的文档 |
-| `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；立即重载进内存知识库。通过该工具保存即视为本轮知识捕获已处理 |
+| `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载。注意：同一 `runLoop` 内此前已成功缓存过的相同 `kb_knowledge`/`kb_search_knowledge` 调用，可能继续返回旧缓存，直到发生缓存失效调用或进入新循环。通过该工具保存即视为本轮知识捕获已处理 |
 
 ## 会话工具
 
@@ -205,6 +213,13 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 当智能体仍然回退到 bash 搜索时，轮末的 `[kb update]` 询问（或
 `HK2_ENABLE_AUTOUPDATEKB` 下的静默自动更新）会重新同步索引。
 
+> **白名单注意 / 二进制风险**：`ast_grep` 与 `ast_edit` 使用同一个
+> `SOURCE_EXT_RE` 启发式白名单过滤文件，而该白名单同样匹配文档格式
+> （`.md`、`.json`、`.pdf`、`.docx`……）。它们因此可能把这类文件当作
+> UTF-8 文本读取；对包含文档/二进制文件的目录树执行目录级 `ast_edit`，
+> 理论上可能产生错误匹配与破坏性重写。目录级重写请限定在明确的文本
+> 源码集合。（两者均为正则近似，非真正 AST 边界匹配——见"暂缓的能力"。）
+
 ## 模式语法（`ast_grep` / `ast_edit`）
 
 | 记号 | 含义 |
@@ -234,10 +249,11 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 3. **`ast_edit` 的用户传入单一 tag**——与每个目标文件比对（见上文
    `ast_edit`；仅限单文件重写）。与用户 tag 无关，`ast_edit` 还会为
    proposal 记录各自的逐文件哈希，`resolve` 在应用时复验这些逐文件
-   tag。`edit` 会拿它与当前磁盘内容的哈希比对，因此索引过期
-（文件在上次 `/kb init`/`update` 后变了）可能拒绝一次有效编辑——此时请先
-运行 `/kb update` 再重新 read/kb_outline 获取更新后的索引标签，或省略 tag。把它回传到后续的 `edit` 或 `ast_edit` 调用中，若文件自 tag 生成以来
-已被修改，工具将拒绝该变更：
+   tag。
+4. **刷新过期 tag**——被拒绝时，先运行 `/kb update` 再重新
+   read/kb_outline 获取更新后的索引标签，或省略 tag。把 tag 回传到后续的
+   `edit` 调用（仅限单文件 `ast_edit`）中；若文件自 tag 生成以来已被修改，
+   工具将拒绝该变更：
 
 ```text
 read({path:"src/foo.js"}) -> {tag:"a1b2c3d4", ...}

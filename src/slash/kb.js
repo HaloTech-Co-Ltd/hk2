@@ -52,7 +52,7 @@
  *
  * Usage:
  *   /kb init [--full]                  Build KB for the current project (full re-index)
- *   /kb update                         Incremental update (sha256 diff) — Index Space only
+ *   /kb update                         Incremental re-index + parser-owned doc: Eden sync
  *   /kb status                         Show KB statistics (counts per space)
  *   /kb search <query> [--top-k=N]     Search symbols in the KB (Index Space)
  *   /kb symbol <name>                  Look up symbol by name
@@ -600,7 +600,8 @@ async function knowledgeShowKb(rest, ctx) {
  *
  *   --space           eden | holy (default eden). In CODE mode the target is
  *                     always Eden (stable Holy knowledge is curated by hand).
- *                     Holy writes require interactive confirmation.
+ *                     DOC --space=holy prompts once per run; merges or overwrites
+ *                     of existing Holy entries confirm per entry.
  *   --file=<path>     DOC mode: learn a single file.
  *   --base-dir=<dir>  DOC mode when the path is a real directory that is NOT
  *                     an indexed subdirectory: learn every supported file
@@ -2222,7 +2223,8 @@ function dirTreePlan(rt, maxFilesPerBatch = 30) {
 /**
  * /kb knowledge empty <eden|holy|all>
  *
- * Removes ALL entries from the specified space(s). Irreversible.
+ * Removes every ORDINARY entry from the specified space(s); the Supreme Code
+ * entry is preserved. Irreversible.
  * ALWAYS prompts y/N, regardless of env vars.
  */
 async function knowledgeEmptyKb(rest, ctx) {

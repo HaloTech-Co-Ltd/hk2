@@ -43,7 +43,9 @@ anything — run it from a full checkout.
 *and* the default **install dir** for the source copy. On a reinstall the
 installer moves a **fixed list** of data items aside, refreshes the code
 tree, then moves them back (user data wins over any same-named item shipped
-by the new tree):
+by the new tree). Preservation applies to a normally completed reinstall
+and is not a transactional backup — if the process dies between the move-aside and the restore, the next run deletes the leftover preserve copy,
+so keep an external backup of important data before upgrading:
 
 - **Preserved**: `models.json`, `projects.json`, `theme.json`, `kb/`,
   `sessions/`, `logs/`

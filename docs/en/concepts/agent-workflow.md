@@ -29,7 +29,7 @@ flowchart TD
     TOOLS -- no --> ANS[Final answer]
     LOOP -.plan tool.-> CONFIRM[User confirms plan<br/>+ optional plan review]
     CONFIRM --> LOOP
-    ANS --> EOT[End of turn:<br/>kb update offer, kb learn capture,<br/>conflict sync, plan finalize,<br/>code review]
+    ANS --> EOT{End of turn gates:<br/>bash-search gate → update offer/capture;<br/>conflict sync (own gate);<br/>plan finalize; code review (own gate)}
 ```
 
 ## Pre-agent pipeline
@@ -46,7 +46,9 @@ for obvious follow-ups:
    never mid-turn), if `HK2_ENABLE_AUTOCOMPACT=1` (default on) and the
    measured context usage from the previous turn reached
    `HK2_AUTOCOMPACT_PCTUSED`% (default 90) of the context window, the earlier
-   conversation is compacted: the last 4 user/assistant turns stay verbatim,
+   conversation is compacted: the last 4 user/assistant MESSAGES stay
+   verbatim (messages, not 4 full turns — an alternating exchange is roughly
+   two back-and-forth rounds),
    everything older (including tool results) is LLM-summarized into one
    system message, with naive truncation as the fallback. Before the turns
    are summarized away, durable user-stated facts are extracted into the
@@ -70,8 +72,9 @@ for obvious follow-ups:
 5. **KB retrieval** — the rewritten query retrieves related symbols,
    call-graph neighbors, 2-hop call chains, class membership, knowledge
    entries (Holy first), project docs, and structured doc tables
-   (`lib/agent/graph.js`). Holy-over-Eden conflicts are detected here: the
-   conflicting Eden entry is suppressed and you are notified at end of turn.
+   (`lib/agent/graph.js`). Holy-over-Eden conflicts are detected here — a
+   suppression notice prints immediately after retrieval — while the
+   `supersededBy` stamping and sync report happen at end of turn.
 6. **Request-clarity assessment** (`HK2_ENABLE_REQUEST_ASSESS`, default on) —
    one bounded LLM round judges whether the request is clear, *against the
    session context* (in-flight task, active plan, the assistant's latest
@@ -121,11 +124,15 @@ The loop (`lib/agent/loop.js`) streams a model reply, executes any tool
 calls, feeds results back, and repeats until the model answers without
 tools. Guardrails:
 
-- **Tool result cache** — identical read-only tool calls within a turn reuse
-  their results.
-- **Stuck detection** — the loop aborts when the same tool call + result
-  fingerprint repeats 3 times, when no progress is made for 6 rounds, or at
-  an absolute cap of 1000 rounds.
+- **Tool result cache** — identical read-only tool calls within a `runLoop`
+  reuse their results; the cache is cleared by bash/edit/write/ast_edit/
+  resolve (not by `kb_save_knowledge` — see the tool reference).
+- **Stuck detection** — the loop aborts on the **fourth** consecutive round
+  with the same tool-call signature and result fingerprint (three repeats
+  beyond the initial occurrence), or at an absolute cap of 1000 rounds. A
+  coded 6-round no-progress guard exists but is currently unreachable (its
+  condition requires zero pending tool calls, which returns first) — do not
+  rely on it.
 - **Mid-task input queueing** — plain text typed while a turn runs is queued
   and injected as in-task guidance at the next round boundary (after the
   current action completes, before the next LLM call), batched into one

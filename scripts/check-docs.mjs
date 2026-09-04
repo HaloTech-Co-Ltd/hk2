@@ -119,6 +119,11 @@ function extractLocalLinks(text) {
   return targets;
 }
 
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function zhCounterpart(enAbs) { return enAbs.replace(`${path.sep}en${path.sep}`, `${path.sep}zh-CN${path.sep}`); }
+function enCounterpart(zhAbs) { return zhAbs.replace(`${path.sep}zh-CN${path.sep}`, `${path.sep}en${path.sep}`); }
+
 /** Resolve a link target against the containing file; true if it exists on disk. */
 async function targetExists(fromFile, target) {
   const abs = path.resolve(path.dirname(fromFile), decodeURIComponent(target));
@@ -224,7 +229,7 @@ for (const [abs, text] of contents) {
 // exactly the kind of leak that must fail the check.
 for (const [abs, raw] of rawContents) {
   if (raw.includes('<repo-url>')) problem(abs, 'contains a <repo-url> placeholder');
-  if (abs.startsWith(DOCS) && /\b(TODO|TBD)\b/.test(raw)) {
+  if (/\b(TODO|TBD)\b/.test(raw)) {
     problem(abs, 'contains a TODO/TBD marker');
   }
   // Fence hygiene: every opening fence needs a language tag, and no fence may
@@ -234,6 +239,46 @@ for (const [abs, raw] of rawContents) {
       problem(abs, `code fence at line ${issue.line} has no language tag`);
     } else {
       problem(abs, `unclosed code fence starting at line ${issue.line}`);
+    }
+  }
+
+  // Structure gates (docs pages + root READMEs): exactly one ATX H1, the
+  // language-switch link directly under it (docs pages), and no heading
+  // level skips. Headings inside fenced code are ignored via scanFences.
+  {
+    const body = scanFences(raw).stripped;
+    const headingRe = /^(#{1,6})\s+(.*)$/gm;
+    const headings = [...body.matchAll(headingRe)].map((m) => ({
+      level: m[1].length,
+      text: m[2].trim(),
+      index: m.index,
+    }));
+    const h1s = headings.filter((h) => h.level === 1);
+    if (h1s.length !== 1) {
+      problem(abs, `has ${h1s.length} ATX H1 headings (expected exactly 1)`);
+    }
+    let prev = 0;
+    for (const h of headings) {
+      if (prev && h.level > prev + 1) {
+        problem(abs, `heading level skips from H${prev} to H${h.level} at "${h.text.slice(0, 40)}"`);
+      }
+      prev = h.level;
+    }
+    // Language switch must appear in the first non-empty block after the H1.
+    if (abs.startsWith(DOCS) && abs !== path.join(DOCS, 'README.md')) {
+      const h1Newline = body.indexOf('\n', body.indexOf('# '));
+      const afterH1 = body.slice(h1Newline + 1);
+      const firstBlock = afterH1.trim().split(/\n\s*\n/)[0] || '';
+      const partner = abs.startsWith(EN)
+        ? zhCounterpart(abs)
+        : abs.startsWith(ZH) ? enCounterpart(abs) : null;
+      if (partner) {
+        const rel = path.relative(path.dirname(abs), partner);
+        const linkRe = new RegExp(']\\(' + escapeRe(rel) + '\\)');
+        if (!linkRe.test(firstBlock)) {
+          problem(abs, 'language-switch link not in the first block under the H1');
+        }
+      }
     }
   }
 }

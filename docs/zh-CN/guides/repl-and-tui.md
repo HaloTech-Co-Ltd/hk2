@@ -112,7 +112,7 @@ streaming │ myapp | Eden/9 Holy/1 | local/mymodel │ ↑1.4k ↓120 0.1%/128k
 任务运行期间，底部会在计划面板 / 状态栏上方固定显示一行输入框
 （`» add instruction ▏`），**真实终端光标停靠在输入框内**——闪烁光标恰好
 落在你的输入将要出现的位置（并跟随光标在文本中间的移动）。你的输入实时
-回显在这里——上方滚动的智能体输出不会干扰正在输入的内容。
+回显在这里——预留的输入框布局旨在让草稿与常规流式重绘相互隔离。
 
 - 任务中输入的**纯文本**进入队列（回显
   `✓ queued #N · delivered after the current action`），在智能体循环的
@@ -130,8 +130,9 @@ streaming │ myapp | Eden/9 Holy/1 | local/mymodel │ ↑1.4k ↓120 0.1%/128k
 输入历史持久化在 `~/.hk2/history.jsonl`（上限 1000 条）。该历史与配置存储
 有两个安全属性：
 
-- 携带凭据的输入（`--api-key=…`、`--token=…`、`Authorization` 头、
-  `password=`/`secret=` 赋值）完全不落盘。
+- 命中当前凭据识别模式（`--api-key=…`、`--token=…`、`Authorization` 头、
+  `password=`/`secret=` 赋值）的输入会被排除出输入历史；识别基于模式匹配，
+  并不能识别任意形式的秘密表示。
 - `~/.hk2/history.jsonl` 与 `models.json` 保持仅属主可读（0600，启动时自动
   迁移，`~/.hk2` 目录本身 0700）。
 

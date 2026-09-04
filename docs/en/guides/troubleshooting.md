@@ -25,14 +25,16 @@ here come from the shipped code.
 
 - **Cause**: `npm install --omit=optional` failed midway (network,
   toolchain) — the install itself completed and hk2 runs on regex parsers.
-- **Fix**: `cd ~/.hk2 && npm install` once the underlying issue is resolved.
+- **Fix**: `cd "<actual install dir>"` (`~/.hk2` by default; use your
+  `HK2_INSTALL_DIR` if set) and run `npm install` once the underlying issue
+  is resolved.
   Passing `--no-npm-install` to `install.sh` skips the step on purpose.
 
 ### `AST dispatcher: tree-sitter not available` warning at startup
 
 - **Cause**: the `tree-sitter` package is not loadable at all (not
   installed, or `--no-npm-install` was used).
-- **Fix**: run `npm install` in the install dir. The warning is
+- **Fix**: run `npm install` in the actual install dir. The warning is
   informational; languages with a regex fallback keep parsing at reduced
   precision, while languages without one (notably C#) yield no symbols
   until the bindings work.

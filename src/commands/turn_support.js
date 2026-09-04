@@ -324,7 +324,7 @@ export async function compactMessages(session) {
   const conversation = session.messages.filter(m => m.role === 'user' || m.role === 'assistant');
   if (conversation.length < 6) return null;
 
-  const keep = 4;   // keep the last 4 user/assistant turns verbatim
+  const keep = 4;   // keep the last 4 user/assistant MESSAGES verbatim (not 4 full turns)
   const toCompact = conversation.slice(0, conversation.length - keep);
   const kept = conversation.slice(conversation.length - keep);
 
@@ -552,9 +552,9 @@ export async function maybeOfferKbUpdate(session, ctx) {
   if (autoUpdate) {
     await runKbUpdate(session, ctx);
   } else {
-    const ok = await ctx.confirm('Run /kb update now to refresh Index Space? (y/N) ', { title: 'Update index' });
+    const ok = await ctx.confirm('Run /kb update now to refresh the derived index and synchronize parser-owned document entries? (y/N) ', { title: 'Update index' });
     if (ok) await runKbUpdate(session, ctx);
-    else ctx.print('[kb hint] Skipped Index Space refresh. Run /kb update manually when ready.');
+    else ctx.print('[kb hint] Skipped KB refresh. Run /kb update manually when ready.');
   }
 
   // 2. Eden / Holy — ask the model to extract what it learned, then route
@@ -666,7 +666,7 @@ function kbLearnInCooldown(session) {
 }
 
 async function runKbUpdate(session, ctx) {
-  ctx.print('[kb update] refreshing Index Space (incremental re-index)...');
+  ctx.print('[kb update] refreshing derived index + syncing parser-owned doc entries (incremental)...');
   try {
     const { buildIndex } = await import('../../lib/index/indexer.js');
     const { markKbBuilt } = await import('../../lib/config/home.js');

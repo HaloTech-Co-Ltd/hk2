@@ -8,7 +8,7 @@ from the resolving code. When adding or changing a variable, re-run the
 search and update this page in both languages. Standard terminal variables
 hk2 honors are listed separately at the end.
 
-Conventions: feature flags read `1` / `0`. Numeric resolvers vary — the
+Conventions: `HK2_ENABLE_*` feature flags go through `envFlag()` — `1`, `yes`, `true`, `on` (case-insensitive) enable; anything else, including `0`/`no`/`false`/`off`/unrecognized strings, disables. Separately, `HK2_NO_COLOR`, `HK2_ASCII`, and `NO_COLOR` use presence semantics: any non-empty value (even `0`) enables them; unset disables. Numeric resolvers vary — the
 LLM timeout/retry/parallel variables treat unset / empty / invalid /
 negative as "use the default" (explicit `0` meaning "no timeout" for the
 timeouts, "one attempt" for retries), while threshold variables like
@@ -20,7 +20,7 @@ its own parsing rule.
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
 | `HK2_HOME` | Config / data home | `~/.hk2` | Holds models.json, projects.json, kb/, sessions/, logs/ |
-| `HK2_KB_DIR` | KB root override | `$HK2_HOME/kb` | |
+| `HK2_KB_DIR` | KB root override | `$HK2_HOME/kb` | Caveat: legacy `--mode` commands detect the current project's KB via the default `$HK2_HOME/kb` path — with a custom `HK2_KB_DIR` that auto-detection can miss the real KB and fall back to `default`; set `HK2_KB_NAME` explicitly in that setup |
 | `HK2_KB_NAME` | KB name for legacy `--mode` commands. Resolution: a non-empty `HK2_KB_NAME` wins; else the shared current project's UUID **when its KB dir already has `meta.json`**; else the literal `default` | non-empty value / project UUID / `default` | |
 | `HK2_PREFIX` | Install prefix used by `install.sh` for the symlink | `/usr/local` | install.sh only |
 | `HK2_INSTALL_DIR` | Self-contained source copy location used by `install.sh` | `~/.hk2` | install.sh only |
@@ -73,7 +73,7 @@ its own parsing rule.
 | `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` checkpoint cadence in files, parsed as `parseInt(value \|\| '100')`. `0` does **not** disable checkpointing — the save check degenerates and a checkpoint is written on every file; use the `--no-checkpoint` flag to disable. Negative/non-numeric values are not meaningfully validated — do not use them | `100` | Per-run `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | Parallelism of the KB parse pool; `0`/unset = auto (host CPU count) | `0` | |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning timeout (ms). Parsed as `parseInt(value) \|\| 300000`: `0` and non-numeric values fall back to the default (this is NOT a "0 = disable" variable, unlike the LLM timeouts) | `300000` | Per-run `--plan-timeout-ms=N` |
-| `HK2_ENABLE_AUTOUPDATEKB` | `1`: silently run an incremental `/kb update` at end of any turn where the agent fell back to bash to search source files | `0` | Otherwise prompts y/N |
+| `HK2_ENABLE_AUTOUPDATEKB` | `1`: silently run an incremental `/kb update` at end of any turn where the agent fell back to bash to search source files. The update rebuilds the derived indexes AND synchronizes parser-owned `doc:<relpath>` Eden entries (see `/kb update`) | `0` | Otherwise prompts y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`: silently save the end-of-turn extracted knowledge entry to Eden. Holy ALWAYS prompts y/N regardless | `0` | |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | Positive minutes: skip the end-of-turn `[kb learn]` offer while a knowledge capture for this session's task was handled within the window (agent save, answered proposal, or model skip). Anchor restored across `--resume`. An agent `kb_save_knowledge` save this turn always skips the offer | `0` (off) | |
 | `HK2_KB_LEARN_VALIDATE` | `1`: validate learned entries against existing KB before writing (pre-filter + one semantic check) — duplicates skipped, related entries merged, conflicts resolved (Holy defers to the user). Best-effort | `1` | |
@@ -82,7 +82,7 @@ its own parsing rule.
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_ENABLE_AUTOCOMPACT` | `1` (default): at the start of a turn, compact once measured context usage reaches the threshold. Keeps the last 4 user/assistant turns verbatim, LLM-summarizes earlier turns into one system message; naive truncation fallback. Turn boundary only, never mid-turn. Facts saved explicitly (via `/remember` or the `remember` tool) survive compaction **by design**; the compaction-time extraction and the head+tail summarizer input that protect opening-stated facts are **best-effort** (the extraction is fail-open; the naive-truncation fallback summarizes nothing) | `1` | |
+| `HK2_ENABLE_AUTOCOMPACT` | `1` (default): at the start of a turn, compact once measured context usage reaches the threshold. Keeps the last 4 user/assistant MESSAGES verbatim (not 4 full turns), LLM-summarizes earlier messages into one system message; the naive-truncation fallback concatenates the to-compact messages and truncates to a length-bounded system message without semantic summarization. Turn boundary only, never mid-turn. Facts saved explicitly (via `/remember` or the `remember` tool) survive compaction **by design**; the compaction-time extraction and the head+tail summarizer input that protect opening-stated facts are **best-effort** (the extraction is fail-open; the naive-truncation fallback summarizes nothing) | `1` | |
 | `HK2_AUTOCOMPACT_PCTUSED` | Context-usage trigger percentage (1–100) | `90` | |
 
 ## First-run import
@@ -111,9 +111,10 @@ These are not hk2-specific; hk2 reads them the way terminal tools usually do:
 | Variable | Used for |
 |---|---|
 | `NO_COLOR` | Disables ANSI colors (same effect as `HK2_NO_COLOR=1`) |
-| `TERM` | Color-mode and TUI capability detection (`dumb` means no color and forces the REPL fallback) |
+| `TERM` | Color-mode and TUI capability detection: `dumb` disables color and blocks the TUI; `xterm-256color` (and `linux`/empty) feed 256-color and Windows UTF-8 inference |
 | `COLORTERM` | Truecolor detection (`truecolor` / `24bit` → 24-bit color mode) |
-| `WT_SESSION` / `TERM_PROGRAM` | Windows Terminal / VS Code detection for truecolor and UTF-8 assumptions |
+| `WT_SESSION` | Windows Terminal detection: truecolor inference + Windows UTF-8 capability inference |
+| `TERM_PROGRAM` | `vscode` feeds the Windows UTF-8 capability inference (not truecolor detection) |
 | `LC_ALL` / `LC_CTYPE` / `LANG` | UTF-8 locale detection (glyph vs ASCII fallback rendering) |
 
 ## Claude Code settings env keys consumed during first-run import

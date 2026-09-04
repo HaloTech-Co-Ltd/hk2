@@ -36,12 +36,16 @@ this is a NUL-scan heuristic, not full binary-format detection. For
 eligible indexed source files, a structural `## Outline (from KB)` section is
 prepended (`outline=false` disables) and the result may carry a `tag` for
 stale-anchor protection (see [Stale-anchor protection](#stale-anchor-protection-tag));
-eligibility follows the tool registry's recognized-extension whitelist
-(`SOURCE_EXT_RE`), which is narrower than the indexer's full parser/doc
-support — e.g. `.cs`, `.kts`, `.sgml`, `.doc`, `.ppt`, and `.pptx` are
-indexed but not outline/tag-eligible, and extension-less convention files
-(README/LICENSE/...) are never tag-eligible. Files outside the whitelist
-are still indexed; they just get no outline prepend or tag from `read`, Writes: no.
+eligibility follows the tool registry's heuristic whitelist
+(`SOURCE_EXT_RE`) — narrower than the indexer's full parser/doc support:
+`.cs`, `.kts`, `.sgml`, `.doc`, `.ppt`, `.pptx`, and extension-less
+convention files are outside it (the whitelist conversely includes doc
+formats like `.md`/`.json`/`.pdf`). This limits `read`'s **auto**
+annotation only — a direct `kb_outline` call still returns symbols and a
+tag for any indexed file, including `.cs`/`.kts`. Note `read` matches the
+KB file table by the raw path you pass, so absolute or differently-spelled
+paths may miss the project-relative key. A tag needs a stored hash; an
+outline needs at least one symbol. Writes: no.
 
 ### `write`
 
@@ -61,8 +65,12 @@ minted. Writes: yes.
 
 ### `bash`
 
-Execute a shell command in the current working directory; returns stdout +
-stderr (truncated), optional timeout in seconds. Permission-checked
+Execute a shell command in the current working directory. stdout and stderr
+are each independently truncated to an approximately 8 KiB buffer budget
+(there is no separate line limit for bash; a KB hint on stderr spends that
+stream's budget). Optional timeout in seconds: default 60, maximum 60
+(larger values clamped; `0` falls back to default; negative values are not
+validated — do not use them). Permission-checked
 best-effort (see [Security and permissions](../guides/security-and-permissions.md)).
 Optional timeout in seconds: default 60, hard-capped at 60 (larger values
 are clamped; `0` falls back to the default). Writes: potentially — treat as
@@ -114,9 +122,13 @@ writing. Writes: yes (on apply).
 
 **Proposal lifecycle**: proposals live in process memory only — lost on
 exit or crash, expiring after a 10-minute TTL, capped at 16 active
-proposals per process (LRU eviction beyond that). Re-using an expired,
-evicted, failed, or already-resolved id errors out; run `ast_edit` again
-for a fresh proposal.
+proposals per process (LRU eviction beyond that). Apply, discard, and
+read/tag/write failures consume the proposal; a permission-denied apply or
+an invalid action currently leaves it available until a later successful
+resolution, another consuming failure, eviction, expiration, or process
+exit. Re-using a consumed/expired id errors out — run `ast_edit` again for
+a fresh proposal. In error results, `rolledBack` reports how many written
+files entered the restoration attempt, not verified restoration successes.
 
 **Known limitation**: `ast_edit`'s directory expansion walks at most 2000
 candidate files per root and does not report the truncation in its result —
@@ -147,7 +159,10 @@ the confirmed plan as done — call once after finishing each step. The
 `step` parameter is retained only as a compatibility/reporting hint: the
 interactive state machine always advances the current in-progress step, and
 the value never selects an arbitrary step (invalid, out-of-range, or
-out-of-order values change nothing). No-op when no plan is active; the
+out-of-order values do not change **which step is selected** — the current
+in-progress step still advances). Interactive mode uses the real state
+machine; without one, `plan_step` merely echoes (no progress state is
+kept). No-op when no plan is active; the
 panel clears after the last step, and a normal turn end finalizes any panel
 left un-advanced as a backstop. Do not call before `plan` returns a
 confirmed plan. Writes: no.
@@ -168,9 +183,9 @@ filtered channels (metadata stays visible — see
 | `kb_symbol` | Look up a symbol by exact identifier; all matching candidates |
 | `kb_outline` | File outline from the KB index — name / kind / lines / signature / parent / child count per symbol; cheaper than `read` for "what's in this file?"; returns a `tag` for edit safety |
 | `kb_neighbors` | Legacy one-hop **outgoing** call-graph neighbors of a symbol (what it calls; no direction parameter — use `kb_callchain` with `direction=backward`/`both` for callers) |
-| `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops. `max_nodes` applies independently to each selected direction; the BFS budget includes the starting node (omitted from the results), so each direction returns at most `max_nodes - 1` other nodes |
-| `kb_class` | Class / interface / struct / enum lookup: signature, doc string, members, super-classes, direct implementations |
-| `kb_refs` | Reverse lookup: callers, importers, deriving classes (`kind=call\|import\|inherit\|any`) |
+| `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops. `max_nodes` applies independently to each selected direction; the BFS budget includes the starting node (omitted from the results), so for the recommended `max_nodes >= 2` each direction returns at most `max_nodes - 1` other nodes; `0`/`1`/negatives are not validated |
+| `kb_class` | Class / interface / struct / enum lookup: `qual_name` exact, `name` substring with first-candidate match (prefer `qual_name` for ambiguous names); returns signature, doc string, members, super-classes, direct implementations |
+| `kb_refs` | Reverse lookup of DIRECT (one-hop) relations: callers (depth 1), direct importers, directly derived classes (`kind=call\|import\|inherit\|any`) — not a transitive closure |
 | `kb_implements` | Given an interface or base class, list its DIRECT implementers / direct subclasses recorded by the graph (one hop, not a transitive closure — query results again to walk deeper) |
 
 ## KB knowledge tools
@@ -179,7 +194,7 @@ filtered channels (metadata stays visible — see
 |---|---|
 | `kb_knowledge` | Look up a knowledge entry by id — searches Holy and Eden, returns the full entry (title, intro, keyFiles, keySymbols, keywords, space) |
 | `kb_search_knowledge` | Search both knowledge spaces by natural-language query (keyword-overlap ranking) — use to check whether the KB already documents a concept |
-| `kb_save_knowledge` | Persist a knowledge entry to Holy (requires user approval) or Eden (auto-learn eligible); reloads into the in-memory KB immediately. Saving via this tool marks the turn's knowledge capture as handled |
+| `kb_save_knowledge` | Persist a knowledge entry to Holy (requires user approval) or Eden (auto-learn eligible); the KB runtime is hot-reloaded immediately. Caveat: an identical `kb_knowledge`/`kb_search_knowledge` call already cached earlier in the same `runLoop` may keep returning the stale cached result until a cache-busting call or a new loop. Saving via this tool marks the turn's knowledge capture as handled |
 
 ## Session tools
 
@@ -242,6 +257,15 @@ When the agent still falls back to bash searches, the end-of-turn
 `[kb update]` offer (or silent auto-update under `HK2_ENABLE_AUTOUPDATEKB`)
 re-syncs the index.
 
+> **Whitelist caveat / binary risk**: `ast_grep` and `ast_edit` filter files
+> through the same `SOURCE_EXT_RE` heuristic whitelist, which also matches
+> document formats (`.md`, `.json`, `.pdf`, `.docx`, …). They may therefore
+> attempt to read such files as UTF-8 text; a directory-level `ast_edit`
+> over a tree containing document/binary files can theoretically produce
+> wrong matches and destructive rewrites. Scope directory rewrites to
+> explicit text source sets. (Both tools are regex approximations, not
+> full AST-boundary matching — see Deferred capabilities.)
+
 ## Pattern syntax (`ast_grep` / `ast_edit`)
 
 | Token | Meaning |
@@ -273,14 +297,13 @@ Three distinct things are called a "tag" — keep them apart:
 3. **The user-passed single tag on `ast_edit`** — compared against every
    target file (see `ast_edit` above; single-file rewrites only). Separately
    from any user tag, `ast_edit` records its own per-file hash for each
-   proposal, and `resolve` re-validates those per-file tags at apply time. `edit`
-compares it against a hash of the current on-disk content, so a stale index
-(file changed since the last `/kb init`/`update`) can reject a valid edit —
-run `/kb update` and read/kb_outline again to refresh the indexed tag, or
-omit the tag in that case. Echo it into subsequent `edit` calls (single-file
-`ast_edit` only)
-and the tool rejects the change if the file was modified since the tag was
-minted:
+   proposal, and `resolve` re-validates those per-file tags at apply time.
+
+4. **Refreshing a stale tag** — when a mismatch is rejected, run `/kb
+   update` and read/kb_outline again to refresh the indexed tag, or omit
+   the tag. Echo tags into subsequent `edit` calls (single-file `ast_edit`
+   only); the tool rejects the change if the file changed since the tag was
+   minted:
 
 ```text
 read({path:"src/foo.js"}) → {tag:"a1b2c3d4", ...}

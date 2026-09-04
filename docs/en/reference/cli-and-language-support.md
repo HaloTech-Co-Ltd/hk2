@@ -110,8 +110,11 @@ and `tsx`):
 - Ruby, PHP
 - Bash (`.sh` `.bash` `.zsh`)
 
-Symbols from these carry the full record: qualified names, parent links,
-super-classes, implemented interfaces, imports, doc comments.
+Tree-sitter-backed symbols CAN populate the richer fields — qualified
+names, parent links, super-classes, implemented interfaces, imports, doc
+comments — when the grammar and the extractor expose them; individual
+fields remain optional (some languages define no import extraction; some
+symbols have no parent, inheritance, or doc string).
 
 > **Glob caveat**: the *default* include globs (see
 > [Configuration](configuration.md#default-include--exclude-globs)) do not
@@ -141,8 +144,11 @@ it, C# files yield no symbols).
 
 Markdown (`.md` `.markdown`), plain text (`.txt` `.rst` `.adoc`), JSON,
 YAML (`.yaml` `.yml`), HTML (`.html` `.htm`), SGML are parsed with the
-standard library. Extension-less convention files (README, LICENSE,
-CHANGELOG, CONTRIBUTING, AUTHORS, NOTICE...) are treated as documents.
+standard library. Extension-less convention files (README, LICENSE, CHANGELOG,
+CONTRIBUTING, AUTHORS, NOTICE, CHANGES, HISTORY...) are recognized by the
+parser — but the *default* include globs only list README*/LICENSE*/
+CHANGELOG*/CONTRIBUTING*, so AUTHORS/NOTICE/CHANGES/HISTORY are parsed
+only after you add them to the include globs.
 `.pdf` requires the optional `pdf-parse` package and Word `.docx` requires
 `mammoth`. `.pptx` is extracted via the built-in OOXML ZIP/XML reader, and
 the older `.doc` / `.ppt` binaries via a built-in best-effort

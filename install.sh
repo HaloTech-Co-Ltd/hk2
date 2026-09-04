@@ -9,7 +9,7 @@
 # Behavior:
 #   - Copies the current local source checkout to $HK2_INSTALL_DIR (default: ~/.hk2)
 #     If the script is run from inside the repo, it uses the current dir.
-#   - USER DATA IS PRESERVED across reinstalls: models.json / projects.json /
+#   - SELECTED USER DATA IS PRESERVED across reinstalls: models.json / projects.json /
 #     theme.json / kb/ / sessions/ / logs/ living in the install dir are moved
 #     aside, the code tree is refreshed, then moved back. Disable with
 #     --preserve-data=off (the pre-fix rm -rf behavior).

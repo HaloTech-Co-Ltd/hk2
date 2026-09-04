@@ -12,11 +12,11 @@ Supreme Code）。
 
 ## 三空间模型
 
-| 空间 | 内容 | 更新策略 |
+| 空间 | 内容 | 当前更新行为 |
 |---|---|---|
-| **Holy**（稳定知识空间） | 稳定的设计知识（架构、算法、关键模式）。由人工撰写或从权威来源导入。 | **始终需要用户明确批准**，即便设置了 `HK2_ENABLE_AUTOUPDATEKB=1` 或 `HK2_ENABLE_AUTO_LEARN=1`。 |
-| **Eden**（演进知识空间） | 频繁更新的知识（函数目录、命令列表、观察到的模式、模块摘要、**解析的文档**、**自动生成的摘要**）。 | 当 `HK2_ENABLE_AUTO_LEARN=1` 时可自动更新；否则提示 y/N 确认。 |
-| **Index**（索引空间） | 代码索引（基于符号的 BM25）、知识图谱（调用链 / 类继承 / 导入 / 继承），以及 Holy/Eden 条目的各空间索引。 | 当 `HK2_ENABLE_AUTOUPDATEKB=1` 时可自动更新；否则提示 y/N 确认。 |
+| **Holy**（稳定知识空间） | 稳定的设计知识（架构、算法、关键模式）。由人工撰写或从权威来源导入。 | 智能体/自动提案始终需要批准（即使设置了自动开关）；显式用户命令有各自语义（见下方写入路径表）。 |
+| **Eden**（演进知识空间） | 频繁更新的知识（函数目录、命令列表、观察到的模式、模块摘要、**解析的文档**、**自动生成的摘要**）。 | 智能体知识捕获遵循 `HK2_ENABLE_AUTO_LEARN`；解析器管理的 `doc:<relpath>` 条目还会被 `/kb init` 与 `/kb update` 同步（见下文）。 |
+| **Index**（索引空间） | 代码索引（基于符号的 BM25）、知识图谱（调用链 / 类继承 / 导入 / 继承），以及 Holy/Eden 条目的各空间索引。 | 显式 `/kb init` / `/kb update` 立即执行；轮末自动更新受 `HK2_ENABLE_AUTOUPDATEKB` 门控。 |
 
 这种划分关乎**信任与变更频率**，而非存储位置：Holy 存放只应随人工决策
 而变化的内容；Eden 存放天然频繁变化的内容；Index 是随时可从源码重建的
@@ -31,7 +31,7 @@ Supreme Code）。
 | `kb_save_knowledge` → Holy | 始终需要交互确认；无确认回调时拒绝 |
 | `kb_save_knowledge` → Eden | `HK2_ENABLE_AUTO_LEARN=1` 时自动写入，否则确认 |
 | 轮末知识提案 | 仅当轮末流程触发时产生；按目标空间策略确认 |
-| `/kb knowledge learn --space=holy`（DOC 模式） | 运行前确认 |
+| `/kb knowledge learn --space=holy`（DOC 模式） | 抽取前每轮提示一次；合并/覆盖已有 Holy 条目逐条确认，通过门后新建条目直接写入 |
 | `/kb transform`、导入 → Holy、`del` / `empty` / `/kb drop` | 各自保留破坏性确认提示 |
 
 ## 每个空间存放什么
@@ -63,8 +63,8 @@ Supreme Code）。
 4. **维护**——`/kb knowledge housekeep` 合并重复条目并裁决 Eden↔Holy
    冲突；`/kb transform` 在空间之间移动条目（需确认）。
 5. **删除**——`/kb knowledge del <id>` 删除单个条目（需确认）；
-   `/kb knowledge empty <scope>` 清空某空间的**全部**条目（不可逆，始终
-   确认）。
+   `/kb knowledge empty <scope>` 删除某空间的全部**普通**条目并保留永久的
+   最高准则条目（不可逆，始终确认）。`/kb drop` 才会删除整个项目知识库。
 
 ## 项目最高准则（`hk2-supreme-code`）
 
@@ -140,8 +140,10 @@ id——仅在非 `--dry-run`、无 `--base-dir`、无 `--no-survey` 时生成�
   y/N**，无论此标志如何（该确认针对智能体提议的捕获；`/kb knowledge add
   --space=holy` 这类直接命令是用户自己的显式意图）。
 - `HK2_ENABLE_AUTOUPDATEKB=1`——当某轮智能体回退到用 `bash` 搜索源文件时，
-  轮末静默执行一次增量 `/kb update`（Index 空间）。这只刷新派生索引数据，
-  绝不触碰 Holy 或 Eden 条目。
+  轮末静默执行一次增量 `/kb update`。它刷新派生的符号索引与图谱，并同步
+  解析器管理的 `doc:<relpath>` Eden 条目（为新增/变化文档写入或覆盖条目、
+  移除已删除或被排除文档的 parser-owned 条目）；不会触碰手工撰写的 Holy
+  或普通 Eden 条目。
 
 两者默认为 `0`（关闭）。见[环境变量](../reference/environment-variables.md)。
 

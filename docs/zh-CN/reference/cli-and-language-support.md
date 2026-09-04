@@ -105,8 +105,9 @@ hk2 --help                   # 或 -h
 - Ruby、PHP
 - Bash（`.sh` `.bash` `.zsh`）
 
-这些语言的符号携带完整记录：限定名、父级链接、基类、实现接口、导入与
-文档注释。
+Tree-sitter 支持的符号*可以*填充更丰富的字段——限定名、父级链接、基类、
+实现接口、导入、文档注释——前提是相应语法与提取器实现了它们；各字段均为
+可选（部分语言没有导入提取；某些符号没有父级、继承或文档字符串）。
 
 > **glob 注意**：*默认* include globs（见
 > [配置](configuration.md#默认-include--exclude-globs)）不含 `**/*.cs` 与
@@ -133,7 +134,9 @@ Tree-sitter 不可用时（未 `npm install`、ABI 不匹配、缺少语法）�
 Markdown（`.md` `.markdown`）、纯文本（`.txt` `.rst` `.adoc`）、JSON、
 YAML（`.yaml` `.yml`）、HTML（`.html` `.htm`）、SGML 用标准库解析。无
 扩展名的惯例文件（README、LICENSE、CHANGELOG、CONTRIBUTING、AUTHORS、
-NOTICE……）按文档处理。PDF（`.pdf`）需要可选的 `pdf-parse` 包；Word（`.docx`）需要 `mammoth`。
+NOTICE、CHANGES、HISTORY……）可被解析器识别——但*默认* include globs 只
+显式列出 README*/LICENSE*/CHANGELOG*/CONTRIBUTING*，AUTHORS/NOTICE/
+CHANGES/HISTORY 需加入 include globs 后才会被解析。PDF（`.pdf`）需要可选的 `pdf-parse` 包；Word（`.docx`）需要 `mammoth`。
 `.pptx` 经内置 OOXML ZIP/XML 读取器提取；更老的 `.doc` / `.ppt` 二进制经
 内置的尽力而为可打印文本启发式提取——内置提取不是完整的 Office 渲染器，
 不保证恢复复杂布局、图表、嵌入对象或全部文本。解析后的文档以

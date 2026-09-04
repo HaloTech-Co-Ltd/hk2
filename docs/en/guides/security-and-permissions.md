@@ -90,6 +90,27 @@ roots everything stays denied; inside them the permissive project default
 still applies. An empty `permissions: []` array is a valid "no rules"
 config and produces no warning.
 
+## Write permission and confidentiality
+
+A read deny alone is **not** a confidentiality boundary when write access is
+still allowed. Each built-in tool requests the permission mode implemented
+for that tool — not the exact underlying read/write system call — and some
+write-oriented tools read the existing file as part of their operation:
+
+- `edit` requests `w` only, then reads the file to match `oldText`.
+- Single-file `ast_edit` (a direct file path in `paths`) requests `w` only,
+  then reads the whole file — and its **diff preview can return
+  source-derived content** of the old and new text. (Directory-mode walks do
+  re-check `r` per file.)
+- `resolve` re-checks `w` at apply time, then reads each file to re-validate
+  its tag before writing.
+
+> Deny both `r` and `w` — usually `deny: "rwx"` — for confidential paths,
+> and remove or rebuild any KB data already derived from them (see the
+> indexed-data warning above). `bash` checks remain a best-effort lexical
+> scan, not an OS sandbox, and external MCP servers are not constrained by
+> the local path-permission service at all.
+
 ## What is enforced where
 
 ### Hardened path: the file tools

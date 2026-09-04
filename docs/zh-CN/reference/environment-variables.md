@@ -6,7 +6,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 而非照搬旧文档。默认值来自解析代码。新增或修改变量时，请重新执行搜索并
 同步更新两种语言的本页。hk2 遵从的标准终端变量在文末单独列出。
 
-约定：功能开关读取 `1` / `0`。数值类各不相同——LLM 超时 / 重试 / 并行度
+约定：`HK2_ENABLE_*` 功能开关经 `envFlag()` 解析——`1`、`yes`、`true`、`on`（不区分大小写）为开；其余任何值（含 `0`/`no`/`false`/`off`/未识别字符串）为关。另外，`HK2_NO_COLOR`、`HK2_ASCII` 与 `NO_COLOR` 使用存在性语义：任意非空值（即使为 `0`）即启用，取消设置才关闭。数值类各不相同——LLM 超时 / 重试 / 并行度
 变量把未设置 / 空 / 非法 / 负数视为"使用默认值"（超时类显式 `0` 表示
 "不设超时"，重试类表示"仅尝试一次"）；`HK2_AUTOCOMPACT_PCTUSED` 这类
 阈值变量则按各自范围钳制。每个条目都写明自己的解析规则。
@@ -16,7 +16,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
 | `HK2_HOME` | 配置 / 数据主目录 | `~/.hk2` | 存放 models.json、projects.json、kb/、sessions/、logs/ |
-| `HK2_KB_DIR` | 知识库根目录覆盖 | `$HK2_HOME/kb` | |
+| `HK2_KB_DIR` | 知识库根目录覆盖 | `$HK2_HOME/kb` | 注意：legacy `--mode` 命令按默认 `$HK2_HOME/kb` 路径检测当前项目知识库——自定义 `HK2_KB_DIR` 时该自动检测可能看不到真实 KB 而回退 `default`；此时请显式设置 `HK2_KB_NAME` |
 | `HK2_KB_NAME` | 旧版 `--mode` 命令使用的知识库名。解析顺序：非空 `HK2_KB_NAME` 优先；否则当共享当前项目的知识库目录已有 `meta.json` 时用其 UUID；否则用字面量 `default` | 非空值 / 项目 UUID / `default` | |
 | `HK2_PREFIX` | `install.sh` 放置符号链接的安装前缀 | `/usr/local` | 仅 install.sh |
 | `HK2_INSTALL_DIR` | `install.sh` 自包含源码副本位置 | `~/.hk2` | 仅 install.sh |
@@ -69,7 +69,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` 检查点保存间隔（文件数），按 `parseInt(value \|\| '100')` 解析。`0` **不会**禁用检查点——保存判断会退化成每个文件都写一次检查点；禁用请用 `--no-checkpoint`。负数 / 非法值没有可靠校验——请勿使用 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | 知识库解析池并行度；`0` / 未设置 = 自动（取宿主 CPU 数） | `0` | |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒）。按 `parseInt(value) \|\| 300000` 解析：`0` 与非法值都会回到默认值（与 LLM 超时不同，这**不是** "0 = 禁用" 变量） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
-| `HK2_ENABLE_AUTOUPDATEKB` | `1`：当某轮智能体回退到 bash 搜索源文件时，轮末静默执行增量 `/kb update` | `0` | 否则提示 y/N |
+| `HK2_ENABLE_AUTOUPDATEKB` | `1`：当某轮智能体回退到 bash 搜索源文件时，轮末静默执行增量 `/kb update`。该更新重建派生索引，**并同步解析器管理的 `doc:<relpath>` Eden 条目**（见 `/kb update`） | `0` | 否则提示 y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`：轮末抽取的知识条目静默写入 Eden。Holy 无论此标志如何始终提示 y/N | `0` | |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 正数分钟：若本会话任务的知识捕获在该窗口内已处理（智能体保存、已回答的提案、或模型跳过），则跳过轮末 `[kb learn]` 询问。锚点经 `--resume` 恢复。智能体本轮通过 `kb_save_knowledge` 保存时始终跳过询问 | `0`（关闭） | |
 | `HK2_KB_LEARN_VALIDATE` | `1`：学习的条目写盘前对照现有知识库校验（预筛 + 一次语义判定）——重复跳过、相近合并、冲突裁决（Holy 交由用户）。尽力而为 | `1` | |
@@ -78,7 +78,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_ENABLE_AUTOCOMPACT` | `1`（默认开启）：轮次开始时，若上下文使用率达到阈值则压缩。最近 4 轮 user/assistant 原样保留，更早的由 LLM 总结为一条 system 消息；失败回退朴素截断。仅在轮次边界触发，绝不中途。显式保存的事实（经 `/remember` 或 `remember` 工具）在设计上**必然**免受压缩；而保护开头陈述事实的压缩时抽取与"头部+尾部"摘要器输入属于**尽力而为**（抽取失败即放行；朴素截断回退不做任何总结） | `1` | |
+| `HK2_ENABLE_AUTOCOMPACT` | `1`（默认开启）：轮次开始时，若上下文使用率达到阈值则压缩。最近 4 条 user/assistant **消息**原样保留（不是 4 个完整轮次），更早的由 LLM 总结为一条 system 消息；朴素截断回退只是把待压缩消息拼接并截断为有限长度的 system 消息，不做语义总结。仅在轮次边界触发，绝不中途。显式保存的事实（经 `/remember` 或 `remember` 工具）在设计上**必然**免受压缩；而保护开头陈述事实的压缩时抽取与"头部+尾部"摘要器输入属于**尽力而为**（抽取失败即放行；朴素截断回退不做任何总结） | `1` | |
 | `HK2_AUTOCOMPACT_PCTUSED` | 上下文使用率触发阈值（1–100） | `90` | |
 
 ## 首启导入
@@ -107,9 +107,10 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 | 变量 | 用途 |
 |---|---|
 | `NO_COLOR` | 禁用 ANSI 颜色（效果同 `HK2_NO_COLOR=1`） |
-| `TERM` | 颜色模式与 TUI 能力检测（`dumb` 表示无颜色并强制回退 REPL） |
+| `TERM` | 颜色模式与 TUI 能力检测：`dumb` 禁用颜色并阻止 TUI；`xterm-256color`（及 `linux`/空值）参与 256 色与 Windows UTF-8 推断 |
 | `COLORTERM` | 真彩色检测（`truecolor` / `24bit` → 24 位颜色模式） |
-| `WT_SESSION` / `TERM_PROGRAM` | Windows Terminal / VS Code 检测（真彩色与 UTF-8 假设） |
+| `WT_SESSION` | Windows Terminal 检测：真彩色推断 + Windows UTF-8 能力推断 |
+| `TERM_PROGRAM` | `vscode` 参与 Windows UTF-8 能力推断（不用于真彩色判定） |
 | `LC_ALL` / `LC_CTYPE` / `LANG` | UTF-8 区域检测（字形与 ASCII 回退渲染） |
 
 ## Claude Code settings 首启导入消费的 env 键

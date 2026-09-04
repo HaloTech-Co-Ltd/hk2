@@ -121,7 +121,7 @@ project's KB. All commands operate on the current project.
 | Subcommand | Effect |
 |---|---|
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation (`--full` is accepted but redundant; use `/kb update` for incremental), checkpointed and resumable; LLM summary entries when a model is configured and `--skip-summary` is not passed |
-| `update` | Incremental update (sha256 diff) — Index Space only; backs up a legacy KB's knowledge entries to `backup/pre-upgrade-<ts>/`, then migrates (a parser-version change triggers a full re-index) |
+| `update` | Incremental update (sha256 diff) of changed files — rebuilds the derived symbol indexes/graphs and **synchronizes parser-owned `doc:<relpath>` Eden entries** for indexed documents (new/changed docs written or replaced, deleted/excluded docs' parser-owned entries removed, Eden knowledge index possibly rebuilt); legacy KBs are backed up to `backup/pre-upgrade-<ts>/` then migrated (a parser-version change triggers a full re-index) |
 | `status` | Per-space statistics |
 | `search <query> [--top-k=N]` | BM25 + reranking symbol search |
 | `symbol <name>` | Look up symbols by exact name |
@@ -142,7 +142,7 @@ Usage: `/kb knowledge <subcommand> [args]`.
 | `add [--space=holy\|eden] --title=<t> [--id=<id>] (--intro=<text> \| --intro-file=<path>) [--key-files=<a,b>] [--key-symbols=<a,b>] [--keywords=<a,b>]` | Manually persist an entry (default holy) |
 | `learn [--space=eden\|holy] [--file=<path>] [--base-dir=<dir>] [--per-batch-chars=N] [--dry-run] [--no-survey] [--model=<provider>/<model-id>] [--plan-timeout-ms=N] [instructions...]` | Unified LLM deep-study (DOC or CODE mode) — see below |
 | `housekeep <eden\|holy\|all> [--model=<provider>/<model-id>]` | LLM-assisted: broken-entry scan, duplicate/similar merge (y/N), Eden↔Holy conflict resolution (`all`, per-pair choice). Supreme-code never touched; indexes rebuilt |
-| `empty <eden\|holy\|all>` | Bulk-delete ALL entries in a space — irreversible, always confirms y/N |
+| `empty <eden\|holy\|all>` | Deletes every **ordinary** entry in the selected space(s); the permanent Supreme Code entry is preserved — irreversible, always confirms y/N |
 | `export <eden\|holy\|all> <path>` | Dump entries to JSON (version 2, per-entry `space` tags) |
 | `import <path> [eden\|holy\|adaptive] [--overwrite]` | Import entries; `adaptive` routes each entry to its original space; Holy imports always prompt y/N |
 | `del <id>` | Delete one entry (confirmation required) |

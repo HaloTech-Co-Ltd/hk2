@@ -23,7 +23,10 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
   implementation — the `--full` flag is accepted but redundant; use
   `/kb update` for incremental refreshes. Interrupted builds resume from
   the checkpoint.
-- `/kb update` re-parses only changed files (Index Space). It auto-detects a
+- `/kb update` incrementally re-parses changed files, rebuilds the derived
+  symbol indexes/graphs, and synchronizes parser-owned `doc:<relpath>` Eden
+  entries (new/changed docs written or replaced, deleted/excluded docs'
+  parser-owned entries removed). It auto-detects a
   legacy KB: knowledge entries are backed up to `backup/pre-upgrade-<ts>/`
   first, then the migration is applied (a parser-version change triggers a
   full re-index).
@@ -159,7 +162,7 @@ Limits and protection rules are covered in
 
 ```bash
 /kb knowledge del <id>          # one entry (confirm)
-/kb knowledge empty eden        # ALL entries in a space — irreversible, always confirms
+/kb knowledge empty eden        # every ordinary entry (Supreme Code preserved) — irreversible
 /kb drop                        # delete the whole KB (confirm)
 ```
 

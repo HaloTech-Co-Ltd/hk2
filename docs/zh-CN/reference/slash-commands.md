@@ -119,7 +119,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | 子命令 | 作用 |
 |---|---|
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；已配置模型且未传 `--skip-summary` 时生成 LLM 摘要条目 |
-| `update` | 增量更新（sha256 差异）——仅 Index 空间；旧版知识库先备份知识条目到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
+| `update` | 增量更新（sha256 差异）——重建派生的符号索引与图谱，并**同步解析器管理的 `doc:<relpath>` Eden 条目**（新增/变化文档写入或覆盖，已删除或被排除文档的 parser-owned 条目被移除，Eden 知识索引可能重建）；旧版知识库先备份到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
 | `status` | 各空间统计 |
 | `search <查询> [--top-k=N]` | BM25 + 重排序的符号搜索 |
 | `symbol <名称>` | 按精确名称查找符号 |
@@ -140,7 +140,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | `add [--space=holy\|eden] --title=<t> [--id=<id>] (--intro=<文本> \| --intro-file=<路径>) [--key-files=<a,b>] [--key-symbols=<a,b>] [--keywords=<a,b>]` | 手动持久化条目（默认 holy） |
 | `learn [--space=eden\|holy] [--file=<路径>] [--base-dir=<目录>] [--per-batch-chars=N] [--dry-run] [--no-survey] [--model=<provider>/<model-id>] [--plan-timeout-ms=N] [指令...]` | 统一的 LLM 深度研读（DOC 或 CODE 模式）——见下文 |
 | `housekeep <eden\|holy\|all> [--model=<provider>/<model-id>]` | LLM 辅助：破损条目扫描、重复 / 相近条目合并（y/N）、Eden↔Holy 冲突裁决（`all`，逐对选择）。绝不触碰最高准则；有变更则重建索引 |
-| `empty <eden\|holy\|all>` | 批量删除某空间全部条目——不可逆，始终确认 y/N |
+| `empty <eden\|holy\|all>` | 删除所选空间的全部**普通**条目；永久的最高准则条目会被保留——不可逆，始终确认 y/N |
 | `export <eden\|holy\|all> <路径>` | 导出条目为 JSON（版本 2，每条带 `space` 标签） |
 | `import <路径> [eden\|holy\|adaptive] [--overwrite]` | 导入条目；`adaptive` 按原始空间路由；导入 Holy 始终提示 y/N |
 | `del <id>` | 删除单个条目（需确认） |

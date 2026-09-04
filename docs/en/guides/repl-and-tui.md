@@ -130,8 +130,8 @@ pointer — even when the first-run import already configured a model.
 While a task runs, a one-line input box (`» add instruction ▏`) is pinned
 just above the plan panel / status bar, and the real terminal cursor is
 docked inside the box — a blinking caret sits exactly where your typing will
-land (and follows mid-text edits). What you type is echoed there; the
-streaming agent output above can never disturb your in-progress text.
+land (and follows mid-text edits). What you type is echoed there; the reserved input-box layout is designed
+to keep the draft isolated from normal streaming redraws.
 
 - **Plain text** entered mid-task is queued (echoed as
   `✓ queued #N · delivered after the current action`) and injected into the
@@ -153,8 +153,11 @@ streaming agent output above can never disturb your in-progress text.
 Input history persists at `~/.hk2/history.jsonl` (capped at 1000 entries).
 Two safety properties of that history and the config storage:
 
-- Inputs carrying credentials (`--api-key=…`, `--token=…`, `Authorization`
-  headers, `password=`/`secret=` values) are never persisted at all.
+- Inputs matching the current credential-detection patterns
+  (`--api-key=…`, `--token=…`, `Authorization` headers,
+  `password=`/`secret=` values) are excluded from the input history; the
+  detection is pattern-based and does not recognize every possible secret
+  representation.
 - `~/.hk2/history.jsonl` and `models.json` are kept owner-only (0600,
   migrated on boot; `~/.hk2` itself is 0700).
 
