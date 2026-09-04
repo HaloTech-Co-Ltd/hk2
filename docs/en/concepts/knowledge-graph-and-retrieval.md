@@ -124,7 +124,9 @@ scans `rt.allKnowledge()` and joins id, title, intro, and keywords into one
 haystack. Each whitespace token occurrence contributes at most one equal-weight point,
 with no title/keyword bonus; duplicate tokens can contribute again, ties preserve input
 order, and falsy `top_k` values (including 0) default to 5 while other numeric values
-are bounded to 1–20. It also
+are bounded to 1–20. This flat search does not give title or keyword hits extra
+weight; turn-start `matchPrinciples()` is the separate head/intro weighted path.
+It also
 does not filter `supersededBy` Eden entries. Turn-start `matchPrinciples()` is
 different: Holy and active Eden are matched separately, head fields (topic/title/
 keywords) are the primary signal, intro is capped at 2000 characters and weighted

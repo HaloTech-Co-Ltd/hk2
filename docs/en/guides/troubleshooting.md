@@ -100,6 +100,27 @@ here come from the shipped code.
 - **Fix**: check the phase ref with `/model list`, or clear the override with
   `/model set-phase --phase=<name> --clear`.
 
+### A follow-up was treated as a fresh task
+
+- **Cause**: tier-1 deterministic continuation rules did not match. Tier-2
+  continuation upgrade runs only when request assessment actually ran,
+  `HK2_ENABLE_CONTINUATION_UPGRADE` is enabled, the assessor returns
+  `followup:true` at or above `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` (default
+  `0.6`), and an in-flight plan, `lastTask`, or conversation context exists.
+  Fast-lane inputs skip assessment and do not use tier 2.
+- **Fix**: check `HK2_ENABLE_FOLLOWUP_FASTLANE`,
+  `HK2_ENABLE_CONTINUATION_UPGRADE`, and the confidence threshold. The upgrade
+  reuses the existing reasoning-enabled assessment result; it adds no LLM call.
+
+### A path beginning with `/` was treated as a command
+
+- **Cause**: only a single-segment ASCII head matching
+  `/[A-Za-z][A-Za-z0-9_-]*` is command-shaped. Paths such as
+  `/tmp/example.md` and path-glued prose are ordinary input; `/mdoel` is a
+  command-shaped typo and may receive a suggestion.
+- **Fix**: keep path-like input as plain text. The shared guard covers dispatch,
+  mid-task capture, and multiline paste collection.
+
 ## Projects and KB
 
 ### "KB not built for project <name>. Run /kb init before chatting."

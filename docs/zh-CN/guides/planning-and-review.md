@@ -79,8 +79,10 @@ LLM 会对定稿计划做一次复审。复审者会：
   步骤正确调用 `plan_step`，普通最终文本也可能清理 panel 并触发审查；中途以
   普通最终文本询问用户也属于正常返回。
 - **手动**——`/review code` 对当前会话中刚完成的任务执行同样的回归检查。
-  只有原始任务请求与完成结果会发送给审查模型——任务的实现上下文被忽略，
-  因此无法影响审查（全新视角检查）。`/review plan` 为预留，尚未实现。
+  原始任务请求、运行期间排队且扩展需求的指令以及完成结果会发送给审查模型；
+  工具调用、推理过程和中间回合等实现上下文会被刻意排除。原始需求的
+  `lastCompletedTask` 快照只在内存中存在，`/project set current` 会清理它；恢复的
+  会话改用确定性的 transcript 扫描。`/review plan` 为预留，尚未实现。
 
 审查过程实时流式展示（需求重分析、逐项覆盖检查、正确性检查、结论）；
 发现的问题逐一列出并给出详细说明与建议。`--model=<provider>/<model-id>`
@@ -114,8 +116,31 @@ LLM 会对定稿计划做一次复审。复审者会：
 ## 推理设置
 
 - 审查始终开启推理且不设固定超时，与模型的 `--reasoning` 标志无关。
-- 请求清晰度评估可通过 `HK2_ASSESS_REASONING=1`（默认关闭）选择启用深度
-  推理——见[环境变量](../reference/environment-variables.md)。
+- 请求清晰度评估由 hk2 以 `enableReasoning:true` 发起；这不保证每个提供商都
+  会返回独立的 reasoning 流。它是尽力而为并使用
+  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE`——见[环境变量](../reference/environment-variables.md)。
+
+## 后续输入分类
+
+hk2 使用两层分类，而不是对每条输入都运行 LLM 分类器：
+
+```mermaid
+flowchart TD
+    U[用户输入] --> T1{tier-1 确定性匹配？}
+    T1 -- 是 --> C[直接继续]
+    T1 -- 否 --> A[正常评估路径]
+    A --> V{followup=true + 达到阈值 + 存在进行中任务？}
+    V -- 否 --> F[保持新任务分类]
+    V -- 是 --> UPGRADE[tier-2 continuation upgrade<br/>恢复 planProgress 与 lastTask<br/>注入恢复上下文<br/>记录 followupUpgrade 元数据]
+```
+
+`HK2_ENABLE_CONTINUATION_UPGRADE` 默认对未被 tier 1 识别的输入启用，并依赖
+请求评估实际运行。`HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` 默认 `0.6`，用
+`parseFloat()` 解析并钳制到 `0–1`（非法值使用 `0.6`）。assessor 必须返回
+`followup:true` 且置信度达到阈值，同时必须存在活跃 plan、`lastTask` 或会话
+上下文。升级复用已有评估结果，不增加额外 LLM 调用；它恢复原始任务锚点和此前
+的续接状态，注入恢复上下文，并在会话元数据中记录 `followupUpgrade`。tier-1
+快速通道会跳过评估，也不使用该升级。
 
 ## 中断行为
 

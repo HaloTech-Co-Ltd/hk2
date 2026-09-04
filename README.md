@@ -14,9 +14,10 @@ English | [简体中文](README_zh.md)
 Coding agents forget. Every new session re-reads the same files, re-derives
 the same architecture, and re-makes the same mistakes. hk2 flips that: register a
 project with `/project init`, build its **knowledge base** with `/kb init`
-— symbols, a code knowledge graph, and curated knowledge entries — and for every substantive request hk2 pre-fetches
-related KB context into the prompt (clear conversational follow-ups take a
-fast lane and let the agent query the KB on demand instead).
+— symbols, a code knowledge graph, and curated knowledge entries — and for
+substantive requests hk2 normally attempts to prefetch related KB context
+before the agent loop. Retrieval is best-effort; fast-lane follow-ups and
+retrieval failures may enter the loop without a fresh prefetched block.
 Make the KB the source of truth, and the agent gets smarter the more you use
 it.
 
@@ -29,10 +30,9 @@ it.
   packages); regex fallback covers most languages when grammars are
   unavailable (C# has no fallback), turning symbols, call chains, class
   hierarchies, and imports into a queryable graph.
-- **Substantive-request context prefetch** — for substantive requests,
-  related symbols, call chains, class
-  membership, knowledge entries, and docs are retrieved and injected before
-  the LLM answers.
+- **Substantive-request context prefetch** — for substantive requests, hk2
+  normally attempts to retrieve related symbols, call chains, class membership,
+  knowledge entries, and docs before the LLM answers. Retrieval is best-effort.
 - **KB-first agent** — the tool registry steers the agent to KB tools before
   `bash grep`, with mid-turn guardrails; the built-in local path tools run
   behind an r/w/x permission model that denies everything outside the
@@ -44,9 +44,10 @@ it.
   non-negotiable laws; once you add items they are rendered into every
   system prompt at top priority (model-level compliance — the storage-level
   protections on the entry itself are hard limits).
-- **Plans and reviews** — interactive sessions can use user-confirmed plans
-  with a live progress panel; non-interactive runs auto-accept recommendations,
-  with optional plan review and code review of the completed work.
+- **Plans and reviews** — interactive REPL/TUI sessions can surface
+  user-confirmed plans, a live progress panel, optional plan review, and
+  optional completion review. Without confirmation/progress callbacks,
+  recommended strategies are auto-accepted and no real progress panel is maintained.
 - **Two front-ends, one agent** — a classic line REPL and a Claude
   Code-style TUI (`hk2 --tui`) sharing sessions, commands, and pipeline.
 

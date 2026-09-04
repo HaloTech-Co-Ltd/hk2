@@ -25,6 +25,7 @@ flowchart TB
         SI --> PROJECT[src/slash/project.js]
         SI --> KB[src/slash/kb.js]
         SI --> SESSION[src/slash/session.js]
+        GUARD[lib/slash_command.js<br/>shared command-shape guard]
     end
     subgraph Turn[Turn pipeline]
         TURN[src/commands/turn.js<br/>runTurn]
@@ -81,7 +82,9 @@ flowchart TB
     end
 
     CLIJS --> REPL & TUI & SERVE
-    REPL & TUI --> SI
+    REPL & TUI --> SI & GUARD
+    SESSCTX --> GUARD
+    MULTI[lib/agent/multiline.js<br/>paste collector] --> GUARD
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
     TURN --> FACTS
@@ -178,10 +181,13 @@ flowchart TB
 2. Gates (model, project, KB) → auto-compact check → follow-up fast lane
    (fast-lane turns skip steps 3's pipeline entirely).
 3. Query rewrite (`rewrite_query.js`) → KB retrieval (`graph.js` over
-   `code_search.js` + `kb_runtime.js`) → clarity assessment (optional menu
-   → second rewrite/retrieve pass). Each stage is conditional: rewrite and
-   assessment can be disabled via environment variables, and assessment
-   runs only with a prompt-capable front-end.
+   `code_search.js` + `kb_runtime.js`) → reasoning-enabled clarity assessment
+   (optional menu → second rewrite/retrieve pass) → possible tier-2
+   continuation upgrade. Tier-1 deterministic fast-lane matches skip this
+   pipeline; tier-2 reuses the assessment result and requires an in-flight task.
+   Each stage is conditional: rewrite and assessment can be disabled via
+   environment variables, and assessment runs only with a prompt-capable
+   front-end.
 4. System prompt build (`system_prompt.js`): identity → KB-first policy →
    tools → project info → Supreme Code → permission sandbox → KB context.
 5. Agent loop (`loop.js`): stream reply, execute tool calls (`tools.js` /
@@ -210,12 +216,25 @@ flowchart TB
 ### End-of-turn gates and transcript boundary
 
 The end-of-turn flow is not an unconditional `update → learn → conflict sync →
-review` chain. A qualifying bash source-search gate first enables the update
-offer/automatic update block. Knowledge capture then has its own handled and
-cooldown gates. Holy-over-Eden conflict synchronization depends independently on
-detected conflicts. Code review independently requires its configuration and a
-normal agent return; a plan confirmed this turn or continued at turn start can
-qualify, and normal finalization may clear a leftover panel before review.
+review` chain. A qualifying bash source-search is the common outer gate for both
+the KB refresh branch and fallback knowledge extraction. The update branch offers
+or automatically runs the refresh according to configuration; handled and
+cooldown checks are nested learn gates inside that branch. Holy-over-Eden conflict
+synchronization is separate and depends on detected conflicts. Code Review is
+also separate: it requires its configuration and a normal agent return; a plan
+confirmed this turn or continued at turn start can qualify, and normal
+finalization may clear a leftover panel before review.
+
+The shared command-shape fact source is `lib/slash_command.js`. The dispatcher,
+mid-task input capture, and multiline paste collector all use its
+`/[A-Za-z][A-Za-z0-9_-]*/` single-segment rule, so absolute paths and path-glued
+prose remain ordinary agent input rather than becoming slash-command attempts.
+
+Manual `/review code` receives the original task request, queued mid-task
+additions that extended it, and the completed result. Tool calls, reasoning, and
+intermediate implementation turns are deliberately excluded. The completed-task
+`lastCompletedTask` snapshot is process-memory only; it is not persisted and
+resume falls back to a deterministic transcript scan.
 
 A normal completion appends the complete assistant reply and metadata. An
 interrupted streamed partial remains visible but is not a complete transcript

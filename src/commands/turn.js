@@ -1467,10 +1467,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         temperature: session.modelCfg.temperature,
         enableReasoning: session.modelCfg.enableReasoning,
       },
-      // No fixed maxTurns — the loop runs until the task is done, with
-      // identical-repeat (the effective guard) and a high absolute safety cap
-      // as backstops. The no-progress branch is currently unreachable; see
-      // lib/agent/loop.js.
+      // No fixed maxTurns — the loop runs until a final text answer, the
+      // fourth identical signature/result round, the 1000-round absolute cap,
+      // abort, or an exception. The NO_PROGRESS_TURNS branch is currently
+      // unreachable; see lib/agent/loop.js.
     });
 
     // Final flush of the markdown renderer in case the last LLM call left a

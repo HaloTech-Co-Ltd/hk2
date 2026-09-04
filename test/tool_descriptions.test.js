@@ -10,8 +10,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { buildTools } from '../lib/agent/tools.js';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { buildTools, KbFirstGuard } from '../lib/agent/tools.js';
 import { buildSystemPrompt } from '../lib/agent/system_prompt.js';
+import { resetPermissionService } from '../lib/config/setting.js';
 
 // Built-ins are always registered; KB tools require a runtime object, so a
 // minimal stub rt pulls the kb_* group into the registry.
@@ -93,14 +97,16 @@ test('plan_step: top description, guidelines, and step param all current-step se
   assert.doesNotMatch(t.guidelines[1], /^Each call advances the CURRENT/i);
 });
 
-test('kb_search: conditional LLM rewrite; top_k 5-50 clamp', () => {
+test('kb_search: conditional LLM rewrite; precise top_k budget semantics', () => {
   const t = byName('kb_search');
   const text = allText(t);
   assert.match(text, /When an LLM is attached and skip_rewrite is not true/i);
   const topDesc = t.parameters?.properties?.top_k?.description ?? '';
-  assert.match(topDesc, /default 10/i);
+  assert.match(topDesc, /default to 10/i);
   assert.match(topDesc, /5-50/i);
-  assert.match(topDesc, /at least 5/i);
+  assert.match(topDesc, /falsy values including 0/i);
+  assert.match(topDesc, /actual results may be fewer/i);
+  assert.doesNotMatch(topDesc, /at least 5/i);
 });
 
 test('kb_callchain: BFS, per-direction budget, max_nodes caveat', () => {
@@ -271,4 +277,65 @@ test('grep uses regex by default and literal mode only when requested', async ()
   else process.env.HK2_PROJECT_SOURCE = previousRoot;
   resetPermissionService();
   await rm(dir, { recursive: true, force: true });
+});
+
+test('KbFirstGuard callers, update mode, extension scope, and LLM-call scope are accurate', () => {
+  const guard = new KbFirstGuard();
+  const read = guard.readHint('/tmp/example.md');
+  assert.match(read, /source or documentation file/i);
+  assert.match(read, /kb_callchain\(direction="backward" or "both"\)|kb_refs\(kind="call"\)/i);
+  assert.doesNotMatch(read, /callers via kb_neighbors/i);
+  assert.match(read, /once per LLM call/i);
+  const bash = guard.bashHint('grep -R login src');
+  assert.match(bash, /offer or automatically run.*HK2_ENABLE_AUTOUPDATEKB/i);
+  assert.doesNotMatch(bash, /faster \+ more accurate/i);
+  const ast = byName('ast_grep');
+  assert.match(ast.parameters.properties.path.description, /directory OR single file/i);
+});
+
+test('ast_grep accepts a single-file path as well as a directory root', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hk2-ast-single-'));
+  const file = path.join(dir, 'sample.js');
+  await writeFile(file, 'const answer = 42;\n');
+  const previousRoot = process.env.HK2_PROJECT_SOURCE;
+  process.env.HK2_PROJECT_SOURCE = dir;
+  resetPermissionService();
+  try {
+    const ast = buildTools(null, {}).find(t => t.name === 'ast_grep');
+    const result = await ast.execute({ pat: 'const $NAME = $$$VALUE', path: file });
+    assert.equal(result.error, undefined, JSON.stringify(result));
+    assert.ok(result.matchCount >= 1, `expected a match in ${file}: ${JSON.stringify(result)}`);
+    assert.match(result.matches[0].text, /const answer =/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.HK2_PROJECT_SOURCE;
+    else process.env.HK2_PROJECT_SOURCE = previousRoot;
+    resetPermissionService();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('kb_search top_k uses a ten-result falsy default, 5-50 normalization, and short-match results', async () => {
+  const symbols = Array.from({ length: 60 }, (_, i) => ({
+    id: `file.js:${i + 1}`,
+    name: `needle${i}`,
+    kind: 'function',
+    fileId: 'file.js',
+    lineStart: i + 1,
+    lineEnd: i + 1,
+    signature: 'needle()',
+    body: 'needle();',
+  }));
+  const rt = {
+    bm: { query: () => symbols.map(s => ({ symbolId: s.id, score: 1 })) },
+    getSymbolById: id => symbols.find(s => s.id === id),
+    getFilePath: () => 'file.js',
+    callgraph: { byId: {} },
+  };
+  const search = buildTools(rt, {}).find(t => t.name === 'kb_search');
+  assert.equal((await search.execute({ query: 'needle', top_k: 0, with_slice: false })).results.length, 10);
+  assert.equal((await search.execute({ query: 'needle', top_k: -1, with_slice: false })).results.length, 5);
+  assert.equal((await search.execute({ query: 'needle', top_k: 100, with_slice: false })).results.length, 50);
+  const shortRt = { ...rt, bm: { query: () => symbols.slice(0, 2).map(s => ({ symbolId: s.id, score: 1 })) } };
+  const short = buildTools(shortRt, {}).find(t => t.name === 'kb_search');
+  assert.equal((await short.execute({ query: 'needle', top_k: 100, with_slice: false })).results.length, 2);
 });

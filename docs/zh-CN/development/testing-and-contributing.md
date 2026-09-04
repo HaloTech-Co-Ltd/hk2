@@ -66,8 +66,8 @@ node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 
 1. `npm test` 通过。
 2. `npm run docs:check` 通过（检查路径、跨语言链接、本地链接、唯一 H1 / 切换
-   链接位置、标题跳级、成对页面标题层级序列、表格结构、围栏语言序列与质量
-   门禁；翻译语义一致性仍需人工审查）。
+   链接位置、标题跳级、成对 docs 页面与根 README 的标题层级序列、表格结构、
+   围栏语言序列与质量门禁；翻译语义一致性仍需人工审查）。
 3. 若改动了 CLI 或帮助相关内容，`node bin/hk2 --help` 仍打印正确用法。
 4. 新增 / 变更的行为有对应测试——没有该改动时测试应当失败。
 5. 文档与示例中没有引入密钥、内部 URL 或个人路径——使用 `sk-example`、

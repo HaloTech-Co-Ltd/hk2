@@ -174,6 +174,26 @@ test('paired fenced-code language sequences must match and fenced content is ign
   rmSync(root, { recursive: true, force: true });
 });
 
+test('root README structural parity compares levels, tables, and fence languages', () => {
+  const { root } = makeRepo();
+  const enLink = '[zh](README_zh.md) docs [en](docs/en/README.md)';
+  const zhLink = '[en](README.md) docs [zh](docs/zh-CN/README.md)';
+  const shape = '## Section\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```bash\necho ok\n```';
+  writeFileSync(path.join(root, 'README.md'), `# Root\n\n${enLink}\n\n${shape}\n`);
+  writeFileSync(path.join(root, 'README_zh.md'), `# 根\n\n${zhLink}\n\n## 章节\n\n| 甲 | 乙 |\n|---|---|\n| 一 | 二 |\n\n\`\`\`bash\necho 好\n\`\`\`\n`);
+  assert.equal(run(root).code, 0);
+
+  writeFileSync(path.join(root, 'README_zh.md'), `# 根\n\n${zhLink}\n\n### 章节\n\n| 甲 | 乙 |\n|---|---|\n| 一 | 二 |\n\n\`\`\`bash\necho 好\n\`\`\`\n`);
+  assert.match(run(root).out, /root README pair: heading-level sequence differs/);
+
+  writeFileSync(path.join(root, 'README_zh.md'), `# 根\n\n${zhLink}\n\n## 章节\n\n| 甲 | 乙 |\n|---|---|\n| 一 | 二 |\n| 三 | 四 |\n\n\`\`\`bash\necho 好\n\`\`\`\n`);
+  assert.match(run(root).out, /root README pair: table structural signature differs/);
+
+  writeFileSync(path.join(root, 'README_zh.md'), `# 根\n\n${zhLink}\n\n## 章节\n\n| 甲 | 乙 |\n|---|---|\n| 一 | 二 |\n\n\`\`\`text\necho 好\n\`\`\`\n`);
+  assert.match(run(root).out, /root README pair: fenced-code language sequence differs/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test('key runtime contract tokens are present in both language pages', () => {
   const pairs = [
     ['reference/environment-variables.md', ['--checkpoint-interval=']],

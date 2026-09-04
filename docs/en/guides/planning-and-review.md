@@ -95,10 +95,13 @@ Two forms exist, sharing one implementation:
   finalize a panel and trigger review even if the model did not call
   `plan_step` for every step.
 - **Manual** — `/review code` runs the same regression check on the
-  just-completed task in the current conversation. Only the original task
-  request and the completed result are sent to the review model — the task's
-  implementation context is ignored so it cannot influence the review
-  (fresh-eyes check). `/review plan` is reserved and not implemented yet.
+  just-completed task in the current conversation. The original task request,
+  any queued mid-task additions that extended it, and the completed result are
+  sent to the review model. Tool calls, reasoning, and intermediate turns are
+  deliberately excluded. The `lastCompletedTask` original-request snapshot is
+  in-memory only, is cleared by `/project set current`, and resumed sessions
+  use deterministic transcript scanning instead. `/review plan` is reserved
+  and not implemented yet.
 
 The reviewer's analysis streams live (requirement re-analysis, per-point
 coverage check, correctness check, conclusion); issues it finds are listed
@@ -137,9 +140,35 @@ warns and uses the session model.
 
 - Reviews always run with reasoning enabled and no fixed timeout, regardless
   of the model's `--reasoning` flag.
-- The request-clarity assessment can optionally run with deep reasoning via
-  `HK2_ASSESS_REASONING=1` (default off) — see
+- Request-clarity assessment is invoked with `enableReasoning:true`; this does
+  not guarantee that every provider emits a separate reasoning stream. It is
+  best-effort and uses `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` — see
   [Environment variables](../reference/environment-variables.md).
+
+## Continuation classification
+
+hk2 uses two tiers rather than running an LLM classifier for every input:
+
+```mermaid
+flowchart TD
+    U[User input] --> T1{Tier-1 deterministic match?}
+    T1 -- yes --> C[Continue directly]
+    T1 -- no --> A[Normal assessed path]
+    A --> V{followup=true + confidence threshold + in-flight task?}
+    V -- no --> F[Keep fresh-task classification]
+    V -- yes --> UPGRADE[Tier-2 continuation upgrade<br/>restore planProgress and lastTask<br/>inject resume context<br/>followupUpgrade meta]
+```
+
+`HK2_ENABLE_CONTINUATION_UPGRADE` defaults to on for inputs missed by tier 1
+and depends on request assessment actually running. The threshold
+`HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` defaults to `0.6`, is parsed with
+`parseFloat()`, and is clamped to `0–1` (invalid values use `0.6`). The
+assessor must return `followup:true` with confidence at or above the threshold,
+and an active plan, `lastTask`, or conversation context must exist. The upgrade
+reuses the existing assessment result; it is not an additional LLM call. It
+restores the original task anchor and prior continuation state, injects resume
+context, and records `followupUpgrade` in transcript metadata. Tier-1 fast-lane
+inputs skip assessment and do not use this upgrade.
 
 ## Interruption behavior
 

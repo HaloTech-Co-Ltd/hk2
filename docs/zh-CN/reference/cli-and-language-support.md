@@ -9,6 +9,10 @@ CLI 事实源是 `src/cli.js`；语言事实源是 `package.json` 与 `lib/parse
 它影响 bash/read 的 KB-first hint 分类、`read` 自动附加 outline/tag、`ast_grep`
 和 `ast_edit`。它不决定已经索引的文件能否由直接 `kb_outline` 查询。
 
+斜杠命令识别按形状进行，由分发器、任务中输入捕获和多行收集共同使用：只有符合
+`/[A-Za-z][A-Za-z0-9_-]*` 的单段 ASCII 命令头才视为命令尝试。`/path/to/project/file.c`
+等路径及路径粘连正文会继续作为普通输入。
+
 ## CLI
 
 ### 交互模式（默认）

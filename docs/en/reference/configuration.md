@@ -208,6 +208,12 @@ deleted, or are excluded. Use another id for hand-authored document knowledge.
 - **Interrupted-task state** —
   `~/.hk2/sessions/<projectId>/taskstate.json` persists the interrupted
   task (original request, summary, plan progress) that `--resume` restores.
+- **Continuation classification state** — the `lastCompletedTask` original-request
+  snapshot exists only in the current process; it is not written to disk and is
+  cleared by `/project set current`. A resumed session falls back to a
+  deterministic transcript scan. Tier-2 continuation upgrade is controlled by
+  `HK2_ENABLE_CONTINUATION_UPGRADE` and
+  `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`.
 - **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. A normally
   completed turn records the user message, tool calls, the complete assistant
   reply, and metadata (`assess`, `rewrite`, `graph`, `codeReview`,

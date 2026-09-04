@@ -23,6 +23,7 @@ flowchart TB
         SI --> PROJECT[src/slash/project.js]
         SI --> KB[src/slash/kb.js]
         SI --> SESSION[src/slash/session.js]
+        GUARD[lib/slash_command.js<br/>共享命令形状守卫]
     end
     subgraph Turn[回合管线]
         TURN[src/commands/turn.js<br/>runTurn]
@@ -79,7 +80,9 @@ flowchart TB
     end
 
     CLIJS --> REPL & TUI & SERVE
-    REPL & TUI --> SI
+    REPL & TUI --> SI & GUARD
+    SESSCTX --> GUARD
+    MULTI[lib/agent/multiline.js<br/>粘贴收集器] --> GUARD
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
     TURN --> FACTS
@@ -164,9 +167,11 @@ flowchart TB
 2. 门禁（模型、项目、知识库）→ 自动压缩检查 → 后续快速通道（快速通道
    轮次完全跳过第 3–4 步）。
 3. 查询改写（`rewrite_query.js`）→ 知识库检索（`graph.js` 基于
-   `code_search.js` + `kb_runtime.js`）→ 清晰度评估（可选菜单 → 第二次
-   改写 / 检索）。每个阶段都是有条件的：改写与评估可经环境变量关闭，
-   评估仅在具备提示能力的前端下运行。
+   `code_search.js` + `kb_runtime.js`）→ 开启推理的清晰度评估（可选菜单
+   → 第二次改写 / 检索）→ 可能的 tier-2 continuation upgrade。tier-1
+   确定性快速通道会跳过这条管线；tier-2 复用评估结果且必须存在进行中的任务。
+   每个阶段都是有条件的：改写与评估可经环境变量关闭，评估仅在具备提示能力的
+   前端下运行。
 4. 系统提示词构建（`system_prompt.js`）：身份 → 知识库优先策略 → 工具 →
    项目信息 → 最高准则 → 权限沙箱 → 知识库上下文。
 5. 智能体循环（`loop.js`）：流式回复、执行工具调用（`tools.js` /
@@ -191,11 +196,20 @@ flowchart TB
 
 ### 轮末门控与 transcript 边界
 
-轮末流程不是无条件的 `update → learn → conflict sync → review` 串行链。先由“符合
-条件的 bash 源码搜索”门决定是否进入 update 询问/自动更新块；知识捕获还有独立的
-handled 与 cooldown 门；Holy-over-Eden 冲突同步独立依赖本轮检测到的冲突；code review
-独立依赖开关与正常 agent 返回，本轮确认计划或开始时正在继续计划即可满足条件，正常
-finalization 还可能在 review 前清理遗留面板。
+轮末流程不是无条件的 `update → learn → conflict sync → review` 串行链。“符合条件的
+bash 源码搜索”是 KB 刷新分支与回退知识抽取共用的外层门；更新分支按配置询问或
+自动执行刷新，handled 与 cooldown 是该分支内部嵌套的学习门。Holy-over-Eden 冲突
+同步是独立流程，依赖检测到的冲突。代码审查也独立运行：需要开关与正常 agent 返回，
+本轮确认计划或开始时正在继续计划即可满足条件，正常 finalization 还可能在审查前清理
+遗留面板。
+
+共享的命令形状事实源是 `lib/slash_command.js`。分发器、任务中输入捕获与多行粘贴
+收集器都使用其 `/[A-Za-z][A-Za-z0-9_-]*/` 单段规则，因此绝对路径和路径粘连的正文
+会继续作为普通智能体输入，而不是被当成斜杠命令尝试。
+
+手动 `/review code` 接收原始任务需求、运行期间排队且扩展需求的指令以及完成结果；
+工具调用、推理过程和中间实现回合会被刻意排除。完成任务的 `lastCompletedTask`
+快照只存在进程内存，不会持久化；恢复时会回退到确定性的 transcript 扫描。
 
 正常完成会追加完整 assistant 回复与元数据。中断时已流式显示的 partial 文本仍在终端，
 但不作为完整 transcript 回合写入；dangling tool call 会清理，中断任务状态保存到

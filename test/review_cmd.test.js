@@ -8,9 +8,9 @@
  *   2. Model resolution priority: --model flag > project code-review phase
  *      config > current session model (credentials-checked, like
  *      test/phase_model.test.js).
- *   3. Context isolation: the messages sent to the review LLM contain ONLY
- *      the original request + claimed result + changed files + diff - none
- *      of the conversation's intermediate context.
+ *   3. Context isolation: the messages sent to the review LLM contain the
+ *      original request, queued additions, claimed result, changed files and
+ *      diff - none of the conversation's intermediate process context.
  *   4. Result rendering (ok / issues) and the skip-on-unreachable policy
  *      (no fallback to the session model for review phases).
  *
@@ -294,7 +294,7 @@ test('/review code --model wins over the phase config', async () => {
 // 3. Context isolation: only request + result reach the reviewer
 // ---------------------------------------------------------------------------
 
-test('/review code sends ONLY the request and result, never the conversation process', async () => {
+test('/review code sends request and result without the conversation process', async () => {
   await seedModels();
   const p = await makeProject('isolated');
   await setCurrentProject(p.id);

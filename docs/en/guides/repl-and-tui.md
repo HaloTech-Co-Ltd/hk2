@@ -143,6 +143,14 @@ to keep the draft isolated from normal streaming redraws.
 - **Slash commands** keep the legacy behavior — they run after the turn
   ends, since they may switch model / KB / project state the in-flight turn
   still depends on. Plan-confirmation menus are unaffected.
+- The shared slash-command shape guard treats only a first token matching
+  `/[A-Za-z][A-Za-z0-9_-]*` as a command-shaped head. Registered commands such as
+  `/kb` dispatch normally, and plausible typos such as `/mdoel` can receive a
+  did-you-mean suggestion. Absolute paths such as `/tmp/example.md`, path-glued
+  prose such as `/foo已更新`, hidden/tilde forms, bare `/`, and full-width `／model`
+  remain ordinary agent input. The same rule is used by dispatch, mid-task capture,
+  and the multiline paste collector: real slash commands wait until the current
+  task ends, while path-like text is queued or kept in the paste burst.
 - If the task finishes before a queued instruction can be delivered mid-run,
   it is handed to a fresh turn right after — under normal operation and
   normal turn-ending paths nothing you type is lost (a crash or kill of the

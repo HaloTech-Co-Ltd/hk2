@@ -100,10 +100,12 @@ belongs in `docs/`.
 verifies:
 
 - `docs/en` and `docs/zh-CN` contain the same relative paths;
+- `README.md` and `README_zh.md` have the same heading-level sequence, table
+  count/shape, and fenced-code language sequence;
 - every page pair links to each other (language switch);
 - every page has exactly one H1, the language switch is in the first block
   after it, and heading levels do not skip;
-- each page pair has the same ordered heading-level sequence, table count and
+- each docs page pair has the same ordered heading-level sequence, table count and
   column/row signatures, and fenced-code language sequence;
 - local Markdown links and images in `README.md`, `README_zh.md`, and
   every file under `docs/` resolve to real files;

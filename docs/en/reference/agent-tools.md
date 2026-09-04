@@ -96,7 +96,9 @@ Structural code search, ast-grep style — the pattern is translated to a
 regex approximation of the metavariable grammar (see
 [Pattern syntax](#pattern-syntax-ast_grep--ast_edit)). Returns up to 50
 matches across up to 2000 files. When the pattern is a single exact
-identifier the KB knows, a kb-first hint points at `kb_symbol`. Writes: no.
+identifier the KB knows, a kb-first hint points at `kb_symbol`. Its `path`
+parameter accepts a directory or a single file (default: current directory).
+Writes: no.
 
 ### `ast_edit`
 
@@ -179,7 +181,7 @@ filtered channels (metadata stays visible — see
 
 | Tool | Purpose |
 |---|---|
-| `kb_search` | Natural-language / keyword symbol search — BM25 + name-match reranking, with file paths, line ranges, snippets. Query is LLM-rewritten by default when an LLM is available (`skip_rewrite=true` to skip); top-3 results carry a ±15-line source slice (`with_slice=false` to disable). `top_k`: default 10, clamped to an effective range of 5–50 (values below 5 still return at least 5) |
+| `kb_search` | Natural-language / keyword symbol search — BM25 + name-match reranking, with file paths, line ranges, snippets. Query is rewritten when an LLM is attached and `skip_rewrite` is not true; top-3 results carry a ±15-line source slice (`with_slice=false` to disable). `top_k`: falsy values including 0 default to a result budget of 10; other numeric values normalize to 5–50, while the actual result count may be lower when fewer matches exist |
 | `kb_symbol` | Look up a symbol by exact identifier; all matching candidates |
 | `kb_outline` | File outline from the loaded KB index — no source-content read, though permission/path metadata checks may occur; direct queries do not use `SOURCE_EXT_RE`; name / kind / lines / signature / parent / child count per symbol; a `tag` is returned when the indexed file has a hash |
 | `kb_neighbors` | Legacy one-hop **outgoing** call-graph neighbors of a symbol (what it calls; no direction parameter — use `kb_callchain` with `direction=backward`/`both` for callers) |

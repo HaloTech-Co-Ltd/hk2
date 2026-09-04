@@ -19,7 +19,7 @@ flowchart TD
     GATE -- yes --> AC[Auto-compact check<br/>turn boundary only]
     AC --> FL{Follow-up fast lane?}
     FL -- yes --> LOOP
-    FL -- no --> RW[Query rewrite<br/>LLM call] --> KB[KB retrieval<br/>symbols, call chains,<br/>knowledge, docs] --> ASSESS{Request clear?}
+    FL -- no --> RW[Query rewrite<br/>LLM call] --> KB[KB retrieval<br/>symbols, call chains,<br/>knowledge, docs] --> ASSESS{Reasoning-enabled<br/>request assessment}
     ASSESS -- unclear --> MENU[Clarification menu] --> RW2[Re-rewrite with answer] --> KB2[Re-retrieve] --> SP
     ASSESS -- clear --> SP
     KB --> ASSESS
@@ -59,7 +59,15 @@ for obvious follow-ups:
    keeps the conversation's head *and* tail so opening-stated facts reach
    the summary. Facts saved explicitly via `/remember` / the `remember`
    tool survive compaction by design; the automatic extraction is
-   best-effort.
+   best-effort. hk2 always requests `enableReasoning:true`; this does not
+   guarantee a separate reasoning stream from every provider. When tier 1 did
+   not classify the input as a continuation, the existing assessment result can
+   drive a tier-2 continuation upgrade when
+   `HK2_ENABLE_CONTINUATION_UPGRADE=1`, confidence reaches
+   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` (default `0.6`), and an in-flight
+   task exists. The upgrade reuses the assessment result, restores the original
+   task state, injects resume context, and records `followupUpgrade`; it is not
+   an additional LLM call.
 3. **Follow-up fast lane** (`HK2_ENABLE_FOLLOWUP_FASTLANE`, default on) —
    inputs that are certainly conversational follow-ups skip the whole
    pre-agent pipeline and go straight to the agent loop, which sees the full

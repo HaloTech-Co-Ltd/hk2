@@ -246,9 +246,10 @@ the just-completed task in this conversation.
 | `code` | Implemented — manual code review of the completed task |
 | `plan` | Not implemented yet |
 
-Only the original task request and the completed result (final answer +
-changed files + working-tree diff) are sent to the review model — the
-implementation context is ignored, so it cannot influence the review
+The original task request, any queued mid-task additions that extended it, and
+the completed result (final answer + changed files + working-tree diff) are sent
+to the review model. Tool calls, reasoning, and intermediate implementation
+turns are deliberately excluded, so they cannot influence the review
 (fresh-eyes regression check). The reviewer's analysis streams live; an
 unparseable verdict is reported as UNKNOWN, never as "no issues found".
 `--model` overrides the phase-configured model

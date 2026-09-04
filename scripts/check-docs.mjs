@@ -7,8 +7,9 @@
  * Checks:
  *   1. Bilingual structure — the docs/en and docs/zh-CN trees must contain
  *      exactly the same set of relative .md paths; every missing file is
- *      reported with the language it lacks; each page pair must also have
- *      matching heading-level, table-shape, and fence-language sequences.
+ *      reported with the language it lacks; each page pair, and the two root
+ *      READMEs, must also have matching heading-level, table-shape, and
+ *      fence-language sequences.
  *   2. Language-switch links — every English page must contain a Markdown
  *      link that resolves to its Chinese counterpart, and vice versa (the
  *      link target is resolved, not just the label text).
@@ -266,6 +267,24 @@ for (const rel of enFiles) {
   if (!zhLinks.includes(enAbs)) problem(zhAbs, `no language-switch link to en counterpart (${rel})`);
 }
 
+/** Compare shape-only signals for a bilingual pair without comparing prose. */
+function checkStructuralParity(enAbs, zhAbs, label) {
+  const enRaw = rawContents.get(enAbs);
+  const zhRaw = rawContents.get(zhAbs);
+  if (enRaw === undefined || zhRaw === undefined) return;
+  const enShape = extractStructuralSignature(enRaw);
+  const zhShape = extractStructuralSignature(zhRaw);
+  if (JSON.stringify(enShape.headingLevels) !== JSON.stringify(zhShape.headingLevels)) {
+    problem(enAbs, `${label} heading-level sequence differs\nen: ${JSON.stringify(enShape.headingLevels)}\nzh: ${JSON.stringify(zhShape.headingLevels)}`);
+  }
+  if (JSON.stringify(enShape.tables) !== JSON.stringify(zhShape.tables)) {
+    problem(enAbs, `${label} table structural signature differs\nen: ${JSON.stringify(enShape.tables)}\nzh: ${JSON.stringify(zhShape.tables)}`);
+  }
+  if (JSON.stringify(enShape.fenceLanguages) !== JSON.stringify(zhShape.fenceLanguages)) {
+    problem(enAbs, `${label} fenced-code language sequence differs\nen: ${JSON.stringify(enShape.fenceLanguages)}\nzh: ${JSON.stringify(zhShape.fenceLanguages)}`);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 2b. Pair structural parity                                          */
 /* ------------------------------------------------------------------ */
@@ -273,21 +292,12 @@ for (const rel of enFiles) {
   if (!zhSet.has(rel)) continue;
   const enAbs = path.join(EN, rel);
   const zhAbs = path.join(ZH, rel);
-  const enRaw = rawContents.get(enAbs);
-  const zhRaw = rawContents.get(zhAbs);
-  if (enRaw === undefined || zhRaw === undefined) continue;
-  const enShape = extractStructuralSignature(enRaw);
-  const zhShape = extractStructuralSignature(zhRaw);
-  if (JSON.stringify(enShape.headingLevels) !== JSON.stringify(zhShape.headingLevels)) {
-    problem(enAbs, `heading-level sequence differs from zh-CN counterpart\nen: ${JSON.stringify(enShape.headingLevels)}\nzh: ${JSON.stringify(zhShape.headingLevels)}`);
-  }
-  if (JSON.stringify(enShape.tables) !== JSON.stringify(zhShape.tables)) {
-    problem(enAbs, `table structural signature differs from zh-CN counterpart\nen: ${JSON.stringify(enShape.tables)}\nzh: ${JSON.stringify(zhShape.tables)}`);
-  }
-  if (JSON.stringify(enShape.fenceLanguages) !== JSON.stringify(zhShape.fenceLanguages)) {
-    problem(enAbs, `fenced-code language sequence differs from zh-CN counterpart\nen: ${JSON.stringify(enShape.fenceLanguages)}\nzh: ${JSON.stringify(zhShape.fenceLanguages)}`);
-  }
+  checkStructuralParity(enAbs, zhAbs, 'docs page pair:');
 }
+
+// The root READMEs are the other bilingual pair. Their links and quality
+// gates are checked below; compare only document shape here, not translation.
+checkStructuralParity(ROOT_READMES[0], ROOT_READMES[1], 'root README pair:');
 
 /* ------------------------------------------------------------------ */
 /* 3. Local link targets                                               */

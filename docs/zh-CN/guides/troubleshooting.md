@@ -84,6 +84,25 @@
 - **解决**：用 `/model list` 检查阶段引用，或用
   `/model set-phase --phase=<name> --clear` 清除覆盖。
 
+### 后续输入被当成新任务
+
+- **原因**：tier-1 确定性后续规则没有命中。tier-2 continuation upgrade 只有在
+  请求评估实际运行、启用 `HK2_ENABLE_CONTINUATION_UPGRADE`、assessor 返回
+  `followup:true` 且达到 `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`（默认 `0.6`），
+  并存在活跃计划、`lastTask` 或会话上下文时才运行。快速通道输入会跳过评估，
+  不使用 tier 2。
+- **解决**：检查 `HK2_ENABLE_FOLLOWUP_FASTLANE`、
+  `HK2_ENABLE_CONTINUATION_UPGRADE` 与置信度阈值。升级复用已有的开启推理的评估
+  结果，不增加 LLM 调用。
+
+### 以 `/` 开头的路径被当成命令
+
+- **原因**：只有符合 `/[A-Za-z][A-Za-z0-9_-]*` 的单段 ASCII 命令头才具有命令形状。
+  `/tmp/example.md` 等路径与路径粘连正文属于普通输入；`/mdoel` 是命令形状的
+  拼写错误，可能得到建议。
+- **解决**：将路径样式内容作为普通文本输入。共享守卫覆盖分发、任务中捕获和多行
+  粘贴收集。
+
 ## 项目与知识库
 
 ### "KB not built for project <name>. Run /kb init before chatting."

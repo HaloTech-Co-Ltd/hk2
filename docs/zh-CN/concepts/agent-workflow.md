@@ -18,7 +18,7 @@ flowchart TD
     GATE -- 是 --> AC[自动压缩检查<br/>仅在轮次边界]
     AC --> FL{后续输入快速通道?}
     FL -- 是 --> LOOP
-    FL -- 否 --> RW[查询改写<br/>LLM 调用] --> KB[知识库检索<br/>符号、调用链、<br/>知识、文档] --> ASSESS{请求清晰?}
+    FL -- 否 --> RW[查询改写<br/>LLM 调用] --> KB[知识库检索<br/>符号、调用链、<br/>知识、文档] --> ASSESS{开启推理的<br/>请求评估}
     ASSESS -- 不清晰 --> MENU[澄清菜单] --> RW2[结合答案重新改写] --> KB2[重新检索] --> SP
     ASSESS -- 清晰 --> SP
     KB --> ASSESS
@@ -73,7 +73,12 @@ flowchart TD
    选项）；选定的答案会反馈到第二次改写 + 检索。低置信度的"不清晰"结论
    （低于
    `HK2_ASSESS_MIN_CONFIDENCE`，默认 0.8）按清晰处理；任何失败都回退到
-   正常改写流程——评估是尽力而为的。
+   正常改写流程——评估是尽力而为的。hk2 始终请求 `enableReasoning:true`，但
+   这不保证每个提供商都会返回独立 reasoning 流。当 tier 1 没有把输入分类为
+   后续时，已有评估结果可能在 `HK2_ENABLE_CONTINUATION_UPGRADE=1`、置信度达到
+   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`（默认 `0.6`）且存在进行中任务时
+   驱动 tier-2 continuation upgrade。升级复用评估结果，恢复原始任务状态，注入
+   恢复上下文并记录 `followupUpgrade`；它不增加额外 LLM 调用。
 
 ## 系统提示词与知识库上下文
 
