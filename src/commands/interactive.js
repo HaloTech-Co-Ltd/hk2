@@ -86,6 +86,7 @@ export {
   resumeSessionInto, confirmThreeWay,
   isContinuationCue, captureMidTaskInput, buildMidTaskInjection,
   disarmMidTaskCapture, flushMidTaskQueue, buildResumeContext, buildSessionDigest,
+  shouldUpgradeToContinuation,
 } from './session_ctx.js';
 export {
   modelTagFor, promptFor, kbBrief, formatPlanProgressLines, finalizePlanProgress, advancePlanStep,

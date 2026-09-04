@@ -1165,6 +1165,65 @@ export function isContinuationCue(text) {
 }
 
 /**
+ * Tier-2 continuation classification — the LLM-backed upgrade tier.
+ *
+ * `isContinuationCue` (tier 1, applied in handleUserLine) is a high-precision
+ * regex, but it can only match phrasings it enumerates: a follow-up like
+ * "那么按照刚才的方案推进吧" falls through as a fresh task, and the deferred
+ * fresh-task commit inside runTurn then retires the live plan block and
+ * overwrites `session.lastTask` even though the user was advancing the
+ * in-flight task.
+ *
+ * The request-clarity assessor (Pass 1.5) already classifies exactly this
+ * case with the full session digest in view: its `followup` verdict is true
+ * for continuation/progress cues, confirmations, and references to earlier
+ * work. This function consumes that verdict: when tier 1 said "not a
+ * continuation", the assessor said "follow-up" with enough confidence, and
+ * the session actually has an in-flight task to continue, the turn should be
+ * treated as a continuation after all — runTurn then rolls back the deferred
+ * fresh-task transition (plan block + lastTask restored) and injects resume
+ * context, exactly as if the regex had matched.
+ *
+ * `inFlight` MUST be computed BEFORE the deferred fresh-task commit runs (the
+ * commit nulls planProgress and overwrites lastTask with THIS request, which
+ * would make every session look task-less or self-referential).
+ *
+ * Returns `{ reason, confidence }` when the classification should be
+ * upgraded, else null. Pure + exported for unit testing.
+ */
+export function shouldUpgradeToContinuation(assessment, opts = {}) {
+  const { continuation = false, inFlight = false } = opts;
+  // Tier 1 already classified this input as a continuation — nothing to do.
+  if (continuation) return null;
+  // No assessment result (phase off / skipped / errored) or no follow-up
+  // verdict: tier 1's classification stands.
+  if (!assessment || typeof assessment !== 'object') return null;
+  if (assessment.followup !== true) return null;
+  // Confidence gate: overriding the deterministic tier-1 classification
+  // needs a verdict the model stands behind. Omitted confidence defaults to 1
+  // (the same default assessRequest applies — trust the verdict). Threshold:
+  // HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE (default 0.6, below the 0.8
+  // unclear-menu bar: a missed upgrade destroys live plan state, which costs
+  // more than an occasional over-eager upgrade the agent can course-correct
+  // from — it still sees the user's actual request text).
+  const confidence = typeof assessment.confidence === 'number' && Number.isFinite(assessment.confidence)
+    ? Math.min(1, Math.max(0, assessment.confidence))
+    : 1;
+  const minConf = (() => {
+    const v = parseFloat(process.env.HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE ?? '');
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.6;
+  })();
+  if (confidence < minConf) return null;
+  // Without an in-flight task (no plan, no lastTask, no prior turns) a
+  // "follow-up" has no referent: treat the input as the fresh task it starts
+  // — its own lastTask snapshot is then the right recovery anchor for a later
+  // interruption.
+  if (!inFlight) return null;
+  const reason = typeof assessment.reason === 'string' ? assessment.reason.trim().slice(0, 240) : '';
+  return { reason, confidence };
+}
+
+/**
  * P1 follow-up fast lane (deterministic, HIGH-PRECISION only).
  *
  * Detects inputs that are CERTAINLY conversational follow-ups so the whole
