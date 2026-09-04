@@ -136,6 +136,14 @@ export function createSession(pinnedProjectId = null) {
     // continuation cue with no memory. Mirrored to disk via task_state.js so
     // a process restart (not just an in-session error) can also recover.
     lastTask: null,
+    // Snapshot of the most recently COMPLETED task's original request (set
+    // by the turn pipeline right before it clears lastTask). The /review
+    // command reads it as the authoritative "task requirement": it predates
+    // every mid-task injection and continuation turn, so the requirement can
+    // never be mistaken for a queued mid-task addition (the old bug: the LAST
+    // user message was treated as the task requirement). Not persisted — a
+    // resumed session falls back to the deterministic message scan.
+    lastCompletedTask: null,
     // True right after a session resume: the replayed history contains no
     // system prompt (replayTranscript skips system_prompt events — it must be
     // rebuilt with the CURRENT tool list), so the turn pipeline inserts a fresh
@@ -471,6 +479,9 @@ export async function resumeSessionInto(session, sessionId) {
     }
   } else {
     session.lastTask = null;
+    // In-memory only (never persisted): after a resume, /review falls back
+    // to the deterministic message scan instead of a stale snapshot.
+    session.lastCompletedTask = null;
     session.planProgress = null;
   }
 
@@ -819,6 +830,7 @@ export function buildBaseCtx(session, io) {
         session.toolCallCount = 0;
         session.needsSystemPrompt = false;
         session.lastTask = null;
+        session.lastCompletedTask = null;
         session.planProgress = null;
         session.hadPlanThisTurn = false;
         session.lastPlanText = null;
@@ -930,30 +942,43 @@ export function buildBaseCtx(session, io) {
     },
     /**
      * Read-only view of the current conversation for the /review command:
-     * the latest user request (the "task requirement") and the assistant's
-     * final answer (the "claimed result"). Deliberately returns ONLY these
-     * two strings - /review's contract is to review the completed result in
-     * isolation, without any of the implementation-process context (tool
-     * calls, reasoning, intermediate turns) that could anchor the reviewer.
+     * the ORIGINAL task request (the "task requirement"), any mid-task
+     * instructions the user queued while it ran, and the assistant's final
+     * answer (the "claimed result"). The implementation-process context
+     * (tool calls, reasoning, intermediate turns) is deliberately excluded —
+     * /review's contract is to review the completed result in isolation,
+     * without anything that could anchor the reviewer.
+     *
+     * requestText resolution order:
+     *   1. session.lastCompletedTask.userRequest — the snapshot the turn
+     *      pipeline took when the task finished. Authoritative: it predates
+     *      every mid-task injection and continuation turn, so the requirement
+     *      can never be mistaken for one (the original bug: the LAST user
+     *      message — often a queued mid-task addition — was treated as the
+     *      task requirement).
+     *   2. Deterministic message scan (extractTaskRequirement) — for resumed
+     *      sessions where the in-memory snapshot is lost.
+     *
+     * additionalInstructions: the mid-task queued instructions collected from
+     * the messages. They are part of what the task was asked to do, so they
+     * ride along for the reviewer to check — ADDING to the original request,
+     * never replacing it.
      */
     getConversation: async () => {
       const msgs = Array.isArray(session.messages) ? session.messages : [];
-      let requestText = '';
-      let answerText = '';
-      // requestText = the LAST user message (the most recent task; earlier
-      // ones belong to previous tasks in the same conversation).
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const m = msgs[i];
-        if (m && m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
-          requestText = m.content;
-          break;
-        }
-      }
+      const snapReq = session.lastCompletedTask
+        && typeof session.lastCompletedTask.userRequest === 'string'
+        && session.lastCompletedTask.userRequest.trim()
+        ? session.lastCompletedTask.userRequest : '';
+      const { original, additions } = snapReq
+        ? extractTaskRequirement(msgs, snapReq)
+        : extractTaskRequirement(msgs);
+      const requestText = original;
       // answerText = the assistant's final answer: session.lastAnswer is the
       // definitive end-of-turn answer (already excludes tool-call frames);
       // fall back to the last plain-text assistant message when it is not set
       // (e.g. a resumed session).
-      answerText = typeof session.lastAnswer === 'string' ? session.lastAnswer : '';
+      let answerText = typeof session.lastAnswer === 'string' ? session.lastAnswer : '';
       if (!answerText.trim()) {
         for (let i = msgs.length - 1; i >= 0; i--) {
           const m = msgs[i];
@@ -963,7 +988,7 @@ export function buildBaseCtx(session, io) {
           }
         }
       }
-      return { requestText, answerText };
+      return { requestText, additionalInstructions: additions, answerText };
     },
     /**
      * Working-tree material (tracked diff + untracked file contents + changed
@@ -1224,15 +1249,95 @@ export function captureMidTaskInput(session, line) {
  * the in-flight task rather than treated as a brand-new task. Returns null
  * when there is nothing to inject. Exported for unit testing.
  */
+export const MID_TASK_INJECTION_HEADER = '## Additional user instruction (queued while the task was running)';
+
 export function buildMidTaskInjection(lines) {
   const items = (lines || []).map(l => String(l).trim()).filter(Boolean);
   if (items.length === 0) return null;
   const body = items.map(l => `- ${l}`).join('\n');
-  return '## Additional user instruction (queued while the task was running)\n' +
+  return `${MID_TASK_INJECTION_HEADER}\n` +
     `${body}\n\n` +
     'These arrived from the user while you were executing the current task. ' +
     'Fold them into the work in progress — finish or adjust the current task ' +
     'accordingly; do not restart from scratch unless the user explicitly asks.';
+}
+
+/**
+ * Extract the queued instruction items (the `- ` lines between the header and
+ * the trailing guidance paragraph) from one mid-task injection message.
+ * Pure; returns [] for anything that is not shaped like an injection body.
+ */
+function parseInjectionItems(content) {
+  const lines = String(content).split('\n');
+  const items = [];
+  for (let i = 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l.trim()) break; // blank line: the guidance paragraph starts here
+    const m = l.match(/^\s*-\s+(.*)$/);
+    if (m && m[1].trim()) items.push(m[1].trim());
+  }
+  return items;
+}
+
+/**
+ * Recover the ORIGINAL task requirement (plus any mid-task instruction
+ * additions) from LLM-shaped session messages. Two modes:
+ *
+ *  - anchor mode (anchorText given): the caller KNOWS the original request
+ *    (session.lastCompletedTask.userRequest). Only injections that arrived
+ *    AFTER that exact message belong to the completed task — messages of a
+ *    newer, still-in-flight task are skipped; when the anchor message is no
+ *    longer present (compacted away), additions are [] (never mis-attributed).
+ *
+ *  - heuristic mode (no anchor — e.g. a resumed session): scan backwards for
+ *    the first plain user message that is neither a mid-task injection
+ *    (deterministic MID_TASK_INJECTION_HEADER prefix) nor a continuation cue
+ *    (isContinuationCue: "请继续"/"continue" …). That message is the task's
+ *    original request; injections passed on the way are its additions.
+ *
+ * Returns { original: string, additions: string[] } with additions in
+ * chronological order. Pure; exported for unit testing.
+ */
+export function extractTaskRequirement(messages, anchorText = '') {
+  const msgs = Array.isArray(messages) ? messages : [];
+  const anchor = typeof anchorText === 'string' ? anchorText.trim() : '';
+  const isUser = (m) => m && m.role === 'user' && typeof m.content === 'string' && m.content.trim();
+  const isInjection = (m) => isUser(m) && m.content.startsWith(MID_TASK_INJECTION_HEADER);
+
+  if (anchor) {
+    // Scan backwards, bucketing injections per TASK SEGMENT: a plain user
+    // request (non-injection, non-cue) opens a segment; injections and cues
+    // ABOVE it belong to that segment (they arrived after it). The segment
+    // whose opening request equals the anchor is the completed task — its
+    // bucket is the additions. Injections of any NEWER in-flight task sit in
+    // a newer segment and are dropped; when the anchor message is absent
+    // (compacted away), additions stay [] instead of mis-attributing another
+    // task's instructions.
+    let bucket = [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (!isUser(m)) continue;
+      if (isInjection(m)) { bucket.push(parseInjectionItems(m.content)); continue; }
+      if (isContinuationCue(m.content)) continue;
+      if (m.content.trim() === anchor) {
+        return { original: anchor, additions: bucket.reverse().flat() };
+      }
+      bucket = []; // a newer task's request — its injections are not ours
+    }
+    return { original: anchor, additions: [] };
+  }
+
+  const groups = []; // one array of items per injection message, in REVERSE scan order
+  let original = '';
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (!isUser(m)) continue;
+    if (isInjection(m)) { groups.push(parseInjectionItems(m.content)); continue; }
+    if (isContinuationCue(m.content)) continue;
+    original = m.content;
+    break;
+  }
+  return { original, additions: groups.reverse().flat() };
 }
 
 /**

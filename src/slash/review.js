@@ -171,12 +171,18 @@ export async function cmdReview(args, ctx) {
   }
 
   // ---- Collect ONLY the request + the result ----------------------------
-  // ctx.getConversation() returns { requestText, answerText } (the latest
-  // user request and the assistant's final answer) without any of the
-  // implementation-process context. collectWorkingTreeDiff() returns the
-  // working-tree material (diff + changed files).
+  // ctx.getConversation() returns { requestText, additionalInstructions,
+  // answerText }: the ORIGINAL task request (from the completed-task snapshot
+  // — never the last user message, which after mid-task additions used to be
+  // mistaken for the requirement), any instructions queued mid-task (they
+  // extend the requirement), and the assistant's final answer — without any
+  // of the implementation-process context. collectWorkingTreeDiff() returns
+  // the working-tree material (diff + changed files).
   const convo = (await ctx.getConversation?.()) || {};
   const requestText = (convo.requestText || '').trim();
+  const additionalInstructions = Array.isArray(convo.additionalInstructions)
+    ? convo.additionalInstructions.map(s => String(s).trim()).filter(Boolean)
+    : [];
   const answerText = (convo.answerText || '').trim();
   if (!requestText && !answerText) {
     ctx.print(`No completed task in this conversation yet - nothing to review.`);
@@ -186,6 +192,7 @@ export async function cmdReview(args, ctx) {
 
   const reviewText = buildManualCodeReviewContent({
     requestText,
+    additionalInstructions,
     changedFiles,
     diffText,
     answerText,
@@ -203,6 +210,9 @@ export async function cmdReview(args, ctx) {
   ctx.print(`  ${changedFiles.length > 0
     ? `Files changed (${changedFiles.length}): ${changedFiles.slice(0, 12).join(', ')}${changedFiles.length > 12 ? '...' : ''}`
     : 'Files changed: (none detected - reviewing the request and claimed result only)'}`);
+  if (additionalInstructions.length > 0) {
+    ctx.print(`  Mid-task additions (${additionalInstructions.length}): ${additionalInstructions.map(s => s.length > 60 ? s.slice(0, 57) + '...' : s).join(' | ')}`);
+  }
 
   ctx.setPhase?.('reviewing code');
   try {

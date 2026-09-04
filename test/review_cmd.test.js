@@ -38,6 +38,9 @@ import {
   buildManualCodeReviewContent, MANUAL_REVIEW_SYSTEM_PROMPT, reviewCode,
   createVerdictFilter, REPORT_MARKER, VERDICT_MARKER,
 } from '../lib/agent/code_review.js';
+import {
+  buildMidTaskInjection, extractTaskRequirement, MID_TASK_INJECTION_HEADER,
+} from '../src/commands/session_ctx.js';
 
 let __seq = 0;
 
@@ -318,6 +321,114 @@ test('/review code sends ONLY the request and result, never the conversation pro
   // System prompt is the manual regression-check prompt, not the pipeline one.
   const sys = fake.calls[0].messages.find((m) => m.role === 'system');
   assert.ok(sys && sys.content === MANUAL_REVIEW_SYSTEM_PROMPT, 'manual system prompt used');
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Original-requirement resolution: mid-task additions & continuation
+// ---------------------------------------------------------------------------
+
+// Regression for the reported bug: with mid-task queued instructions the LAST
+// user message was treated as the task requirement, so the review checked a
+// mid-task addition instead of the original task.
+test('/review code sends the ORIGINAL request, not the last mid-task injection', async () => {
+  await seedModels();
+  const p = await makeProject('origreq');
+  await setCurrentProject(p.id);
+  const { session, ctx } = await makeCtx(p);
+  session.messages = [
+    { role: 'user', content: 'Implement feature X with proper error handling.' },
+    { role: 'assistant', content: 'working on it' },
+    { role: 'user', content: buildMidTaskInjection(['Also add unit tests for the parser.']) },
+    { role: 'user', content: buildMidTaskInjection(['Rename the helper to parseThing.']) },
+    { role: 'assistant', content: 'final answer placeholder' },
+  ];
+  session.lastAnswer = 'Feature X implemented, tests added, helper renamed. All done.';
+  const fake = recordingLlm('{"ok": true, "issues": []}');
+  session.llm = fake;
+
+  await dispatchSlash('/review code', ctx);
+  assert.equal(fake.calls.length, 1, 'exactly one review LLM call');
+  const userMsg = fake.calls[0].messages.find((m) => m.role === 'user');
+  const body = userMsg.content;
+  // The ORIGINAL requirement is the requirement — never a mid-task addition.
+  assert.ok(body.includes('=== ORIGINAL USER REQUIREMENT (begin) ==='));
+  assert.ok(body.includes('Implement feature X with proper error handling.'), 'original request present');
+  // Both mid-task additions ride along in their own section (chronological).
+  assert.ok(body.includes('=== ADDITIONAL USER INSTRUCTIONS (given mid-task, they extend the original requirement) (begin) ==='));
+  assert.ok(body.includes('- Also add unit tests for the parser.'));
+  assert.ok(body.includes('- Rename the helper to parseThing.'));
+  assert.ok(body.indexOf('Also add unit tests') < body.indexOf('Rename the helper'), 'additions in chronological order');
+  // The injection header itself must not leak into the requirement sections.
+  assert.ok(!body.includes(MID_TASK_INJECTION_HEADER), 'no injection framing text in the review payload');
+});
+
+test('/review code uses the completed-task snapshot even after a newer task started', async () => {
+  await seedModels();
+  const p = await makeProject('snapnew');
+  await setCurrentProject(p.id);
+  const { session, ctx } = await makeCtx(p);
+  // Completed task (snapshot present), then a newer in-flight task's request.
+  session.messages = [
+    { role: 'user', content: 'Implement feature X with proper error handling.' },
+    { role: 'user', content: buildMidTaskInjection(['Also add unit tests.']) },
+    { role: 'assistant', content: 'Feature X done.' },
+    { role: 'user', content: 'Now start an unrelated task Y that is still running.' },
+  ];
+  session.lastCompletedTask = { userRequest: 'Implement feature X with proper error handling.', completedAt: '2026-01-01T00:00:00Z' };
+  session.lastTask = { userRequest: 'Now start an unrelated task Y that is still running.' };
+  session.lastAnswer = 'Feature X done.';
+  const fake = recordingLlm('{"ok": true, "issues": []}');
+  session.llm = fake;
+
+  await dispatchSlash('/review code', ctx);
+  const userMsg = fake.calls[0].messages.find((m) => m.role === 'user');
+  assert.ok(userMsg.content.includes('Implement feature X'), 'snapshot request used');
+  assert.ok(!userMsg.content.includes('unrelated task Y'), 'the newer in-flight task does not leak in');
+  assert.ok(userMsg.content.includes('- Also add unit tests.'), 'the completed task own addition collected');
+});
+
+test('continuation cues are skipped by the fallback scan (multi-turn task)', async () => {
+  await seedModels();
+  const p = await makeProject('contcue');
+  await setCurrentProject(p.id);
+  const { session, ctx } = await makeCtx(p);
+  // No snapshot → fallback scan must skip 请继续/continue and find the real request.
+  session.messages = [
+    { role: 'user', content: 'Refactor the config module into a class.' },
+    { role: 'assistant', content: 'part 1 done' },
+    { role: 'user', content: '请继续' },
+    { role: 'user', content: buildMidTaskInjection(['Use camelCase everywhere.']) },
+    { role: 'user', content: 'continue' },
+    { role: 'assistant', content: 'all done' },
+  ];
+  session.lastAnswer = 'Refactor complete, camelCase applied.';
+  const fake = recordingLlm('{"ok": true, "issues": []}');
+  session.llm = fake;
+
+  await dispatchSlash('/review code', ctx);
+  const userMsg = fake.calls[0].messages.find((m) => m.role === 'user');
+  assert.ok(userMsg.content.includes('Refactor the config module into a class.'), 'original request found past the cues');
+  assert.ok(!userMsg.content.includes('请继续'), 'continuation cue not the requirement');
+  assert.ok(userMsg.content.includes('- Use camelCase everywhere.'), 'mid-task addition collected');
+});
+
+test('extractTaskRequirement: anchor missing from history returns no additions', () => {
+  const msgs = [
+    { role: 'user', content: 'Old completed task.' },
+    { role: 'user', content: buildMidTaskInjection(['addition A']) },
+    { role: 'assistant', content: 'done' },
+  ];
+  // Anchor not found (e.g. compacted away): additions must not be
+  // mis-attributed to it.
+  const r = extractTaskRequirement(msgs, 'Anchor that no longer exists');
+  assert.equal(r.original, 'Anchor that no longer exists');
+  assert.deepEqual(r.additions, []);
+});
+
+test('buildManualCodeReviewContent omits the additions section when none', () => {
+  const text = buildManualCodeReviewContent({ requestText: 'Do X.', answerText: 'Done.' });
+  assert.ok(text.includes('=== ORIGINAL USER REQUIREMENT (begin) ==='));
+  assert.ok(!text.includes('ADDITIONAL USER INSTRUCTIONS'));
 });
 
 // ---------------------------------------------------------------------------

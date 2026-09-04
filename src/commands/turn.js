@@ -1495,6 +1495,19 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // finished task. We only clear when there's no planProgress left, because a
     // multi-step plan that's mid-flight should remain recoverable across turns.
     if (!session.planProgress) {
+      // Snapshot the completed task's ORIGINAL request before clearing
+      // lastTask: /review code reads session.lastCompletedTask as the
+      // authoritative task requirement (the lastTask snapshot was taken at
+      // the task's first turn and was never overwritten by continuation
+      // turns or mid-task injections — exactly the semantics /review needs).
+      if (session.lastTask && typeof session.lastTask.userRequest === 'string'
+          && session.lastTask.userRequest.trim()) {
+        session.lastCompletedTask = {
+          userRequest: session.lastTask.userRequest,
+          capturedAt: session.lastTask.capturedAt || null,
+          completedAt: new Date().toISOString(),
+        };
+      }
       session.lastTask = null;
       await clearTaskState(session.project?.id);
     }
