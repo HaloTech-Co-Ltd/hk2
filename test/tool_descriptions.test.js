@@ -230,6 +230,21 @@ test('remember failure is explicit when persistence callback is absent', async (
   assert.doesNotMatch(`${remember.snippet} ${remember.description}`, /10\.1\.2\.3/);
 });
 
+test('remember examples use documentation-only addresses, never RFC1918 ranges', () => {
+  const tools = buildTools({}, { projectId: 'p-test' });
+  const remember = tools.find(t => t.name === 'remember');
+  assert.ok(remember);
+  const surfaces = [remember.snippet, remember.description,
+    ...(remember.guidelines ?? []),
+    remember.parameters?.properties?.fact?.description].filter(Boolean).join('\n');
+  // No private-network examples anywhere in the model-visible text…
+  assert.doesNotMatch(surfaces, /\b10\.\d+\.\d+\.\d+\b/);
+  assert.doesNotMatch(surfaces, /192\.168\./);
+  assert.doesNotMatch(surfaces, /172\.(1[6-9]|2[0-9]|3[01])\./);
+  // …documentation ranges (RFC 5737) instead.
+  assert.match(surfaces, /192\.0\.2\.\d+/);
+});
+
 test('kb_outline and system prompt distinguish source-content reads and rewrite conditions', () => {
   const outline = byName('kb_outline');
   assert.match(outline.description, /no source-content read/i);

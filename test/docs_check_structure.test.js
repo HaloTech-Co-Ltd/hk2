@@ -289,3 +289,34 @@ test('slash-command reference: /help <command> is the universal entry, not <comm
   assert.match(en, /Usage: `\/remember \[--project\|-p\] \[fact\]`/);
   assert.match(zh, /用法：`\/remember \[--project\|-p\] \[事实\]`/);
 });
+
+test('agent-tools reference: the bash timeout explanation appears exactly once', () => {
+  // The bash section once carried the timeout/8 KiB budget text TWICE (an
+  // editing leftover). Extract the `### `bash`` section in both languages
+  // and pin the merged single-paragraph form.
+  const section = (doc) => {
+    const m = doc.match(/^### `bash`[\s\S]*?(?=^###? )/m);
+    assert.ok(m, 'bash section found');
+    return m[0];
+  };
+  const en = section(readFileSync('docs/en/reference/agent-tools.md', 'utf8'));
+  const zh = section(readFileSync('docs/zh-CN/reference/agent-tools.md', 'utf8'));
+  const count = (s, re) => (s.match(re) || []).length;
+  assert.equal(count(en, /defaults to 60 seconds/g), 1, 'English bash timeout text exactly once');
+  assert.equal(count(zh, /默认为 60 秒/g), 1, 'Chinese bash timeout text exactly once');
+  assert.equal(count(en, /8 KiB/g), 1, 'English 8 KiB budget exactly once');
+  assert.equal(count(zh, /8 KiB/g), 1, 'Chinese 8 KiB budget exactly once');
+});
+
+test('no doc recommends an EOL Node line as the current LTS', () => {
+  const files = [
+    'README.md', 'README_zh.md',
+    'docs/en/getting-started/installation.md', 'docs/zh-CN/getting-started/installation.md',
+    'docs/en/guides/troubleshooting.md', 'docs/zh-CN/guides/troubleshooting.md',
+    'docs/en/development/testing-and-contributing.md', 'docs/zh-CN/development/testing-and-contributing.md',
+  ];
+  for (const f of files) {
+    const text = readFileSync(f, 'utf8');
+    assert.doesNotMatch(text, /Node(\.js)? ?20 LTS/i, `${f} must not present Node 20 as the current LTS`);
+  }
+});
