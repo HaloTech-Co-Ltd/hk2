@@ -470,6 +470,29 @@ export async function resumeSessionInto(session, sessionId) {
   const t = new Transcript(pid, id);
   if (!await exists(t.path)) return false;
 
+  // ── PREPARE (no live-session mutation) ─────────────────────────────────
+  // Read + replay the target transcript into LOCALS before touching the live
+  // session: if the file vanished between the existence check and the read,
+  // cannot be read as a regular file (e.g. the path is a directory), or the
+  // replay fails, the CURRENT conversation, transcript, task/plan snapshots,
+  // project pin, tokens, and facts must all stay intact (prepare-then-commit,
+  // not clear-then-read). Errors rethrow with the real path/cause so the
+  // dispatcher reports them instead of a misleading "session not found".
+  let text;
+  try {
+    text = await fs.readFile(t.path, 'utf8');
+  } catch (err) {
+    throw new Error(`failed to read session transcript ${t.path}: ${err.message}`);
+  }
+  let replayed;
+  try {
+    replayed = replayTranscript(text);
+  } catch (err) {
+    throw new Error(`failed to replay session transcript ${t.path}: ${err.message}`);
+  }
+  const { messages, firstTs, lastTs } = replayed;
+
+  // ── COMMIT ─────────────────────────────────────────────────────────────
   // A resume replaces the live conversation. Clear old task/review/plan
   // snapshots before replaying the target; only matching taskstate may then
   // restore an interrupted task and unfinished plan.
@@ -511,9 +534,6 @@ export async function resumeSessionInto(session, sessionId) {
       session.reloadFlags.model = !session.sessionModelRef; // re-resolve default unless session-pinned
     }
   }
-  const text = await fs.readFile(t.path, 'utf8');
-  const { messages, lastUserText, firstTs, lastTs } = replayTranscript(text);
-
   session.transcript = t;
   session.messages = messages;
   session.lastAnswer = null;
@@ -921,15 +941,21 @@ export function buildBaseCtx(session, io) {
     newSession: async () => {
       const oldProject = session.project;
       const oldTranscript = session.transcript;
+      // PREPARE: fully initialize the replacement transcript (constructor +
+      // session_start meta on disk) BEFORE touching the live session. If this
+      // fails, the current conversation and transcript remain usable — the
+      // old transcript file is never deleted either way.
+      let nextTranscript = null;
+      if (oldProject) {
+        nextTranscript = new Transcript(oldProject.id);
+        await nextTranscript.logMeta('start', { pid: process.pid, cwd: process.cwd(), reason: 'new-session' });
+      }
+      // COMMIT: only now finalize the old transcript and swap the live state.
       if (oldTranscript) {
         try { await oldTranscript.flush(); } catch { /* best-effort flush */ }
       }
-      session.transcript = null;
       resetConversationScopedState(session);
-      if (oldProject) {
-        session.transcript = new Transcript(oldProject.id);
-        await session.transcript.logMeta('start', { pid: process.pid, cwd: process.cwd(), reason: 'new-session' });
-      }
+      session.transcript = nextTranscript;
       session.statusBar?.update();
     },
     resumeSession: async (sessionId) => {

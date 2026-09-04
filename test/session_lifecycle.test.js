@@ -179,3 +179,95 @@ test('resume does not restore taskstate belonging to another transcript', async 
   assert.equal(session.lastPlanText, null);
   await clearTaskState(project.id);
 });
+
+/* ── Replacement atomicity: prepare-then-commit ────────────────────────── */
+
+function snapshotLiveState(session) {
+  return {
+    transcript: session.transcript,
+    sessionId: session.transcript?.sessionId,
+    messages: session.messages,
+    lastAnswer: session.lastAnswer,
+    lastTask: session.lastTask,
+    lastCompletedTask: session.lastCompletedTask,
+    planProgress: session.planProgress,
+    hadPlanThisTurn: session.hadPlanThisTurn,
+    lastPlanText: session.lastPlanText,
+    pinnedProjectId: session.pinnedProjectId,
+    kbLearnHandledAt: session.kbLearnHandledAt,
+    tokens: { ...session.tokens },
+    sessionFacts: [...(session.sessionFacts || [])],
+    startedAt: session.startedAt,
+  };
+}
+
+test('resume failure on an unreadable target leaves the live session untouched', async () => {
+  const { project, session, ctx } = await makeSession();
+  dirtyConversation(session);
+  // Target path EXISTS but is a directory, so fs.readFile fails (EISDIR) —
+  // no chmod/root-permission dependence.
+  const targetPath = path.join(
+    process.env.HK2_HOME, 'sessions', project.id, 'lifecycle-unreadable.jsonl');
+  await fs.mkdir(targetPath, { recursive: true });
+  const before = snapshotLiveState(session);
+
+  await assert.rejects(
+    () => ctx.resumeSession('lifecycle-unreadable'),
+    /failed to read session transcript/,
+    'the real read error surfaces, not a silent "session not found"');
+
+  const after = snapshotLiveState(session);
+  assert.equal(after.transcript, before.transcript, 'current transcript object unchanged');
+  assert.equal(after.sessionId, before.sessionId, 'still on the current session id');
+  assert.equal(after.messages, before.messages, 'messages array unchanged');
+  assert.equal(after.lastAnswer, before.lastAnswer);
+  assert.equal(after.lastTask, before.lastTask, 'lastTask unchanged');
+  assert.equal(after.lastCompletedTask, before.lastCompletedTask);
+  assert.equal(after.planProgress, before.planProgress, 'planProgress unchanged');
+  assert.equal(after.hadPlanThisTurn, before.hadPlanThisTurn);
+  assert.equal(after.lastPlanText, before.lastPlanText);
+  assert.equal(after.pinnedProjectId, before.pinnedProjectId, 'project pin unchanged');
+  assert.equal(after.kbLearnHandledAt, before.kbLearnHandledAt);
+  assert.deepEqual(after.tokens, before.tokens, 'token counters unchanged');
+  assert.deepEqual(after.sessionFacts, before.sessionFacts, 'facts unchanged');
+  assert.equal(after.startedAt, before.startedAt);
+
+  await fs.rm(targetPath, { recursive: true, force: true });
+});
+
+test('/session new with a failing transcript init keeps the old session usable', async () => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    // Permission-based failure does not apply to root; the prepare-then-
+    // commit order is still covered by the resume test above.
+    return;
+  }
+  const { session, ctx } = await makeSession();
+  dirtyConversation(session);
+  const before = snapshotLiveState(session);
+  const oldTranscriptOnDisk = before.transcript.path;
+
+  // Block NEW transcript initialization: remove write permission from the
+  // project's sessions dir so writeFileAtomic cannot create the temp file.
+  const sessionsDir = path.dirname(oldTranscriptOnDisk);
+  await fs.chmod(sessionsDir, 0o555);
+  try {
+    await assert.rejects(() => ctx.newSession());
+    const after = snapshotLiveState(session);
+    assert.equal(after.transcript, before.transcript, 'old transcript object kept');
+    assert.equal(after.sessionId, before.sessionId, 'old session id kept');
+    assert.equal(after.messages, before.messages, 'messages unchanged');
+    assert.equal(after.lastTask, before.lastTask);
+    assert.equal(after.planProgress, before.planProgress);
+    // The old transcript file is never deleted and stays readable.
+    const stat = await fs.stat(oldTranscriptOnDisk);
+    assert.ok(stat.isFile(), 'old transcript file still on disk');
+  } finally {
+    await fs.chmod(sessionsDir, 0o755);
+  }
+
+  // After the failure is cleared, a retry still works normally.
+  ctx.print = () => {};
+  await ctx.newSession();
+  assert.notEqual(session.transcript.sessionId, before.sessionId);
+  assert.deepEqual(session.messages, []);
+});
