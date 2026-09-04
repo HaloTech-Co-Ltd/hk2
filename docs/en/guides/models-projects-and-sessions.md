@@ -97,21 +97,23 @@ project:
 /model set-phase --phase=code-review --clear
 ```
 
-When unset, a phase uses the session model. Two distinct failure classes:
+When unset, a phase uses the session model. Phase-model selection has three
+distinct outcomes:
 
 - **Stale/unresolvable registry ref** (unknown provider or model —
-  `resolveModelRef` returns null): currently treated **silently** as "no
-  override configured" — the phase just runs on the session model, with no
-  warning and no fallback/skip path. The ref effectively disappears.
-- **Resolved but the call fails** (transport/HTTP/timeout): `rewrite-query`
-  / `request-assess` follow `HK2_ENABLE_PHASEMODEL_FALLBACK` (warn + re-run
-  on the session model by default; `0` = warn + skip), while the review
-  phases always warn and skip rather than silently substitute a different
-reviewer.
-
-If resolving the registry reference itself throws, the current caller prints a
-warning and uses the session model; that exception path is distinct from a
-stale reference, which resolves to `null` silently.
+  `resolveModelRef` returns null): treated **silently** as no override for this
+  resolution attempt. The phase uses the session model, with no warning and no
+  fallback/skip audit event. The stored ref remains in configuration and can
+  resolve again if the provider/model is restored.
+- **Resolution throws** (for example, a registry read or resolution
+  exception): the caller warns and uses the session model. This is different
+  from a stale ref returning `null`.
+- **Successfully resolved, then the call fails** (transport/HTTP/timeout):
+  `rewrite-query` / `request-assess` follow
+  `HK2_ENABLE_PHASEMODEL_FALLBACK` (warn + re-run on the session model by
+  default; `0` = warn + skip), while `plan-review` / `code-review` warn and
+  skip rather than silently substitute a different reviewer. These are the
+  fallback/skip outcomes recorded for auditing.
 
 See [Planning and review](planning-and-review.md); the silent-stale-ref
 behavior is a known limitation.

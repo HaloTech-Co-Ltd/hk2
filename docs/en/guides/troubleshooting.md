@@ -87,21 +87,18 @@ here come from the shipped code.
 
 ### A phase model is unreachable / its ref is stale
 
-- **Symptom** (call failure): warning printed; `rewrite-query` /
-  `request-assess` either re-ran on the session model or was skipped.
-- **Cause** (call failure): `HK2_ENABLE_PHASEMODEL_FALLBACK` (default 1)
-  reruns those phases on the session model; `0` skips them. Review phases
-  (`plan-review`, `code-review`) always skip on an unreachable model —
-  never silently substituting the reviewer.
-- **Symptom** (stale ref): *no* warning — the phase silently runs on the
-  session model.
-- **Cause** (stale ref): a ref naming an unknown provider/model
-  (`resolveModelRef` returns null) is currently treated silently as "no
-  override configured", skipping the warn/fallback path entirely — a known
-  runtime limitation.
-- **Fix**: check the phase ref with `/model list`, or clear the override
-  with `/model set-phase --phase=<name> --clear`. Every fallback/skip is
-  recorded in the session transcript for auditing.
+- **Stale/unresolvable ref**: no warning is printed; when
+  `resolveModelRef` returns `null`, the phase silently uses the session model.
+  The stored ref remains configured and no fallback/skip audit event is added.
+- **Resolution exception**: the caller warns and uses the session model; this
+  is distinct from a stale ref returning `null`.
+- **Resolved model call failure**: `HK2_ENABLE_PHASEMODEL_FALLBACK` (default 1)
+  reruns `rewrite-query` / `request-assess` on the session model; `0` warns and
+  skips them. Review phases (`plan-review`, `code-review`) warn and skip rather
+  than substituting the reviewer. These fallback/skip outcomes are recorded in
+  the session transcript.
+- **Fix**: check the phase ref with `/model list`, or clear the override with
+  `/model set-phase --phase=<name> --clear`.
 
 ## Projects and KB
 

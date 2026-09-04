@@ -3,16 +3,17 @@
 English | [简体中文](../../zh-CN/guides/planning-and-review.md)
 
 This guide explains hk2's planning and review machinery: when the agent
-creates a plan, how you confirm it, the live progress panel, optional plan
-review and code review, and what happens when a reviewer cannot produce a
-verdict. The gating environment variables all default to **off**.
+creates a plan, how interactive confirmation differs from non-interactive
+auto-acceptance, the live progress panel, optional plan review and code review,
+and what happens when a reviewer cannot produce a verdict. The gating
+environment variables all default to **off**.
 
 ## Plans
 
 The agent decides when to plan — there is no pre-execution plan pass. When
-the model judges a task complex enough to warrant a strategy decision
-(multiple distinct phases, a design choice the user should confirm, or
-several affected subsystems), it calls the `plan` tool:
+the model judges a task complex enough to benefit from an explicit strategy
+decomposition (multiple distinct phases, a design choice, or several affected
+subsystems), it calls the `plan` tool:
 
 - a one-line summary, plus
 - an intended shape of 2–5 ordered steps, each with 2–4 candidate
@@ -24,15 +25,19 @@ Simple tasks skip `plan` entirely and execute directly.
 
 ### Confirmation
 
-The plan surfaces as a menu: you pick a strategy per step (or accept the
-recommended one). The finalized plan is returned to the agent, which
-executes step by step. Cancelling the menu cancels the plan — the agent sees
-a `cancelled` result and adapts. In non-interactive mode the recommended
-strategy is auto-accepted.
+With an interactive confirmation callback, the plan surfaces as a menu: you
+pick a strategy per step (or accept the recommended one), and the finalized
+plan is returned as `{ confirmed:true, plan }`. Cancelling the menu returns
+`{ cancelled:true, ... }`; the agent adapts. Without a confirmation callback,
+the recommended strategy is auto-accepted and the result is
+`{ confirmed:true, plan:..., autoAccepted:true }` — this is tool acceptance,
+not user confirmation. In that mode there is no user menu or real progress
+panel.
 
 ### The progress panel
 
-Once a plan is confirmed, a live panel is pinned above the status bar:
+Once an interactive plan is confirmed, a live panel is pinned above the
+status bar:
 
 ```text
 ▣ Plan: sync README docs with code
@@ -42,13 +47,15 @@ Once a plan is confirmed, a live panel is pinned above the status bar:
     4. Commit and push
 ```
 
-After finishing each confirmed step the agent calls `plan_step` once; each
-call marks the CURRENT in-progress step done and advances the panel — the
-`step` argument is accepted but deliberately ignored for the mutation, so
-invalid, out-of-range, or out-of-order values never jump steps. When the
-last step completes the panel clears automatically, and when the turn ends
-normally a finalization pass clears any panel left un-advanced (a backstop).
-Tasks that never called `plan` never show a panel.
+After finishing each confirmed step in interactive mode the agent calls
+`plan_step` once; each call marks the CURRENT in-progress step done and
+advances the panel — the `step` argument is accepted but deliberately ignored
+for the mutation, so invalid, out-of-range, or out-of-order values never jump
+steps. When the last step completes the panel clears automatically, and when
+the turn ends normally a finalization pass clears any panel left un-advanced
+(a backstop). Without a progress callback, `plan_step` only acknowledges the
+reported completion and maintains no progress state or panel. Tasks that never
+called `plan` never show a panel.
 
 The panel survives interruption: interrupted-task state (original request,
 summary, plan progress) is persisted, and `hk2 --resume` restores it (see
@@ -120,8 +127,11 @@ code. (`rewrite-query` / `request-assess` phase models *do* fall back to the
 session model under `HK2_ENABLE_PHASEMODEL_FALLBACK`; the review phases are
 deliberately stricter.)
 
-Every phase-model fallback or skip is recorded in the session transcript
-(`phaseModelFallback`, `skipped` + `error`) for auditing.
+Fallbacks and skips caused by a successfully resolved phase model failing are
+recorded in the session transcript (`phaseModelFallback`, `skipped` + `error`)
+for auditing. A stale ref that resolves to `null` is silently treated as no
+override and does not create that audit event; a resolution exception instead
+warns and uses the session model.
 
 ## Reasoning settings
 

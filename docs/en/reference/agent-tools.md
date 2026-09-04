@@ -139,33 +139,33 @@ walked files. Narrow `paths` when targeting big trees.
 
 ### `plan`
 
-Propose an execution plan for the user to confirm — the interface the triage
-assistant calls when it decides a task is complex enough to warrant a strategy
-decision. The model-visible schema requires `summary` and `steps`. The prompt-recommended shape is a one-line summary plus 2–5 ordered
+Propose an execution plan when a complex task benefits from an explicit
+strategy decomposition. With an interactive confirmation callback, the user
+chooses strategies; without one, recommended strategies are auto-accepted.
+The model-visible schema requires `summary` and `steps`. The prompt-recommended shape is a one-line summary plus 2–5 ordered
 `steps`, each with a `goal` and 2–4 candidate `strategies`
 ({name, description, recommended}) with exactly one recommended. Runtime
-normalization treats a missing or non-string `summary` as an empty string and
-enforces only a minimum of two usable steps and two usable strategies per step,
-with no maximum; abnormal recommended counts are normalized by selecting the
-first strategy. The tool surfaces the plan for per-step strategy selection
-(auto-accepting the recommended strategy in non-interactive mode) and returns
-the finalized plan text; `{confirmed, plan}` on acceptance, `{cancelled}` on
-cancel, `{error}` on an unusable shape. Writes: no.
+normalization for direct/internal calls that bypass the schema treats a missing
+or non-string `summary` as an empty string and enforces only a minimum of two
+usable steps and two usable strategies per step, with no maximum; abnormal
+recommended counts are normalized by selecting the first strategy. With a
+confirmation callback the result is `{ confirmed:true, plan }`; without one
+the result is `{ confirmed:true, plan:..., autoAccepted:true }`. Cancellation
+returns `{ cancelled:true, ... }`, and an unusable shape returns `{ error }`.
+Writes: no.
 
 ### `plan_step`
 
-Advance the live progress panel by marking the CURRENT in-progress step of
-the confirmed plan as done — call once after finishing each step. The
-`step` parameter is retained only as a compatibility/reporting hint: the
-interactive state machine always advances the current in-progress step, and
-the value never selects an arbitrary step (invalid, out-of-range, or
-out-of-order values do not change **which step is selected** — the current
-in-progress step still advances). Interactive mode uses the real state
-machine; without one, `plan_step` merely echoes (no progress state is
-kept). No-op when no plan is active; the
-panel clears after the last step, and a normal turn end finalizes any panel
-left un-advanced as a backstop. Do not call before `plan` returns a
-confirmed plan. Writes: no.
+With an interactive progress callback, advance the live progress panel by
+marking the CURRENT in-progress step of the confirmed plan as done — call once
+after finishing each step. The `step` parameter is retained only as a
+compatibility/reporting hint: the interactive state machine always advances
+the current in-progress step, and the value never selects an arbitrary step.
+Without a progress callback, `plan_step` merely acknowledges the report and
+keeps no progress state or panel. Only interactive mode has a panel that can
+clear after the last step; a normal turn end finalizes any leftover interactive
+panel as a backstop. Do not call before `plan` returns a confirmed plan.
+Writes: no.
 
 ## KB query tools
 

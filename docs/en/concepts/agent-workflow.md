@@ -27,8 +27,11 @@ flowchart TD
     LOOP --> TOOLS{Tool calls?}
     TOOLS -- yes --> EXEC[Execute tools] --> QUEUE[Inject queued user input<br/>at the round boundary] --> LOOP
     TOOLS -- no --> ANS[Final answer]
-    LOOP -.plan tool.-> CONFIRM[User confirms plan<br/>+ optional plan review]
+    LOOP -.plan tool.-> MODE{Confirmation callback?}
+    MODE -- yes --> CONFIRM[User chooses strategies<br/>+ optional plan review]
+    MODE -- no --> AUTO[Recommended strategies<br/>auto-accepted<br/>autoAccepted:true]
     CONFIRM --> LOOP
+    AUTO --> LOOP
     ANS --> EOT{End of turn gates:<br/>bash-search gate → update offer/capture;<br/>conflict sync (own gate);<br/>plan finalize; code review (own gate)}
 ```
 
@@ -66,9 +69,11 @@ for obvious follow-ups:
    ("执行下一步") while a plan is active.
 4. **Query rewrite** (`HK2_ENABLE_QUERYREWRITE`, default on) — one LLM call
    rewrites the query into English function names + keywords for BM25
-   retrieval. A phase model (`rewrite-query`) can drive it; on an unreachable
-   phase model, `HK2_ENABLE_PHASEMODEL_FALLBACK` (default on) re-runs the
-   phase on the session model, or skips it when set to 0.
+   retrieval. A phase model (`rewrite-query`) can drive it; after that model is
+   successfully resolved, a call failure makes `HK2_ENABLE_PHASEMODEL_FALLBACK`
+   (default on) re-run the phase on the session model, or skip it when set to 0.
+   A stale ref resolving to `null` is silently treated as no override, while a
+   resolution exception warns and uses the session model.
 5. **KB retrieval** — the rewritten query retrieves related symbols,
    call-graph neighbors, 2-hop call chains, class membership, knowledge
    entries (Holy first), project docs, and structured doc tables
@@ -130,7 +135,7 @@ tools. Guardrails:
 - **Stuck detection** — the loop aborts on the **fourth** consecutive round
   with the same tool-call signature and result fingerprint (three repeats
   beyond the initial occurrence), or at an absolute cap of 1000 rounds. A
-  coded 6-round no-progress guard exists but is currently unreachable (its
+  coded `NO_PROGRESS_TURNS` 6-round no-progress guard exists but is currently unreachable (its
   condition requires zero pending tool calls, which returns first) — do not
   rely on it.
 - **Mid-task input queueing** — plain text typed while a turn runs is queued
@@ -141,17 +146,29 @@ tools. Guardrails:
   lost (a crash or kill of the process is outside this guarantee). See
   [REPL and TUI](../guides/repl-and-tui.md).
 
+### LLM retry boundary
+
+An LLM retry restarts only the current LLM call. The failed attempt's body
+deltas, reasoning buffer, and not-yet-executed tool calls are discarded; text
+from earlier successfully completed tool rounds remains. The transcript,
+`session.lastAnswer`, and Code Review input use the cleaned assistant text.
+Usage accounting may still retain attempt-specific peaks, so it is not
+documented as final-attempt-only or billed-total accounting.
+
 The full tool registry is documented in [Agent tools](../reference/agent-tools.md).
 
 ## Planning
 
 Planning is LLM-driven via the `plan` tool: when the model decides a task is
-complex enough to warrant a user-confirmed strategy (multiple distinct
-phases, a design choice to confirm, several affected subsystems), it calls
+complex enough to benefit from an explicit strategy decomposition (multiple
+distinct phases, a design choice, several affected subsystems), it calls
 `plan` with a one-line summary and 2–5 ordered steps, each with 2–4 candidate
 strategies (one marked recommended). Simple tasks skip straight to execution.
-The user confirms per-step strategies in a menu; the finalized plan drives a
-live progress panel advanced by `plan_step`. Details in
+With an interactive confirmation callback, the user chooses per-step
+strategies in a menu; the finalized plan drives a live progress panel advanced
+by `plan_step`. Without that callback, recommended strategies are auto-accepted
+and the result includes `autoAccepted:true`; no real progress panel exists.
+Details in
 [Planning and review](../guides/planning-and-review.md).
 
 ## End of turn

@@ -42,10 +42,11 @@ Interactive `/kb init` turns an unset, empty, `0`, or non-numeric environment
 interval into 100; a positive integer is honored and a negative integer is
 passed through, producing near-per-file saves. The explicit flag is parsed
 directly, so `0`, negative, or `NaN` values likewise save almost every file.
-`/kb update` and automatic/legacy direct indexer paths do not receive the
-interactive `|| 100` wrapper: environment `0`, negative, or invalid values
-reach `Checkpoint` unchanged. Only `/kb init --no-checkpoint` is the documented
-disable switch.
+An explicitly empty `--checkpoint-interval=` is falsey and falls back to the
+environment/default wrapper rather than becoming `NaN`. `/kb update` and
+automatic/legacy direct indexer paths do not receive the interactive `|| 100`
+wrapper: environment `0`, negative, or invalid values reach `Checkpoint`
+unchanged. Only `/kb init --no-checkpoint` is the documented disable switch.
 
 ## Query the KB
 

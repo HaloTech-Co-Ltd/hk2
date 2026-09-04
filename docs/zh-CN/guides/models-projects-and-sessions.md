@@ -88,18 +88,18 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 /model set-phase --phase=code-review --clear
 ```
 
-未设置时阶段使用会话模型。两类不同的失败：
+未设置时阶段使用会话模型。阶段模型选择有三种不同结果：
 
 - **过期 / 无法解析的注册表引用**（未知提供商或模型——`resolveModelRef`
-  返回 null）：当前被**静默**视为"未配置覆盖"——阶段直接使用会话模型，
-  无告警、也不走 fallback/skip 路径，该引用形同消失。
-- **解析成功但调用失败**（传输 / HTTP / 超时）：`rewrite-query` /
-  `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认告警并
-  改用会话模型重跑；`0` = 告警并跳过）；审查阶段始终只告警并跳过，绝不
-静默替换审查者。
-
-如果解析注册表引用本身抛出异常，当前调用方会打印告警并使用会话模型；这与过期引用
-不同：过期引用只会静默解析为 `null`。
+  返回 null）：本次解析会**静默**视为没有覆盖。阶段使用会话模型，无告警、
+  也不产生 fallback/skip 审计事件。配置中的 ref 仍然保留；提供商 / 模型恢复
+  后仍可能重新解析成功。
+- **解析本身抛出异常**（例如注册表读取或解析异常）：调用方告警并使用会话模型，
+  这不同于返回 `null` 的过期引用。
+- **已成功解析但实际调用失败**（传输 / HTTP / 超时）：`rewrite-query` /
+  `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认告警并用会话
+  模型重跑；`0` = 告警并跳过）；`plan-review` / `code-review` 告警并跳过，绝不
+  静默替换审查者。只有这类 fallback/skip 结果会作为审计记录。
 
 见[规划与审查](planning-and-review.md)；静默的过期引用行为是已知限制。
 

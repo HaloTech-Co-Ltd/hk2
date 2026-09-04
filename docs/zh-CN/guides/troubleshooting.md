@@ -74,18 +74,15 @@
 
 ### 阶段模型不可达 / 引用过期
 
-- **症状**（调用失败）：输出告警；`rewrite-query` / `request-assess` 改用
-  会话模型重跑或被跳过。
-- **原因**（调用失败）：`HK2_ENABLE_PHASEMODEL_FALLBACK`（默认 1）让这些
-  阶段改用会话模型；设为 0 则跳过。审查阶段（`plan-review`、
-  `code-review`）在模型不可达时始终跳过——绝不静默替换审查者。
-- **症状**（引用过期）：*没有*告警，阶段静默使用会话模型。
-- **原因**（引用过期）：ref 指向未知提供商 / 模型（`resolveModelRef`
-  返回 null）时，当前被静默视为"未配置覆盖"，不走告警 / fallback 路径——
-  已知运行时限制。
-- **解决**：用 `/model list` 检查阶段引用，或
-  `/model set-phase --phase=<name> --clear` 清除覆盖。每次回退 / 跳过都
-  记入会话记录供审计。
+- **过期 / 无法解析的 ref**：不输出告警；`resolveModelRef` 返回 `null` 时，
+  阶段静默使用会话模型。配置中的 ref 仍保留，也不增加 fallback/skip 审计事件。
+- **解析异常**：调用方告警并使用会话模型；这不同于过期 ref 返回 `null`。
+- **已解析模型的调用失败**：`HK2_ENABLE_PHASEMODEL_FALLBACK`（默认 1）让
+  `rewrite-query` / `request-assess` 改用会话模型重跑；设为 0 则告警并跳过。
+  审查阶段（`plan-review`、`code-review`）告警并跳过，不替换审查者。这些
+  fallback/skip 结果会记入会话记录。
+- **解决**：用 `/model list` 检查阶段引用，或用
+  `/model set-phase --phase=<name> --clear` 清除覆盖。
 
 ## 项目与知识库
 

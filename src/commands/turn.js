@@ -905,14 +905,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     llm: session.llm,
     projectId: session.project?.id,
     guard: session.kbGuard,
-    // Plan-confirmation interface: when the agent calls the `plan` tool,
+    // Optional plan-confirmation interface: when the agent calls the `plan`
     // surface its proposed plan to the user for per-step strategy
     // selection (confirmPlan) and return the finalized plan. The progress
     // spinner is paused while the interactive menu is on screen so its
     // per-200ms \r refresh does not overwrite the choice prompt.
     //
-    // Plan Review (HK2_ENABLE_PLANREVIEW, default 0): AFTER the user confirms
-    // the plan, if enabled, an LLM reviews the finalized plan for problems.
+    // Plan Review (HK2_ENABLE_PLANREVIEW, default 0): AFTER the interactive
+    // user confirms the plan, if enabled, an LLM reviews the finalized plan for problems.
     // When the reviewer raises issues, each is surfaced to the user one-by-one
     // for confirmation (accept the reviewer's suggestion / dismiss / type your
     // own); the confirmed resolutions are appended to the finalized plan text
@@ -1192,12 +1192,12 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   session.tokens.loopPeakOut = 0;
 
   // Planning is now LLM-driven: the system prompt instructs the agent to act
-  // as its own triage assistant and call the `plan` tool when (and only when)
-  // it decides the task is complex enough to warrant a user-confirmed plan.
-  // There is no separate pre-execution assessment / generation pass here;
-  // the `plan` tool (registered via buildTools planConfirm) is the interface
-  // that receives the LLM plan decision and surfaces it to the user for
-  // per-step confirmation. Simple tasks flow straight into execution.
+  // as its own triage assistant and call the `plan` tool when a task benefits
+  // from explicit strategy decomposition. There is no separate pre-execution
+  // assessment / generation pass here. When the optional planConfirm callback
+  // is wired, the tool surfaces the LLM plan for per-step user selection;
+  // without it, the recommended strategies are auto-accepted. Simple tasks
+  // flow straight into execution.
 
   session.messages.push({ role: 'user', content: userText });
   await session.transcript?.logUser(userText);

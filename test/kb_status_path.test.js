@@ -75,6 +75,36 @@ test('/kb status does not rewrite an existing Supreme Code entry', () => {
   assert.equal(result.mtimeMs, result.beforeMtimeMs, 'status did not rewrite the file or touch its mtime');
 });
 
+test('/kb status continues quietly when Supreme Code self-heal cannot write', () => {
+  const repo = path.resolve(process.cwd());
+  const script = `
+    import fs from 'node:fs/promises';
+    import os from 'node:os';
+    import path from 'node:path';
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-status-failure-'));
+    const custom = path.join(home, 'kb-root');
+    process.env.HK2_HOME = home; process.env.HK2_KB_DIR = custom;
+    const id = 'failure-project';
+    const dir = path.join(custom, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ sourcePath: '/tmp/example-project' }));
+    await fs.writeFile(path.join(dir, 'holy'), 'not a directory');
+    const { cmdKb } = await import(${JSON.stringify(path.join(repo, 'src/slash/kb.js'))});
+    const output = [];
+    await cmdKb(['status'], { getCurrentProject: async () => ({ id, name: id }), print: (line) => output.push(String(line)) });
+    console.log(JSON.stringify(output));
+    await fs.rm(home, { recursive: true, force: true });
+  `;
+  const output = execFileSync(process.execPath, ['--input-type=module', '--eval', script], {
+    cwd: repo, encoding: 'utf8', env: { ...process.env, HK2_HOME: '', HK2_KB_DIR: '' },
+  });
+  const lines = JSON.parse(output.trim());
+  assert.ok(lines.some(line => line.includes('project: failure-project')));
+  assert.ok(lines.some(line => line.includes('Supreme Code: 0/')));
+  assert.ok(!lines.some(line => /self-heal|cannot write|EISDIR|failure/i.test(line) && !line.includes('failure-project')),
+    `self-heal failure should not be separately reported: ${JSON.stringify(lines)}`);
+});
+
 test('legacy one-shot build-kb reports the effective custom KB root', () => {
   const repo = path.resolve(process.cwd());
   const script = `

@@ -60,11 +60,20 @@ test('resolve: description and guideline both best-effort; no logged claim; roll
 });
 
 test('plan: recommended shape vs runtime minimum; no hard max; recommended-count normalized', () => {
-  const d = byName('plan').description;
+  const t = byName('plan');
+  const d = t.description;
   assert.match(d, /2-5/i);
-  assert.match(d, /minimum of two usable steps/i);
+  assert.match(d, /at least 2 usable steps/i);
   assert.match(d, /no maximum/i);
-  assert.match(d, /normalized/i, 'recommended-count normalization noted');
+  assert.match(d, /normalizes?/i, 'recommended-count normalization noted');
+  assert.match(t.snippet, /explicit strategy decomposition/i);
+  assert.match(t.guidelines[0], /interactive confirmation callback/i);
+  assert.match(t.guidelines[0], /auto-accepted/i);
+  assert.match(t.guidelines[3], /recommended strategies auto-accepted/i);
+  assert.match(t.guidelines[4], /interactive.*confirmation interface/i);
+  assert.doesNotMatch(t.guidelines[0], /ONLY.*interactive plan/i);
+  assert.match(d, /\{ confirmed:true, plan \}/i);
+  assert.match(d, /autoAccepted:true/i);
 });
 
 test('plan_step: top description, guidelines, and step param all current-step semantics', () => {
@@ -78,6 +87,10 @@ test('plan_step: top description, guidelines, and step param all current-step se
   assert.match(t.description, /reporting hint.*ignored/i, 'step remains a reporting hint');
   assert.match(t.description, /without a progress callback.*no progress state/i);
   assert.doesNotMatch(stepDesc, /mark done/i, 'param must not claim step selection');
+  assert.match(t.guidelines[0], /interactive mode.*without a progress callback/i);
+  assert.match(t.guidelines[1], /Without that callback.*no current-step mutation/i);
+  assert.match(t.guidelines[3], /In interactive mode.*without a progress callback/i);
+  assert.doesNotMatch(t.guidelines[1], /^Each call advances the CURRENT/i);
 });
 
 test('kb_search: conditional LLM rewrite; top_k 5-50 clamp', () => {
@@ -162,6 +175,9 @@ test('system prompt: conditional prefetch, hint buckets, plan_step backstop, per
   assert.doesNotMatch(initSummary, /api-docs/, 'api-docs must not be a /kb init summary');
   assert.match(prompt, /offer, or automatically run/i, 'kb update offer/auto line');
   assert.match(prompt, /doc: entries/i, 'doc: sync disclosed in the prompt');
+  assert.match(prompt, /without a confirmation callback.*auto-accepted/i);
+  assert.match(prompt, /without an interactive progress callback.*does not maintain progress state/i);
+  assert.doesNotMatch(prompt, /planning interrupts the user, so/i);
 });
 
 

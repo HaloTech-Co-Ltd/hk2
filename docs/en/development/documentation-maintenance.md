@@ -101,6 +101,10 @@ verifies:
 
 - `docs/en` and `docs/zh-CN` contain the same relative paths;
 - every page pair links to each other (language switch);
+- every page has exactly one H1, the language switch is in the first block
+  after it, and heading levels do not skip;
+- each page pair has the same ordered heading-level sequence, table count and
+  column/row signatures, and fenced-code language sequence;
 - local Markdown links and images in `README.md`, `README_zh.md`, and
   every file under `docs/` resolve to real files;
 - every fenced code block (backtick or tilde fences, any length ≥ 3)
@@ -109,6 +113,10 @@ verifies:
   unfinished-work markers anywhere in docs (raw text, including code
   examples), the root READMEs link to each other, to their language's docs
   index, and `docs/README.md` links both language indexes.
+
+The checker enforces path, link, fence, and structural parity. It cannot prove
+that translated prose makes the same factual claims; semantic parity remains a
+review responsibility.
 
 All problems are reported before a non-zero exit — fix everything it lists.
 

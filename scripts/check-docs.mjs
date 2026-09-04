@@ -7,7 +7,8 @@
  * Checks:
  *   1. Bilingual structure — the docs/en and docs/zh-CN trees must contain
  *      exactly the same set of relative .md paths; every missing file is
- *      reported with the language it lacks.
+ *      reported with the language it lacks; each page pair must also have
+ *      matching heading-level, table-shape, and fence-language sequences.
  *   2. Language-switch links — every English page must contain a Markdown
  *      link that resolves to its Chinese counterpart, and vice versa (the
  *      link target is resolved, not just the label text).
@@ -21,6 +22,9 @@
  *      no fence is left unclosed; README.md ↔ README_zh.md cross-link;
  *      README.md → docs/en/README.md; README_zh.md → docs/zh-CN/README.md;
  *      docs/README.md links both language indexes.
+ *
+ * The structural parity checks compare document shape, not translated meaning:
+ * they cannot prove that the two languages make the same factual claims.
  *
  * All problems are collected and reported; the process exits non-zero if
  * any check failed.
@@ -68,6 +72,7 @@ export function scanFences(raw) {
   const lines = raw.split('\n');
   const out = [];
   const issues = [];
+  const fences = [];
   let fence = null; // { char, len, line }
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -77,6 +82,7 @@ export function scanFences(raw) {
       const info = m[2].trim();
       if (!fence) {
         fence = { char: chars[0], len: chars.length, line: i + 1 };
+        fences.push({ language: info ? info.split(/\s+/)[0] : '' });
         if (!info) issues.push({ line: i + 1, kind: 'no-language' });
       } else if (chars[0] === fence.char && chars.length >= fence.len && !info) {
         fence = null; // proper close
@@ -87,7 +93,72 @@ export function scanFences(raw) {
     out.push(fence ? '' : line); // blank content while inside a fence
   }
   if (fence) issues.push({ line: fence.line, kind: 'unclosed' });
-  return { stripped: out.join('\n'), issues };
+  return { stripped: out.join('\n'), issues, fences };
+}
+
+function stripInlineCode(text) {
+  return text.replace(/`+[^`\n]*`+/g, ' ');
+}
+
+function splitTableCells(line) {
+  let text = stripInlineCode(line).trim();
+  if (text.startsWith('|')) text = text.slice(1);
+  if (text.endsWith('|') && !text.endsWith('\\|')) text = text.slice(0, -1);
+  const cells = [];
+  let cell = '';
+  let escaped = false;
+  for (const ch of text) {
+    if (ch === '|' && !escaped) {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += ch;
+    }
+    escaped = ch === '\\' && !escaped;
+    if (ch !== '\\') escaped = false;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+function isTableSeparator(line) {
+  if (!line || !line.includes('|')) return false;
+  const cells = splitTableCells(line);
+  return cells.length >= 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+/** Extract shape-only signals used for bilingual structural parity. */
+export function extractStructuralSignature(raw) {
+  const scanned = scanFences(raw);
+  const lines = scanned.stripped.split('\n');
+  const headingLevels = [];
+  const headingRe = /^(#{1,6})\s+(.*)$/;
+  for (const line of lines) {
+    const match = line.match(headingRe);
+    if (match) headingLevels.push(match[1].length);
+  }
+
+  const tables = [];
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (!lines[i].includes('|') || !isTableSeparator(lines[i + 1])) continue;
+    const columns = splitTableCells(lines[i]).length;
+    let rows = 0;
+    for (let j = i + 2; j < lines.length; j++) {
+      const line = lines[j].trim();
+      if (!line || !line.includes('|')) break;
+      const cells = splitTableCells(line);
+      if (cells.length !== columns) break;
+      rows++;
+    }
+    tables.push({ columns, rows });
+    i++;
+  }
+
+  return {
+    headingLevels,
+    tables,
+    fenceLanguages: scanned.fences.map(f => f.language),
+  };
 }
 
 /**
@@ -193,6 +264,29 @@ for (const rel of enFiles) {
   const zhLinks = extractLocalLinks(zhText).map(t => safeResolve(zhAbs, t)).filter(Boolean);
   if (!enLinks.includes(zhAbs)) problem(enAbs, `no language-switch link to zh-CN counterpart (${rel})`);
   if (!zhLinks.includes(enAbs)) problem(zhAbs, `no language-switch link to en counterpart (${rel})`);
+}
+
+/* ------------------------------------------------------------------ */
+/* 2b. Pair structural parity                                          */
+/* ------------------------------------------------------------------ */
+for (const rel of enFiles) {
+  if (!zhSet.has(rel)) continue;
+  const enAbs = path.join(EN, rel);
+  const zhAbs = path.join(ZH, rel);
+  const enRaw = rawContents.get(enAbs);
+  const zhRaw = rawContents.get(zhAbs);
+  if (enRaw === undefined || zhRaw === undefined) continue;
+  const enShape = extractStructuralSignature(enRaw);
+  const zhShape = extractStructuralSignature(zhRaw);
+  if (JSON.stringify(enShape.headingLevels) !== JSON.stringify(zhShape.headingLevels)) {
+    problem(enAbs, `heading-level sequence differs from zh-CN counterpart\nen: ${JSON.stringify(enShape.headingLevels)}\nzh: ${JSON.stringify(zhShape.headingLevels)}`);
+  }
+  if (JSON.stringify(enShape.tables) !== JSON.stringify(zhShape.tables)) {
+    problem(enAbs, `table structural signature differs from zh-CN counterpart\nen: ${JSON.stringify(enShape.tables)}\nzh: ${JSON.stringify(zhShape.tables)}`);
+  }
+  if (JSON.stringify(enShape.fenceLanguages) !== JSON.stringify(zhShape.fenceLanguages)) {
+    problem(enAbs, `fenced-code language sequence differs from zh-CN counterpart\nen: ${JSON.stringify(enShape.fenceLanguages)}\nzh: ${JSON.stringify(zhShape.fenceLanguages)}`);
+  }
 }
 
 /* ------------------------------------------------------------------ */

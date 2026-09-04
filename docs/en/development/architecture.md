@@ -188,11 +188,12 @@ flowchart TB
    `mcp.js`), repeat; plan confirmations and `plan_step` surface through
    UI callbacks; mid-task input is injected at round boundaries.
 6. Final answer → usage stats → transcript append.
-7. End of turn (`turn_support.js`) uses independent gates: a qualifying bash
-   source-search gate controls the update offer/automatic update block; handled
-   and cooldown gates control knowledge capture; detected conflicts control
-   Holy-over-Eden sync; and normal return + configuration + plan-at-start/confirmed
-   state independently control optional code review.
+7. End of turn (`turn_support.js`) uses a common outer gate and separate flows:
+   a qualifying bash source-search gate controls both the update offer/automatic
+   update block and fallback knowledge extraction; handled and cooldown checks
+   are nested learn gates. Detected conflicts independently control
+   Holy-over-Eden sync, while normal return + configuration + plan-at-start/
+   confirmed state independently control optional code review.
 
 ## Data flow: `/kb init`
 

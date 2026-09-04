@@ -221,3 +221,53 @@ test('runTurn: retry rollback preserves text from an earlier tool round', async 
     delete process.env.HK2_ENABLE_REQUEST_ASSESS;
   }
 });
+
+test('runTurn: consecutive retries drop every failed attempt before Code Review', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '0';
+  process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+  process.env.HK2_ENABLE_CODEREVIEW = '1';
+  try {
+    const session = mkSession(null);
+    session.planProgress = {
+      summary: 'continue plan',
+      steps: [{ goal: 'finish the task', strategies: [{ name: 'complete' }], status: 'in_progress' }],
+      current: 0,
+    };
+    const reviewCalls = [];
+    let calls = 0;
+    session.llm = {
+      async *stream(messages) {
+        calls++;
+        if (calls === 1) {
+          yield { type: 'delta', text: 'BROKEN-1' };
+          yield { type: 'retry', attempt: 1 };
+          yield { type: 'delta', text: 'BROKEN-2' };
+          yield { type: 'retry', attempt: 2 };
+          yield { type: 'delta', text: 'FINAL' };
+        } else {
+          reviewCalls.push(messages);
+          yield { type: 'delta', text: '{"ok":true,"issues":[]}' };
+        }
+      },
+    };
+    const assistantEvents = [];
+    session.transcript = {
+      logUser: async () => {},
+      logSystemPrompt: async () => {},
+      logAssistant: async (text) => assistantEvents.push(text),
+      logMeta: async () => {},
+      logTurn: async () => {},
+    };
+    await runTurn('review retry text', session, buildCtx(session), fakeUi(), { continuation: true });
+    assert.equal(session.lastAnswer, 'FINAL');
+    assert.deepEqual(assistantEvents, ['FINAL']);
+    assert.equal(reviewCalls.length, 1);
+    const reviewText = JSON.stringify(reviewCalls[0]);
+    assert.match(reviewText, /FINAL/);
+    assert.doesNotMatch(reviewText, /BROKEN-1|BROKEN-2/);
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+    delete process.env.HK2_ENABLE_CODEREVIEW;
+  }
+});

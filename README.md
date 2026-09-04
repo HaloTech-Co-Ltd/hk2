@@ -44,8 +44,9 @@ it.
   non-negotiable laws; once you add items they are rendered into every
   system prompt at top priority (model-level compliance — the storage-level
   protections on the entry itself are hard limits).
-- **Plans and reviews** — user-confirmed plans with a live progress panel,
-  optional plan review and code review of the completed work.
+- **Plans and reviews** — interactive sessions can use user-confirmed plans
+  with a live progress panel; non-interactive runs auto-accept recommendations,
+  with optional plan review and code review of the completed work.
 - **Two front-ends, one agent** — a classic line REPL and a Claude
   Code-style TUI (`hk2 --tui`) sharing sessions, commands, and pipeline.
 

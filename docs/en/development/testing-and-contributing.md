@@ -69,8 +69,10 @@ node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 Before considering a change done:
 
 1. `npm test` passes.
-2. `npm run docs:check` passes (bilingual docs stay in sync, links stay
-   valid).
+2. `npm run docs:check` passes (paths, cross-language links, local links,
+   one-H1/switch placement, heading-level skips, pair heading-level sequences,
+   table shapes, fence-language sequences, and quality gates are checked;
+   semantic translation parity still needs review).
 3. `node bin/hk2 --help` still prints correct usage if you touched CLI or
    help surfaces.
 4. New/changed behavior has a test that fails without the change.

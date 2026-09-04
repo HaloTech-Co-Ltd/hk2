@@ -20,7 +20,7 @@ test('kb_search_knowledge gives each token one equal-weight point across the hay
   assert.equal(result.count, 2);
 });
 
-test('kb_search_knowledge defaults to five and clamps top_k to 1-20', async () => {
+test('kb_search_knowledge uses falsy default five and bounds other numeric top_k values', async () => {
   const entries = Array.from({ length: 25 }, (_, i) => entry(`x-${i}`, `common ${i}`, '', []));
   const tool = buildTools({ allKnowledge: () => entries }, {}).find(t => t.name === 'kb_search_knowledge');
   assert.equal((await tool.execute({ query: 'common' })).results.length, 5);
@@ -62,4 +62,13 @@ test('knowledge search counts duplicate token occurrences and reports pre-limit 
   assert.equal(r.count, 2);
   assert.equal(r.results.length, 1);
   assert.equal(r.results[0].score, 2);
+});
+
+test('kb_search_knowledge currently returns superseded Eden entries', async () => {
+  const retired = entry('old-entry', 'retired alpha', 'old', [], 'eden');
+  retired.supersededBy = 'holy:new-entry';
+  const tool = buildTools({ allKnowledge: () => [retired] }, {}).find(t => t.name === 'kb_search_knowledge');
+  const result = await tool.execute({ query: 'retired' });
+  assert.equal(result.results[0].id, 'old-entry');
+  assert.equal(result.results[0].space, 'eden');
 });

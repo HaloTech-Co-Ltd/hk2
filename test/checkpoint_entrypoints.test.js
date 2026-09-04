@@ -25,6 +25,28 @@ test('Checkpoint no-checkpoint mode suppresses mark and save', async () => {
   assert.equal(writes, 0);
 });
 
+test('Checkpoint positive interval saves on each Nth mark and resets its counter', async () => {
+  const cp = new Checkpoint('test', { interval: 3 });
+  let writes = 0;
+  cp._write = async () => { writes++; };
+  for (let i = 1; i <= 2; i++) {
+    await cp.markDone(`file-${i}`, String(i));
+    await cp.saveIfDue();
+  }
+  assert.equal(writes, 0);
+  await cp.markDone('file-3', '3');
+  await cp.saveIfDue();
+  assert.equal(writes, 1);
+  await cp.markDone('file-4', '4');
+  await cp.saveIfDue();
+  assert.equal(writes, 1);
+  await cp.markDone('file-5', '5');
+  await cp.saveIfDue();
+  await cp.markDone('file-6', '6');
+  await cp.saveIfDue();
+  assert.equal(writes, 2);
+});
+
 test('interactive /kb init checkpoint parsing preserves flag and environment boundaries', () => {
   const envCases = [
     [undefined, 100], ['', 100], ['0', 100], ['abc', 100], ['50', 50], ['-2', -2],
@@ -37,6 +59,7 @@ test('interactive /kb init checkpoint parsing preserves flag and environment bou
   assert.ok(Number.isNaN(resolveInitCheckpointConfig(['--checkpoint-interval=abc'], {}).checkpointInterval));
   assert.ok(Number.isNaN(resolveInitCheckpointConfig(['--checkpoint-interval', 'abc'], {}).checkpointInterval));
   assert.ok(Number.isNaN(resolveInitCheckpointConfig(['--checkpoint-interval'], {}).checkpointInterval));
+  assert.equal(resolveInitCheckpointConfig(['--checkpoint-interval='], {}).checkpointInterval, 100);
   assert.equal(resolveInitCheckpointConfig(['--checkpoint-interval='], { HK2_KB_CHECKPOINT_INTERVAL: '50' }).checkpointInterval, 50);
   assert.equal(resolveInitCheckpointConfig(['--no-checkpoint'], {}).enabled, false);
 });

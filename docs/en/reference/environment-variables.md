@@ -48,6 +48,15 @@ its own parsing rule.
 | `HK2_LLMAPI_NUMOFRETRIES` | Max consecutive retries on transient LLM failures (network errors, HTTP 408/429/5xx, request timeouts); exponential backoff 1s → 30s cap; `{type:'retry'}` events between attempts. Deterministic 4xx and user aborts are NOT retried. Explicit `0` = one attempt | `10` | |
 | `HK2_LLM_RETRY_UNKNOWN_POST` | UNKNOWN-outcome failures (mid-flight transport errors after the request was sent — reset, read/write-phase timeout — and HTTP 500/502/503/504, which a proxy can return after upstream already ran) are retried by default; set `0` to opt out (duplicate-request/billing concerns — providers expose no idempotency key). Connection-establishment failures (refused / DNS / connect-timeout, shown as `(CODE)` or `(CODE/connect)`) and HTTP 408/429 are outcome-safe and ALWAYS retried. Bounded by `HK2_LLMAPI_NUMOFRETRIES` | `1` | |
 
+### Retry-visible text boundary
+
+Each retry restarts only the current LLM call. The failed attempt's body deltas,
+reasoning buffer, and not-yet-executed tool calls are discarded, while text from
+earlier successful tool rounds is retained. Transcript, `session.lastAnswer`,
+and Code Review input use the cleaned assistant text. Usage accounting may
+retain attempt-specific peaks; it is not specified as final-attempt-only or
+billed-total accounting.
+
 ## Request pipeline (assessment, rewrite, fast lane)
 
 | Variable | Purpose | Default | Notes |
@@ -57,7 +66,7 @@ its own parsing rule.
 | `HK2_ASSESS_MIN_CONFIDENCE` | Confidence threshold (0.0–1.0) below which an "unclear" verdict is treated as clear | `0.8` | A spurious menu costs more than an inline follow-up |
 | `HK2_ASSESS_REASONING` | `1`: run the clarity assessment with deep reasoning (better pragmatic reference resolution on strong models; adds latency) | `0` | |
 | `HK2_ENABLE_FOLLOWUP_FASTLANE` | `1` (and query rewrite on): certainly-conversational follow-ups (continuation cues, bare confirmations, a bare number picking the just-offered menu, plan-advance directives with an active plan) skip the entire pre-agent pipeline straight to the agent loop | `1` | Set `0` to restore the full pipeline for A/B comparison |
-| `HK2_ENABLE_PHASEMODEL_FALLBACK` | Unreachable phase model (`rewrite-query`, `request-assess`): `1` warn + re-run the phase on the session model; `0` warn + skip. Review phases always skip (never substitute the reviewer). Fallback/skip recorded in the transcript | `1` | |
+| `HK2_ENABLE_PHASEMODEL_FALLBACK` | Call failure after a `rewrite-query` or `request-assess` phase model was successfully resolved: `1` warns and re-runs the phase on the session model; `0` warns and skips. Review phases always skip (never substitute the reviewer). A stale ref that resolves to `null` is silently treated as no override; a resolution exception warns and uses the session model | `1` | |
 
 ## Plan review and code review
 
@@ -78,25 +87,25 @@ its own parsing rule.
 | `HK2_KB_LEARN_COOLDOWN_MIN` | Positive minutes: skip the end-of-turn `[kb learn]` offer while a knowledge capture for this session's task was handled within the window (agent save, answered proposal, or model skip). Anchor restored across `--resume`. An agent `kb_save_knowledge` save this turn always skips the offer | `0` (off) | |
 | `HK2_KB_LEARN_VALIDATE` | `1`: validate learned entries against existing KB before writing (pre-filter + one semantic check) — duplicates skipped, related entries merged, conflicts resolved (Holy defers to the user). Best-effort | `1` | |
 
-## Checkpoint parsing by entry point
+### Checkpoint parsing by entry point
 
-`HK2_KB_CHECKPOINT_INTERVAL` does not have one uniform wrapper. Interactive
-`/kb init` evaluates `parseInt(value, 10) || 100`: unset, empty, `0`, and
-non-numeric values become 100; positive integers are used; negative integers
-remain negative and therefore make `Checkpoint.saveIfDue()` save on nearly
-every file. An explicit `--checkpoint-interval=<value>` goes directly through
-`parseInt()`: `0` and negative values save nearly every file, while a
-non-numeric or missing value becomes `NaN` and has the same frequent-save
-cadence. An explicitly empty `--checkpoint-interval=` is falsey and falls back
-to the environment/default wrapper rather than becoming `NaN`. Use
-`/kb init --no-checkpoint` to disable checkpointing.
+The checkpoint interval does not have one uniform wrapper. The following table
+shows the effective value or cadence for each entry path:
 
-`/kb update`, end-of-turn automatic updates, legacy `--mode=build-kb` and
-`--mode=update-kb`, and other direct `buildIndex()` callers use the indexer's
-`opts.checkpointInterval ?? parseInt(process.env.HK2_KB_CHECKPOINT_INTERVAL ||
-'100', 10)` path. In those paths environment `0`, negative, or non-numeric
-values pass through and cause near-per-file saves; there is no equivalent
-environment value that disables checkpointing for these direct callers.
+| Entry path | Input | Effective interval |
+|---|---|---|
+| interactive `/kb init` env | unset / empty / `0` / invalid | `100` |
+| interactive `/kb init` env | positive `N` | `N` |
+| interactive `/kb init` env | negative | negative; near-per-file saves |
+| explicit flag | `--checkpoint-interval=0` | `0`; near-per-file saves |
+| explicit flag | invalid or bare flag | `NaN`; near-per-file saves |
+| explicit flag | `--checkpoint-interval=` | falls back to env/default |
+| interactive disable | `--no-checkpoint` | disabled |
+| direct `buildIndex()` env | `0`, negative, or invalid | passed through; near-per-file saves |
+
+Interactive `/kb init` wraps `parseInt(value, 10)` with `|| 100`; direct
+indexer callers do not. There is no equivalent environment value that disables
+checkpointing for direct callers. Use `/kb init --no-checkpoint` to disable it.
 
 ## Compact
 
