@@ -160,3 +160,9 @@ parser-owned 条目；删除或排除文档时可以删除对应条目。不要�
 - [知识图谱与检索](knowledge-graph-and-retrieval.md)——Index 空间包含什么、如何查询
 - [知识库工作流](../guides/knowledge-workflows.md)——构建与维护知识库的命令
 - [配置](../reference/configuration.md)——知识库的磁盘布局
+
+### status 自愈写入
+
+`/kb status` 通常只读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，
+它会先创建空的永久条目；这个兼容路径有写盘副作用。首次加载 `KBRuntime` 也有
+同样的缺失条目自愈行为。

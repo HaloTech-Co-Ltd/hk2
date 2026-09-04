@@ -287,3 +287,18 @@ function populateProgress(session, plan, choices) {
     current: 0,
   };
 }
+
+test('plan_step with an active plan but no callback reports that state is unavailable', async () => {
+  const tools = buildTools(null, { allowWrite: false });
+  const res = await executeToolCall(tools, { name: 'plan_step', arguments: {} });
+  assert.equal(res.ok, true);
+  assert.match(res.result.message, /No interactive progress state is available/);
+  assert.doesNotMatch(res.result.message, /Marked .* as done|Advanced plan progress/);
+});
+
+test('plan_step callback with no active plan reports ignored instead of advancing', async () => {
+  const tools = buildTools(null, { allowWrite: false, planStep: async () => null });
+  const res = await executeToolCall(tools, { name: 'plan_step', arguments: { step: 999 } });
+  assert.equal(res.ok, true);
+  assert.match(res.result.message, /No active plan.*ignored/);
+});

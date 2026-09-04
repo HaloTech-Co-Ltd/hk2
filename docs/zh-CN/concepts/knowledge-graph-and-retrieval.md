@@ -51,9 +51,10 @@ flowchart LR
 
 ## 符号模型
 
-Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路径产出相同
-结构；AST 路径额外填充 `qualName`、`parentSymbolId`、`superClass`、
-`implements`、`imports` 与 `docString`。下游一切——BM25、图谱、大纲、调用
+Symbol 记录是知识库的通用货币。每个源代码 parser 路径都返回统一的 `Symbol[]` 形状。
+Tree-sitter 符号只有在 grammar 与对应 extractor 提供时，才会填充
+`qualName`、`parentSymbolId`、`superClass`、`implements`、`imports` 与 `docString` 等
+可选丰富字段。下游一切——BM25、图谱、大纲、调用
 链——都消费 Symbol，因此缺失语法对*有*正则回退的语言只是降低精度；对
 没有回退解析器的语言（尤其是 C#）则完全不产出符号。
 
@@ -107,8 +108,12 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 行号、分数与签名；它不读取 `HK2_ENABLE_QUERYREWRITE`，不改写查询，也不附加
 ±15 行切片。Agent `kb_search` 的工具内改写独立于轮次开始的
 `HK2_ENABLE_QUERYREWRITE`；`with_slice=false` 可关闭源码切片。知识条目由
-`kb_search_knowledge` 单独检索（在 Holy + Eden 的标题、关键词与简介正文上做
-关键词重叠排序；标题和关键词命中优先，简介命中用于浮现正文提到该事实的条目）。
+`kb_search_knowledge` 使用独立的平铺 token 重叠算法：扫描 `rt.allKnowledge()`，将 id、
+标题、简介和关键词拼成一个 haystack。每个空白分隔 token 最多贡献 1 个同等分值，
+没有标题/关键词额外权重；默认返回 5 条，钳制到 1–20，且不会过滤带
+`supersededBy` 的 Eden 条目。轮次开始的 `matchPrinciples()` 则不同：Holy 与 active Eden
+分开匹配，topic/标题/关键词等 head 字段是主信号，简介最多取 2000 字符并按 0.3
+加权，只返回前 2 条；`buildRequestGraph()` 会排除已退休 Eden 并抑制 Holy 冲突。
 
 ## 按请求注入上下文
 

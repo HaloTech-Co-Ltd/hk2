@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 test('/kb status displays the effective HK2_KB_DIR path', () => {
@@ -25,6 +25,7 @@ test('/kb status displays the effective HK2_KB_DIR path', () => {
       print: (line) => output.push(String(line)),
     });
     console.log(output.join('\\n'));
+    console.log('selfheal=' + await fs.readFile(path.join(custom, id, 'holy', 'hk2-supreme-code.json'), 'utf8'));
     await fs.rm(home, { recursive: true, force: true });
   `;
   const output = execFileSync(process.execPath, ['--input-type=module', '--eval', script], {
@@ -34,4 +35,55 @@ test('/kb status displays the effective HK2_KB_DIR path', () => {
   });
   assert.match(output, /kb dir:\s+.*custom-kb-root[\\/]status-project[\\/]/);
   assert.ok(!output.includes('~/.hk2/kb/status-project'));
+  assert.match(output, /selfheal=.*hk2-supreme-code/);
+});
+
+test('/kb status does not rewrite an existing Supreme Code entry', () => {
+  const repo = path.resolve(process.cwd());
+  const script = `
+    import fs from 'node:fs/promises';
+    import os from 'node:os';
+    import path from 'node:path';
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-status-existing-'));
+    const custom = path.join(home, 'kb-root');
+    process.env.HK2_HOME = home; process.env.HK2_KB_DIR = custom;
+    const id = 'existing-project';
+    const dir = path.join(custom, id);
+    await fs.mkdir(path.join(dir, 'holy'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ sourcePath: '/tmp/example-project' }));
+    const file = path.join(dir, 'holy', 'hk2-supreme-code.json');
+    const before = JSON.stringify({ id: 'hk2-supreme-code', title: 'Supreme Code', intro: '', codes: ['rule'] });
+    await fs.writeFile(file, before);
+    const { cmdKb } = await import(${JSON.stringify(path.join(repo, 'src/slash/kb.js'))});
+    await cmdKb(['status'], { getCurrentProject: async () => ({ id, name: id }), print: () => {} });
+    console.log(await fs.readFile(file, 'utf8'));
+    await fs.rm(home, { recursive: true, force: true });
+  `;
+  const output = execFileSync(process.execPath, ['--input-type=module', '--eval', script], { cwd: repo, encoding: 'utf8', env: { ...process.env, HK2_HOME: '', HK2_KB_DIR: '' } });
+  assert.match(output, /\"rule\"/);
+});
+
+test('legacy one-shot build-kb reports the effective custom KB root', () => {
+  const repo = path.resolve(process.cwd());
+  const script = `
+    import fs from 'node:fs/promises';
+    import os from 'node:os';
+    import path from 'node:path';
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-build-path-'));
+    const source = path.join(home, 'project');
+    const custom = path.join(home, 'custom-kb');
+    await fs.mkdir(source, { recursive: true });
+    await fs.writeFile(path.join(source, 'index.js'), 'export function demo() { return 1; }\\n');
+    process.env.HK2_HOME = home; process.env.HK2_KB_DIR = custom; process.env.HK2_KB_NAME = 'one-shot';
+    const { buildKb } = await import(${JSON.stringify(path.join(repo, 'src/commands/build_kb.js'))});
+    await buildKb({ source });
+    await fs.rm(home, { recursive: true, force: true });
+  `;
+  const run = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+    cwd: repo, encoding: 'utf8', env: { ...process.env, HK2_HOME: '', HK2_KB_DIR: '', HK2_KB_NAME: '' },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const output = `${run.stdout}\n${run.stderr}`;
+  assert.match(output, /kb dir: .*custom-kb[\\/]one-shot[\\/]/);
+  assert.equal(output.includes('~/.hk2/kb/one-shot'), false);
 });

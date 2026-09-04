@@ -66,7 +66,7 @@ hk2 专有环境变量的完整清单，通过全代码范围 `process.env` 搜�
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` 检查点间隔。`parseInt(value \|\| '100')` 直接传给 `Checkpoint.interval`：正整数 N 每 N 次 mark 保存；0 与负数几乎每个文件保存一次；非法值为 `NaN`，比较结果也会导致频繁保存。禁用请用 `--no-checkpoint`，不要依赖非法值 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
+| `HK2_KB_CHECKPOINT_INTERVAL` | 检查点间隔输入。交互式 `/kb init` 会对 `parseInt(value, 10)` 套用 `|| 100`；直接 indexer 调用则把解析值原样传入，因此不同入口的 cadence 不同。详见下方详细表格。 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | 知识库解析池并行度。只有严格的正整数字符串（`1`、`4`、`+8`）生效；未设置、空串、`0`、负数、非法值、小数（`1.5`）和科学计数法（`1e3`）走自动：`availableParallelism()`，再 `cpus().length`，最后 4 | `0` | |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒）。按 `parseInt(value) \|\| 300000` 解析：`0` 与非法值都会回到默认值（与 LLM 超时不同，这**不是** "0 = 禁用" 变量） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`：当某轮智能体回退到 bash 搜索源文件时，轮末静默执行增量 `/kb update`。该更新重建派生索引，**并同步解析器管理的 `doc:<relpath>` Eden 条目**（见 `/kb update`） | `0` | 否则提示 y/N |

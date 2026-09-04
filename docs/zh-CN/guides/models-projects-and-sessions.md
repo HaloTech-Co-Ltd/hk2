@@ -181,6 +181,13 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 同样的注册也可在 shell 中完成：
 `hk2 --mode=project-init --name=myapp --source=/path/to/repo`。
 
+### 共享 current 指针与会话 pin
+
+`projects.json.current` 是共享 registry 的默认项目指针；`/project list` 用 `*` 标记它，
+`/project set current` 修改它并切换当前交互会话。`hk2 --project=<name>` 与
+`--project-id=<id>` 只固定当前会话，不修改共享指针。因此 session pin 可以不同于
+`current`，多个进程可以同时使用不同 pin。
+
 ## 会话
 
 会话以 JSONL 记录存储在

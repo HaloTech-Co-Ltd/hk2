@@ -36,6 +36,17 @@ editing sessions run `/kb update` (or let `HK2_ENABLE_AUTOUPDATEKB=1` do it
 when the agent fell back to bash searches); after branch switches or large
 refactors run `/kb init` again — it is already a full rebuild.
 
+### Checkpoint entry points
+
+Interactive `/kb init` turns an unset, empty, `0`, or non-numeric environment
+interval into 100; a positive integer is honored and a negative integer is
+passed through, producing near-per-file saves. The explicit flag is parsed
+directly, so `0`, negative, or `NaN` values likewise save almost every file.
+`/kb update` and automatic/legacy direct indexer paths do not receive the
+interactive `|| 100` wrapper: environment `0`, negative, or invalid values
+reach `Checkpoint` unchanged. Only `/kb init --no-checkpoint` is the documented
+disable switch.
+
 ## Query the KB
 
 ```text

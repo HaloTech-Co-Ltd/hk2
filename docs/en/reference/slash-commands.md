@@ -19,7 +19,7 @@ spaces: `--title="SPI Extension Pattern"`.
 |---|---|
 | [`/model`](#model) | Manage `models.json` — providers, models, defaults, phase models, MCP servers |
 | [`/project`](#project) | Manage `projects.json` — register, list, switch, rename, drop |
-| [`/kb`](#kb) | KB lifecycle and queries for the current project |
+| [`/kb`](#kb) | KB lifecycle and queries for the current session's project |
 | [`/kb knowledge`](#kb-knowledge) | Manage knowledge entries (Holy + Eden) |
 | [`/kb code`](#kb-code) | Manage the permanent Supreme Code |
 | [`/session`](#session) | Session management |
@@ -116,13 +116,14 @@ sets — see
 ## `/kb`
 
 Usage: `/kb <subcommand> [args]` — lifecycle and queries for the current
-project's KB. All commands operate on the current project.
+project's KB. Commands use the current session's project: a `--project`/`--project-id`
+pin is session-local; without a pin, the shared `projects.json.current` pointer is used.
 
 | Subcommand | Effect |
 |---|---|
-| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation (`--full` is accepted but redundant; use `/kb update` for incremental), checkpointed and resumable; LLM summary entries when a model is configured and `--skip-summary` is not passed |
+| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation; checkpointed and resumable; summary generation is attempted only when a model is configured and `--skip-summary` is not passed, with each non-empty success written independently |
 | `update` | Incremental update (sha256 diff) of changed files — rebuilds the derived symbol indexes/graphs and **synchronizes parser-owned `doc:<relpath>` Eden entries** for indexed documents (new/changed docs written or replaced, deleted/excluded docs' parser-owned entries removed, Eden knowledge index possibly rebuilt); legacy KBs are backed up to `backup/pre-upgrade-<ts>/` then migrated (a parser-version change triggers a full re-index) |
-| `status` | Per-space statistics |
+| `status` | Per-space statistics; normally read-only, but a legacy KB missing the permanent Supreme Code entry is self-healed by writing an empty entry first |
 | `search <query> [--top-k=N]` | Direct BM25 + reranking symbol search (default top-k 20; no LLM rewrite or source slices) |
 | `symbol <name>` | Look up symbols by exact name |
 | `neighbors <symbol_id>` | Call-graph neighbors (symbol id looks like `<fileId>:<line>`) |
@@ -301,3 +302,7 @@ Exit the REPL. Same as Ctrl+D. `/exit` is an alias of `/quit`.
 - [REPL and TUI](../guides/repl-and-tui.md) — where these commands run, with completion
 - [Agent tools](agent-tools.md) — what the agent (not you) can call
 - [Environment variables](environment-variables.md) — flags gating related behaviors
+
+### Status self-healing
+
+`/kb status` normally reads and displays statistics. For an older KB missing the permanent `hk2-supreme-code` entry, it first creates an empty permanent entry, so this special case has a write-to-disk side effect. Initial `KBRuntime` loading has the same missing-entry self-heal.

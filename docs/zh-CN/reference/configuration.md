@@ -191,10 +191,12 @@ $HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
 
 - **中断任务状态**——`~/.hk2/sessions/<projectId>/taskstate.json` 持久化
   被中断的任务（原始请求、摘要、计划进度），`--resume` 时还原。
-- **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。每轮追加
-  用户消息、工具调用、智能体回复与元数据（`assess`、`rewrite`、`graph`、
-  `codeReview`、`learned_knowledge`、用量统计）。`--resume` 重放记录以还原
-  完整上下文。
+- **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。正常完成的回合
+  记录用户消息、工具调用、完整 assistant 回复与元数据（`assess`、`rewrite`、
+  `graph`、`codeReview`、`learned_knowledge`、用量统计）。中断时，已流式显示的
+  partial assistant 文本留在屏幕上，不作为完整 assistant 回合写入；dangling tool
+  call 会清理，中断任务状态单独写入 `taskstate.json`。`--resume` 重放 transcript
+  并恢复 task state。
 - **会话事实**——`~/.hk2/sessions/<projectId>/<sessionId>.facts.json` 存放
   经 `/remember` / `remember` 工具记录的、免受压缩影响的事实（每会话上限
   100 条）。`/remember --project` 还会追加到项目级 Eden 条目 `env-facts`

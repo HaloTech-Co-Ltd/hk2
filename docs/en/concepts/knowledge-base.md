@@ -185,3 +185,10 @@ Both default to `0` (off). See
 - [Knowledge graph and retrieval](knowledge-graph-and-retrieval.md) — what Index Space contains and how it is queried
 - [Knowledge workflows](../guides/knowledge-workflows.md) — the commands that build and curate a KB
 - [Configuration](../reference/configuration.md) — the on-disk KB layout
+
+### Status self-healing
+
+`/kb status` normally reads and reports statistics. For a legacy KB missing the
+permanent `hk2-supreme-code` entry, it first creates an empty permanent entry;
+that exceptional compatibility path writes to disk. Initial `KBRuntime` loading
+has the same missing-entry self-heal behavior.

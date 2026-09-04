@@ -229,3 +229,29 @@ test('concept docs keep /kb search separate from Agent kb_search', () => {
     assert.doesNotMatch(table, /\/kb search.*rewrite.*default/i);
   }
 });
+
+test('plan schema requires summary and steps for model-visible calls', () => {
+  assert.deepEqual(byName('plan').parameters.required, ['summary', 'steps']);
+});
+
+test('grep uses regex by default and literal mode only when requested', async () => {
+  const grep = byName('grep');
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { resetPermissionService } = await import('../lib/config/setting.js');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'hk2-tool-desc-'));
+  await writeFile(join(dir, 'x.txt'), 'a.b\naXb\n');
+  const previousRoot = process.env.HK2_PROJECT_SOURCE;
+  process.env.HK2_PROJECT_SOURCE = dir;
+  resetPermissionService();
+  const regex = await grep.execute({ pattern: 'a.b', path: join(dir, 'x.txt') });
+  const literal = await grep.execute({ pattern: 'a.b', literal: true, path: join(dir, 'x.txt') });
+  assert.equal(regex.count, 2);
+  assert.equal(literal.count, 1);
+  assert.doesNotMatch(allText(grep), /literal text only/i);
+  if (previousRoot === undefined) delete process.env.HK2_PROJECT_SOURCE;
+  else process.env.HK2_PROJECT_SOURCE = previousRoot;
+  resetPermissionService();
+  await rm(dir, { recursive: true, force: true });
+});

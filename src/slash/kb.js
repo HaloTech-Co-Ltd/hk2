@@ -39,7 +39,7 @@
  */
 
 /**
- * /kb command family — lifecycle and queries for the current project's KB.
+ * /kb command family — lifecycle and queries for the current session project's KB.
  *
  * Three-space model (update behavior is per write path):
  *   Holy Space   — stable knowledge. Agent-proposed writes confirm; explicit
@@ -54,7 +54,7 @@
  *                  is gated on HK2_ENABLE_AUTOUPDATEKB.
  *
  * Usage:
- *   /kb init [--full]                  Build KB for the current project (full re-index)
+ *   /kb init [--full]                  Build KB for the current session project (full re-index)
  *   /kb update                         Incremental re-index + parser-owned doc: Eden sync
  *   /kb status                         Show KB statistics (counts per space)
  *   /kb search <query> [--top-k=N]     Search symbols in the KB (Index Space)
@@ -66,7 +66,8 @@
  *   /kb transform <id> <from> <to>     Move entry between Holy and Eden (requires confirmation)
  *   /kb drop                           Delete the KB (requires confirmation)
  *
- * All commands operate on the current project (see /project set current).
+ * Commands use the current session's project. A --project/--project-id pin
+ * is session-local; without a pin, the shared projects.json current pointer is used.
  */
 import path from 'node:path';
 import { getCurrentProject, markKbBuilt } from '../../lib/config/home.js';
@@ -148,7 +149,7 @@ async function initKb(rest, ctx) {
   if (p.sourceRoot) ctx.print(`           sourceRoot=${p.sourceRoot}`);
   ctx.print(`           kb dir=${kbDir(p.id)}/`);
   ctx.print(`           checkpoint: ${checkpoint ? `every ${checkpointInterval} files, resume=${resume}` : 'disabled'}`);
-  ctx.print(`           summary:    ${skipSummary ? 'skipped' : 'auto-generated (project-overview / architecture-diagram / architecture-decisions)'}`);
+  ctx.print(`           summary:    ${skipSummary ? 'skipped' : 'attempted when an LLM is available; each non-empty successful result is written independently'}`);
 
   await addKbForProject(p);
   const stats = await buildIndex(p.id, {
@@ -3325,7 +3326,7 @@ async function transformKb(rest, ctx) {
 async function dropKb(ctx) {
   const p = await getProjectOrFail(ctx);
   if (!p) return;
-  const confirm = await ctx.confirm(`This will delete KB ~/.hk2/kb/${p.id}/ (irreversible). Continue? (y/N) `);
+  const confirm = await ctx.confirm(`This will delete KB ${kbDir(p.id)}/ (irreversible). Continue? (y/N) `);
   if (!confirm) { ctx.print(`Cancelled.`); return; }
   const { deleteKb } = await import('../../lib/store/kb_store.js');
   await deleteKb(p.id);

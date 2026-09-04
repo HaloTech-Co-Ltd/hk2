@@ -18,7 +18,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 |---|---|
 | [`/model`](#model) | 管理 `models.json`——提供商、模型、默认值、阶段模型、MCP 服务器 |
 | [`/project`](#project) | 管理 `projects.json`——注册、列出、切换、重命名、移除 |
-| [`/kb`](#kb) | 当前项目的知识库生命周期与查询 |
+| [`/kb`](#kb) | 当前会话项目的知识库生命周期与查询 |
 | [`/kb knowledge`](#kb-knowledge) | 管理知识条目（Holy + Eden） |
 | [`/kb code`](#kb-code) | 管理永久的最高准则 |
 | [`/session`](#session) | 会话管理 |
@@ -113,14 +113,14 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 
 ## `/kb`
 
-用法：`/kb <子命令> [参数]`——当前项目知识库的生命周期与查询。所有命令
-作用于当前项目。
+用法：`/kb <子命令> [参数]`——当前会话项目知识库的生命周期与查询。命令使用当前
+会话绑定的项目；无 session pin 时才使用共享 `projects.json.current` 指针。
 
 | 子命令 | 作用 |
 |---|---|
-| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；已配置模型且未传 `--skip-summary` 时生成 LLM 摘要条目 |
+| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；仅在已配置模型且未传 `--skip-summary` 时尝试生成摘要，每个非空成功结果独立写入 |
 | `update` | 增量更新（sha256 差异）——重建派生的符号索引与图谱，并**同步解析器管理的 `doc:<relpath>` Eden 条目**（新增/变化文档写入或覆盖，已删除或被排除文档的 parser-owned 条目被移除，Eden 知识索引可能重建）；旧版知识库先备份到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
-| `status` | 各空间统计 |
+| `status` | 各空间统计；通常只读，但旧 KB 缺少永久 Supreme Code 条目时会先自愈写入空条目 |
 | `search <查询> [--top-k=N]` | 直接 BM25 + 重排序的符号搜索（默认 top-k=20；不做 LLM 改写、不附加源码切片） |
 | `symbol <名称>` | 按精确名称查找符号 |
 | `neighbors <symbol_id>` | 调用图邻居（符号 id 形如 `<fileId>:<line>`） |
@@ -283,3 +283,7 @@ key（解析优先级：精确工具名 > 分组 key > `*` > 内置默认）：`
 - [REPL 与 TUI](../guides/repl-and-tui.md)——命令在哪里运行、如何补全
 - [智能体工具](agent-tools.md)——*智能体*（而非你）可以调用什么
 - [环境变量](environment-variables.md)——控制相关行为的开关
+
+### status 自愈写入
+
+`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，它会先创建空的永久条目，因此这个特殊情况有写盘副作用。首次加载 `KBRuntime` 也有同样的缺失条目自愈。

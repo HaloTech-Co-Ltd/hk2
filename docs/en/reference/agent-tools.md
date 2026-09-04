@@ -56,8 +56,10 @@ Writes: yes.
 
 Precise string replacement in a single file. Accepts
 `{edits:[{oldText,newText}]}` (preferred — multiple disjoint edits in one
-call) or `{old_string,new_string}` (single edit). Every `oldText` must match
-a unique, non-overlapping region. Optional `tag` (shortHash from a prior
+call) or `{old_string,new_string}` (single edit). Multi-edit entries run sequentially
+in array order against evolving in-memory content; each `oldText` must be unique at
+that point, and later entries may match text produced by earlier entries. If a
+later entry fails, the file is not written. Optional `tag` (shortHash from a prior
 `read`/`kb_outline`) rejects the edit when the current file hash differs from
 the supplied KB-index snapshot tag. Writes: yes.
 
@@ -81,7 +83,7 @@ Writes: no.
 
 ### `grep`
 
-Regex content search; matching lines with file:line, truncated at 100
+Textual regex search by default (set `literal=true` for literal matching); matching lines with file:line, truncated at 100
 matches (long lines to 240 chars), covering up to 2000 files per call. The
 internal walker skips `.git` and `node_modules` but does **not** evaluate
 the repository's `.gitignore`. Writes: no.
@@ -118,9 +120,10 @@ writing. Writes: yes (on apply).
 
 **Proposal lifecycle**: proposals live in process memory only — lost on exit or
 crash. The 10-minute TTL is measured from proposal creation, not sliding
-`lastTouched`; `lastTouched` is used for LRU ordering. Each process holds at
-most 16 active proposals, with older entries evicted beyond that limit. A
-successful apply, discard, or read/tag/write failure consumes the proposal. A
+`lastTouched`; `lastTouched` is used for LRU ordering only. `MAX_PROPOSALS` is 16, but
+`stage()` prunes before insertion: immediately after staging a seventeenth
+proposal, the process can temporarily retain 17 until a later prune removes
+the LRU entry. A successful apply, discard, or read/tag/write failure consumes the proposal. A
 permission-denied apply or an invalid action (checked before reading the
 proposal) does not consume it. Expired, evicted, consumed, or process-exited
 proposals cannot be recovered; run `ast_edit` again for a fresh proposal. In
@@ -138,7 +141,7 @@ walked files. Narrow `paths` when targeting big trees.
 
 Propose an execution plan for the user to confirm — the interface the triage
 assistant calls when it decides a task is complex enough to warrant a strategy
-decision. The prompt-recommended shape is a one-line summary plus 2–5 ordered
+decision. The model-visible schema requires `summary` and `steps`. The prompt-recommended shape is a one-line summary plus 2–5 ordered
 `steps`, each with a `goal` and 2–4 candidate `strategies`
 ({name, description, recommended}) with exactly one recommended. Runtime
 normalization treats a missing or non-string `summary` as an empty string and
@@ -190,7 +193,7 @@ filtered channels (metadata stays visible — see
 | Tool | Purpose |
 |---|---|
 | `kb_knowledge` | Look up a knowledge entry by id — searches Holy and Eden, returns the full entry (title, intro, keyFiles, keySymbols, keywords, space) |
-| `kb_search_knowledge` | Search both knowledge spaces by natural-language query (keyword-overlap ranking) — use to check whether the KB already documents a concept |
+| `kb_search_knowledge` | Search both knowledge spaces by natural-language query; each whitespace token contributes at most one equal-weight point across id/title/intro/keywords, default 5 results clamped 1–20 — use to check whether the KB already documents a concept |
 | `kb_save_knowledge` | Persist a knowledge entry to Holy (requires user approval) or Eden (auto-learn eligible); the KB runtime is hot-reloaded immediately. Caveat: an identical `kb_knowledge`/`kb_search_knowledge` call already cached earlier in the same `runLoop` may keep returning the stale cached result until a cache-busting call or a new loop. Saving via this tool marks the turn's knowledge capture as handled |
 
 ## Session tools
@@ -300,10 +303,6 @@ The protection has one numbered flow:
    Omitting a tag skips this extra protection. A resolve failure attempts
    best-effort, non-transactional restoration; `rolledBack` counts files that
    entered the restoration attempt, not confirmed successes.
-
-Proposal lifecycle is described once above: proposals are process-memory-only,
-use a creation-time 10-minute TTL, use `lastTouched` only for LRU ordering, cap
-at 16 active entries, and have the documented consuming/non-consuming outcomes.
 
 **Known limitation**: `ast_edit` uses regex approximation rather than AST-exact
 matching; directory expansion walks at most 2000 candidate files per root and

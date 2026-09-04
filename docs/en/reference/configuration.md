@@ -208,10 +208,13 @@ deleted, or are excluded. Use another id for hand-authored document knowledge.
 - **Interrupted-task state** —
   `~/.hk2/sessions/<projectId>/taskstate.json` persists the interrupted
   task (original request, summary, plan progress) that `--resume` restores.
-- **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. Each
-  turn appends the user message, tool calls, the assistant reply, and
-  metadata (`assess`, `rewrite`, `graph`, `codeReview`, `learned_knowledge`,
-  usage stats). `--resume` replays a transcript to restore full context.
+- **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. A normally
+  completed turn records the user message, tool calls, the complete assistant
+  reply, and metadata (`assess`, `rewrite`, `graph`, `codeReview`,
+  `learned_knowledge`, usage stats). On interruption, streamed partial assistant
+  text remains on screen but is not recorded as a complete assistant turn;
+  dangling tool calls are cleaned and interrupted-task state is stored separately
+  in `taskstate.json`. `--resume` replays the transcript and task state.
 - **Session facts** — `~/.hk2/sessions/<projectId>/<sessionId>.facts.json`
   holds the compaction-immune facts recorded via `/remember` / the
   `remember` tool (max 100 per session). `/remember --project` additionally

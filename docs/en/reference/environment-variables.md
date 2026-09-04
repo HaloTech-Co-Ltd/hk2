@@ -70,13 +70,31 @@ its own parsing rule.
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | `/kb init` checkpoint cadence in files. `parseInt(value \|\| '100')` is passed directly to `Checkpoint.interval`: positive N saves every N marks; `0` and negative values save on almost every file; a non-numeric value becomes `NaN` and the comparison also causes frequent saves. Use `--no-checkpoint` to disable; do not rely on invalid values | `100` | Per-run `--checkpoint-interval=N` / `--no-checkpoint` |
+| `HK2_KB_CHECKPOINT_INTERVAL` | Checkpoint interval input. Interactive `/kb init` wraps `parseInt(value, 10)` with `|| 100`; direct indexer callers pass the parsed value through, so cadence varies by entry point. See the detailed table below. | `100` | Per-run `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | Parallelism of the KB parse pool. Only a strict positive integer string (`1`, `4`, `+8`) takes effect; unset, empty, `0`, negative, invalid, decimal (`1.5`), and scientific notation (`1e3`) use auto: `availableParallelism()`, then `cpus().length`, then 4 | `0` | |
 | `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` Phase 1 planning timeout (ms). Parsed as `parseInt(value) \|\| 300000`: `0` and non-numeric values fall back to the default (this is NOT a "0 = disable" variable, unlike the LLM timeouts) | `300000` | Per-run `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`: silently run an incremental `/kb update` at end of any turn where the agent fell back to bash to search source files. The update rebuilds the derived indexes AND synchronizes parser-owned `doc:<relpath>` Eden entries (see `/kb update`) | `0` | Otherwise prompts y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`: silently save the end-of-turn extracted knowledge entry to Eden. Holy ALWAYS prompts y/N regardless | `0` | |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | Positive minutes: skip the end-of-turn `[kb learn]` offer while a knowledge capture for this session's task was handled within the window (agent save, answered proposal, or model skip). Anchor restored across `--resume`. An agent `kb_save_knowledge` save this turn always skips the offer | `0` (off) | |
 | `HK2_KB_LEARN_VALIDATE` | `1`: validate learned entries against existing KB before writing (pre-filter + one semantic check) — duplicates skipped, related entries merged, conflicts resolved (Holy defers to the user). Best-effort | `1` | |
+
+## Checkpoint parsing by entry point
+
+`HK2_KB_CHECKPOINT_INTERVAL` does not have one uniform wrapper. Interactive
+`/kb init` evaluates `parseInt(value, 10) || 100`: unset, empty, `0`, and
+non-numeric values become 100; positive integers are used; negative integers
+remain negative and therefore make `Checkpoint.saveIfDue()` save on nearly
+every file. An explicit `--checkpoint-interval=<value>` goes directly through
+`parseInt()`: `0` and negative values save nearly every file, while a
+non-numeric or missing value becomes `NaN` and has the same frequent-save
+cadence. Use `/kb init --no-checkpoint` to disable checkpointing.
+
+`/kb update`, end-of-turn automatic updates, legacy `--mode=build-kb` and
+`--mode=update-kb`, and other direct `buildIndex()` callers use the indexer's
+`opts.checkpointInterval ?? parseInt(process.env.HK2_KB_CHECKPOINT_INTERVAL ||
+'100', 10)` path. In those paths environment `0`, negative, or non-numeric
+values pass through and cause near-per-file saves; there is no equivalent
+environment value that disables checkpointing for these direct callers.
 
 ## Compact
 
@@ -111,7 +129,7 @@ These are not hk2-specific; hk2 reads them the way terminal tools usually do:
 | Variable | Used for |
 |---|---|
 | `NO_COLOR` | Disables ANSI colors (same effect as `HK2_NO_COLOR=1`) |
-| `TERM` | Color-mode and TUI capability detection: `dumb` disables color and blocks the TUI; `linux` or empty selects ANSI 256-color; other TERM values, including `xterm-256color`, fall through to truecolor. `xterm-256color` is also an independent Windows UTF-8 inference signal |
+| `TERM` | Color-mode and TUI capability detection: `dumb` disables color and blocks the TUI; `linux` or empty selects ANSI 256-color; every other TERM value, including `xterm-256color`, falls through to truecolor. `xterm-256color` is also an independent Windows UTF-8 inference signal |
 | `COLORTERM` | Truecolor detection (`truecolor` / `24bit` → 24-bit color mode) |
 | `WT_SESSION` | Windows Terminal detection: truecolor inference + Windows UTF-8 capability inference |
 | `TERM_PROGRAM` | `vscode` feeds the Windows UTF-8 capability inference (not truecolor detection) |

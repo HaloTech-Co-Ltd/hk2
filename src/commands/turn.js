@@ -1034,10 +1034,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // progress block above the status bar in real time. When the last step
     // completes the plan is cleared (block disappears).
     //
-    // Robust to sloppy model step args (fast reasoning models like
-    // deepseek-v4-flash emit numeric strings, 0-based indices, or off-by-one
-    // values): any invalid step falls back to the current one so the panel
-    // never gets stuck on an in_progress step that can never flip to done.
+    // The supplied step is a reporting hint only. The state machine deliberately
+    // ignores it when selecting state and always advances the current in_progress
+    // step; callback errors do not select an arbitrary step.
     // Returns the 1-based step actually marked (or null when no plan is
     // active) so the tool result can report it accurately.
     planStep: async (stepIndex, note) => {

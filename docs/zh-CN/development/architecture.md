@@ -173,8 +173,10 @@ flowchart TB
    `mcp.js`）、重复；计划确认与 `plan_step` 通过 UI 回调呈现；任务中输入在
    轮次边界注入。
 6. 最终回答 → 用量统计 → 会话记录追加。
-7. 轮末（`turn_support.js`）：kb 更新询问、知识捕获（`[kb learn]`）、
-   Holy↔Eden 冲突同步、可选代码审查。
+7. 轮末（`turn_support.js`）使用独立门控：符合条件的 bash 源码搜索门控制
+   KB 更新询问 / 自动更新块；handled 与 cooldown 门控制知识捕获；检测到的冲突独立
+   控制 Holy-over-Eden 同步；正常返回、配置与本轮确认 / 开始时继续的计划状态独立
+   控制可选代码审查。
 
 ## 数据流：`/kb init`
 
@@ -186,6 +188,18 @@ flowchart TB
 4. 全部写入 `$HK2_KB_DIR/<projectId>/`（默认 `$HK2_HOME/kb/<projectId>/`；
    `store/*`）。
 5. 可选地让 LLM 撰写三个摘要条目（`summarize.js`）。
+
+### 轮末门控与 transcript 边界
+
+轮末流程不是无条件的 `update → learn → conflict sync → review` 串行链。先由“符合
+条件的 bash 源码搜索”门决定是否进入 update 询问/自动更新块；知识捕获还有独立的
+handled 与 cooldown 门；Holy-over-Eden 冲突同步独立依赖本轮检测到的冲突；code review
+独立依赖开关与正常 agent 返回，本轮确认计划或开始时正在继续计划即可满足条件，正常
+finalization 还可能在 review 前清理遗留面板。
+
+正常完成会追加完整 assistant 回复与元数据。中断时已流式显示的 partial 文本仍在终端，
+但不作为完整 transcript 回合写入；dangling tool call 会清理，中断任务状态保存到
+`taskstate.json` 供恢复。
 
 ## 持久化状态
 

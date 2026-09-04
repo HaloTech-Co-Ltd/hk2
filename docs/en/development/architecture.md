@@ -188,8 +188,11 @@ flowchart TB
    `mcp.js`), repeat; plan confirmations and `plan_step` surface through
    UI callbacks; mid-task input is injected at round boundaries.
 6. Final answer → usage stats → transcript append.
-7. End of turn (`turn_support.js`): kb-update offer, knowledge capture
-   (`[kb learn]`), Holy-over-Eden conflict sync, optional code review.
+7. End of turn (`turn_support.js`) uses independent gates: a qualifying bash
+   source-search gate controls the update offer/automatic update block; handled
+   and cooldown gates control knowledge capture; detected conflicts control
+   Holy-over-Eden sync; and normal return + configuration + plan-at-start/confirmed
+   state independently control optional code review.
 
 ## Data flow: `/kb init`
 
@@ -202,6 +205,21 @@ flowchart TB
 4. Write everything under `$HK2_KB_DIR/<projectId>/` (default
    `$HK2_HOME/kb/<projectId>/`; `store/*`).
 5. Optionally author the three LLM summary entries (`summarize.js`).
+
+### End-of-turn gates and transcript boundary
+
+The end-of-turn flow is not an unconditional `update → learn → conflict sync →
+review` chain. A qualifying bash source-search gate first enables the update
+offer/automatic update block. Knowledge capture then has its own handled and
+cooldown gates. Holy-over-Eden conflict synchronization depends independently on
+detected conflicts. Code review independently requires its configuration and a
+normal agent return; a plan confirmed this turn or continued at turn start can
+qualify, and normal finalization may clear a leftover panel before review.
+
+A normal completion appends the complete assistant reply and metadata. An
+interrupted streamed partial remains visible but is not a complete transcript
+turn; dangling tool calls are cleaned and interrupted task state is saved in
+`taskstate.json` for resume.
 
 ## Persisted state
 

@@ -260,3 +260,55 @@ test('write tool round-trips content verbatim (no EOL or encoding surprises)', a
   });
   await fs.rm(tree, { recursive: true, force: true });
 });
+
+test('edit: multi-edit entries observe evolving content in array order', async () => {
+  const tree = await makeTree();
+  const f = path.join(tree, 'evolving.js');
+  await fs.writeFile(f, 'A\n');
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({ path: f, edits: [
+      { oldText: 'A', newText: 'B' },
+      { oldText: 'B', newText: 'C' },
+    ] });
+    assert.equal(r.error, undefined);
+    assert.equal(r.applied, 2);
+    assert.equal(await fs.readFile(f, 'utf8'), 'C\n');
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
+test('edit: a later multi-edit failure leaves the original file untouched', async () => {
+  const tree = await makeTree();
+  const f = path.join(tree, 'atomic-on-error.js');
+  const original = 'A\nB\n';
+  await fs.writeFile(f, original);
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({ path: f, edits: [
+      { oldText: 'A', newText: 'changed' },
+      { oldText: 'B', newText: 'missing-after-first-edit' },
+      { oldText: 'not-present', newText: 'never' },
+    ] });
+    assert.match(r.error, /oldText not found/);
+    assert.equal(await fs.readFile(f, 'utf8'), original);
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
+test('edit: uniqueness is checked against the evolving content at every step', async () => {
+  const tree = await makeTree();
+  const f = path.join(tree, 'evolving-unique.js');
+  const original = 'A\nB\n';
+  await fs.writeFile(f, original);
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({ path: f, edits: [
+      { oldText: 'A', newText: 'B' },
+      { oldText: 'B', newText: 'C' },
+    ] });
+    assert.match(r.error, /oldText not unique/);
+    assert.equal(await fs.readFile(f, 'utf8'), original);
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});

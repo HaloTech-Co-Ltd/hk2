@@ -56,10 +56,10 @@ width (default: auto, the host CPU count respecting cgroup quotas).
 
 ## The symbol model
 
-A Symbol record is the common currency of the KB. Both the Tree-sitter path
-and the regex fallback emit the same shape; the AST path additionally fills
-`qualName`, `parentSymbolId`, `superClass`, `implements`, `imports`, and
-`docString`. Everything downstream — BM25, graph, outlines, call chains —
+A Symbol record is the common currency of the KB. Every source-code parser path
+emits the same `Symbol[]` shape. Tree-sitter-backed symbols can populate optional
+rich fields such as `qualName`, `parentSymbolId`, `superClass`, `implements`,
+`imports`, and `docString` when the grammar and extractor expose them. Everything downstream — BM25, graph, outlines, call chains —
 consumes Symbols, so a missing grammar lowers precision for languages that
 HAVE a regex fallback — and produces no symbols at all for languages without
 one (notably C#).
@@ -119,10 +119,15 @@ prints names, kinds, files, line numbers, scores, and signatures. It does not
 read `HK2_ENABLE_QUERYREWRITE`, rewrite the query, or attach ±15-line slices.
 The Agent `kb_search` tool can attempt an inline LLM rewrite independently of
 the turn-start `HK2_ENABLE_QUERYREWRITE` flag; `with_slice=false` disables its
-source slices. Knowledge entries are searched separately by
-`kb_search_knowledge` (keyword overlap over Holy + Eden titles, keywords, and
-intro bodies — title and keyword hits dominate the ranking, while intro hits
-surface entries that mention the fact only in their body).
+source slices. Knowledge entries use a separate flat token-overlap algorithm: `kb_search_knowledge`
+scans `rt.allKnowledge()` and joins id, title, intro, and keywords into one
+haystack. Each whitespace token contributes at most one equal-weight point,
+with no title/keyword bonus; its default is 5 results, clamped to 1–20. It also
+does not filter `supersededBy` Eden entries. Turn-start `matchPrinciples()` is
+different: Holy and active Eden are matched separately, head fields (topic/title/
+keywords) are the primary signal, intro is capped at 2000 characters and weighted
+0.3, and only the top 2 are returned; `buildRequestGraph()` excludes retired Eden
+and suppresses Holy conflicts.
 
 ## Per-request context injection
 

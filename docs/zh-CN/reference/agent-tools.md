@@ -49,8 +49,9 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 ### `edit`
 
 在单个文件中做精确字符串替换。接受 `{edits:[{oldText,newText}]}`
-（推荐——一次调用完成多组互不相交的编辑）或 `{old_string,new_string}`
-（单处编辑）。每个 `oldText` 必须匹配唯一、互不重叠的区域。可选 `tag`
+（推荐——一次调用完成多组编辑）或 `{old_string,new_string}`（单处编辑）。多项
+编辑按数组顺序作用于持续变化的内存内容；每个 `oldText` 必须在处理当时唯一，
+后续项可以匹配前序项生成的文本。后续项失败时不会写盘。可选 `tag`
 （来自先前 `read`/`kb_outline` 的 shortHash）在当前文件 hash 与所提供的
 KB 索引快照 tag 不同的情况下拒绝编辑。写入：是。
 
@@ -72,9 +73,9 @@ KB 索引快照 tag 不同的情况下拒绝编辑。写入：是。
 
 ### `grep`
 
-正则内容搜索；带 file:line 的匹配行，超过 100 条截断（长行截断到 240
+默认进行文本正则搜索（只有 `literal=true` 才是字面搜索）；带 file:line 的匹配行，超过 100 条截断（长行截断到 240
 字符），每次调用最多覆盖 2000 个文件。内部遍历器跳过 `.git` 与
-`node_modules`，但**不**应用仓库的 `.gitignore`。写入：否。
+`node_modules`，但**不**应用仓库的 `.gitignore`；语义概念优先使用 KB 搜索。写入：否。
 
 ## 结构化工具
 
@@ -103,7 +104,8 @@ KB 索引快照 tag 不同的情况下拒绝编辑。写入：是。
 
 **Proposal 生命周期**：proposal 只存在于当前进程内存，进程退出或崩溃即丢失。
 10 分钟 TTL 从创建时间计算，不是滑动 TTL；`lastTouched` 只用于 LRU 排序，不会
-延长创建时间。每进程最多 16 个活跃 proposal，超出后按 LRU 淘汰。成功 apply、
+延长创建时间。`MAX_PROPOSALS` 为 16，但 `stage()` 在插入前才 prune；第 17 个 proposal 刚暂存后，
+进程可能暂时保留 17 个，直到后续 prune 才淘汰 LRU 条目。成功 apply、
 discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒的 apply 不消费；
 非法 action 会在读取 proposal 前返回，也不消费。过期、淘汰、已消费或进程退出后
 均不可恢复；请重新运行 `ast_edit`。错误结果中的 `rolledBack` 是进入恢复尝试的
@@ -118,7 +120,7 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 ### `plan`
 
 向用户提出执行计划供确认——这是分诊智能体判断任务需要策略选择时使用的接口。
-提示词推荐形状是一行 summary 加 2–5 个有序 `steps`，每步有 `goal` 与 2–4 个
+模型可见 Schema 要求 `summary` 与 `steps`。提示词推荐形状是一行 summary 加 2–5 个有序 `steps`，每步有 `goal` 与 2–4 个
 候选 `strategies`（`name`、`description`、`recommended`），并标记恰好一个推荐项。
 内部归一化会把缺失或非字符串 `summary` 变为空字符串；只强制至少 2 个有效步骤、
 每步至少 2 个有效策略，不强制最大数量。recommended 数量异常时会归一化为第一个
@@ -159,7 +161,7 @@ in-progress 步骤仍会被推进）。交互模式使用真实状态机；无�
 | 工具 | 用途 |
 |---|---|
 | `kb_knowledge` | 按 id 查找知识条目——同时检索 Holy 与 Eden，返回完整条目（标题、简介、keyFiles、keySymbols、keywords、space） |
-| `kb_search_knowledge` | 按自然语言查询搜索两个知识空间（关键词重叠排序）——用于判断知识库是否已有某概念的文档 |
+| `kb_search_knowledge` | 按自然语言查询搜索两个知识空间；查询的每个空白分隔 token 在 id/标题/简介/关键词中统一最多贡献 1 分，默认 5 条、钳制到 1–20——用于判断知识库是否已有某概念的文档 |
 | `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载，但不清除 runLoop 只读缓存：同一循环内此前已成功缓存过的相同调用可能继续返回旧结果，直到缓存失效调用或进入新循环；失败结果不缓存 |
 
 ## 会话工具
@@ -253,9 +255,6 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
    运行 `/kb update` 后重新 `read` 或调用 `kb_outline` 获取新 tag；省略 tag 会跳过
    这层额外保护。失败恢复是尽力而为、非事务性的，`rolledBack` 统计进入恢复尝试
    的文件数，不是已确认恢复成功数。
-
-Proposal 生命周期只在上方说明一次：仅当前进程内存、创建时间起算的 10 分钟 TTL、
-`lastTouched` 只影响 LRU、最多 16 个，并按上文规则消费或保留。
 
 ## 暂缓的能力
 

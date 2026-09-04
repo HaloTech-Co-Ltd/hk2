@@ -202,6 +202,14 @@ Registration options (`/project init`):
 The same registration is available from the shell:
 `hk2 --mode=project-init --name=myapp --source=/path/to/repo`.
 
+### Shared current pointer versus session pin
+
+`projects.json.current` is the shared registry's default project pointer; `/project list`
+marks it with `*`, and `/project set current` changes it and switches the current
+interactive session. `hk2 --project=<name>` and `--project-id=<id>` pin only the
+current session, without changing the shared pointer. A session pin can therefore
+differ from `current`, and multiple processes can use different pins concurrently.
+
 ## Sessions
 
 Sessions are stored as JSONL transcripts at
