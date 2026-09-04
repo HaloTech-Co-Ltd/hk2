@@ -23,7 +23,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | [`/kb code`](#kb-code) | 管理永久的最高准则 |
 | [`/session`](#session) | 会话管理 |
 | [`/resume`](#resume) | 恢复之前的会话（Claude Code 惯例） |
-| [`/remember`](#remember) / [`/forget`](#forget) | 记录 / 删除会话事实（免受压缩影响） |
+| [`/remember`](#remember) / [`/forget`](#forget) | 记录 / 删除会话事实；成功保存后免受压缩影响 |
 | [`/review`](#review) | 手动审查已完成的任务 |
 | [`/theme`](#theme) | 自定义工具卡片颜色 |
 | [`/clear`](#clear) | 清空内存中的对话上下文 |
@@ -211,8 +211,8 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 
 - 无参数——列出已记录的事实。
 - 带事实——持久化该条（每会话上限 100 条，每条裁剪到 500 字符；规范化
-  去重）。事实通过一条常驻的 `## Session facts` system 消息注入后续每一
-  轮，并实时刷新。
+  去重）。成功持久化后，事实通过一条常驻的 `## Session facts` system 消息
+  注入后续每一轮，并实时刷新；失败或非交互保存不会记录。
 - `--project` / `-p`——同时把事实追加到项目级 Eden 条目 `env-facts`
   （跨会话，可被 `kb_search_knowledge` 检索；上限 200 行，追加时去重）。
 - 需要处于活动项目会话中；没有则干净地拒绝。

@@ -24,7 +24,7 @@ spaces: `--title="SPI Extension Pattern"`.
 | [`/kb code`](#kb-code) | Manage the permanent Supreme Code |
 | [`/session`](#session) | Session management |
 | [`/resume`](#resume) | Resume a previous session (Claude Code convention) |
-| [`/remember`](#remember) / [`/forget`](#forget) | Record / remove session facts (compaction-immune) |
+| [`/remember`](#remember) / [`/forget`](#forget) | Record / remove session facts; successful saves survive compaction |
 | [`/review`](#review) | Manually review the completed task |
 | [`/theme`](#theme) | Customize tool-card colors |
 | [`/clear`](#clear) | Clear the in-memory conversation context |
