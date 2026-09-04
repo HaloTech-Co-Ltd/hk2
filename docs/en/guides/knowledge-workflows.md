@@ -24,9 +24,9 @@ inspect, deep-study, import/export, curate, and clean up. It focuses on
   `/kb update` for incremental refreshes. Interrupted builds resume from
   the checkpoint.
 - `/kb update` re-parses only changed files (Index Space). It auto-detects a
-  legacy KB and upgrades it losslessly — knowledge is snapshotted to
-  `backup/pre-upgrade-<ts>/` first; a parser-version change triggers a full
-  re-index.
+  legacy KB: knowledge entries are backed up to `backup/pre-upgrade-<ts>/`
+  first, then the migration is applied (a parser-version change triggers a
+  full re-index).
 
 **When to run what**: after `/project init` run `/kb init`; after normal
 editing sessions run `/kb update` (or let `HK2_ENABLE_AUTOUPDATEKB=1` do it
@@ -52,10 +52,12 @@ from `/kb search` or `/kb symbol` output.
 The unified deep-study command auto-selects between two modes:
 
 - **CODE mode** — no `--file`, or `--base-dir` pointing at an *indexed*
-  subdirectory. Two-phase study of indexed source: Phase 0 writes three
-  project-wide survey entries (`api-docs`, `code-walkthrough`,
-  `usage-examples`; skipped with `--no-survey`), Phase 1 plans topic batches,
-  Phase 2 extracts one entry per topic.
+  subdirectory. Three-phase study of indexed source: an **optional** Phase 0
+  writes three project-wide survey entries (`api-docs`, `code-walkthrough`,
+  `usage-examples`) — it runs only when NOT `--dry-run`, NOT `--base-dir`,
+  and NOT `--no-survey` (`--base-dir` scopes to the subdirectory and skips
+  the whole-project survey; `--dry-run` and `--no-survey` skip it too);
+  Phase 1 plans topic batches; Phase 2 extracts one entry per topic.
 - **DOC mode** — `--file=<path>` or a `--base-dir` that is not an indexed
   subdirectory. Deep-studies Markdown / PDF / Word / PowerPoint / text
   documents into the chosen space. Files may live outside the project; large
@@ -63,9 +65,11 @@ The unified deep-study command auto-selects between two modes:
   every document is guaranteed a batch (planner omissions get single-file
   fallback batches).
 
-Every run validates proposed entries against the existing KB before writing
-(duplicate → skipped, related → merged in place, conflict → Holy defers to
-you, Eden follows the validator with the reason printed).
+With the default `HK2_KB_LEARN_VALIDATE=1`, proposed entries are validated
+against the existing KB before writing (duplicate → skipped, related →
+merged in place, conflict → Holy defers to you, Eden follows the validator
+with the reason printed); `HK2_KB_LEARN_VALIDATE=0` switches to the legacy
+heuristic discard path instead.
 
 ```bash
 # Study the whole project (CODE mode)
@@ -98,9 +102,10 @@ map), and each directory token is deterministically expanded into concrete
 files, split into ≤30-file batches. If the LLM plan is still unusable
 (reasoning models can spend their whole budget thinking), the command retries
 once with reasoning disabled and finally falls back to deterministic
-directory grouping — the study never aborts *because of an unusable LLM
-plan* and always keeps full file coverage. Other failures (file access,
-the model connection, disk writes, user interrupts) can still stop the run.
+directory grouping — the study does not abort merely because the plan was
+unparseable, and planner reconciliation adds fallback batches for readable,
+parseable inputs the plan omitted. File access, parsing, model, permission,
+disk errors, or a user interrupt can still stop the run or skip content.
 
 **Slow providers**: the Phase 1 planning call has a default 300s budget; if
 your provider exceeds it, pass `--plan-timeout-ms=600000` (or set

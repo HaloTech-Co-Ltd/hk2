@@ -2,14 +2,18 @@
 
 English | [简体中文](../../zh-CN/reference/environment-variables.md)
 
-Complete list of hk2 environment variables, regenerated from a code-wide
-`process.env` search — not copied from older docs. Defaults come from the
-resolving code. When adding or changing a variable, re-run the search and
-update this page in both languages.
+Complete list of hk2-specific environment variables, regenerated from a
+code-wide `process.env` search — not copied from older docs. Defaults come
+from the resolving code. When adding or changing a variable, re-run the
+search and update this page in both languages. Standard terminal variables
+hk2 honors are listed separately at the end.
 
-Conventions: feature flags read `1` / `0`; numeric resolvers treat unset /
-empty / invalid / negative as "use the default", and an explicit `0` usually
-means "disabled" (timeouts: "no timeout").
+Conventions: feature flags read `1` / `0`. Numeric resolvers vary — the
+LLM timeout/retry/parallel variables treat unset / empty / invalid /
+negative as "use the default" (explicit `0` meaning "no timeout" for the
+timeouts, "one attempt" for retries), while threshold variables like
+`HK2_AUTOCOMPACT_PCTUSED` clamp into their own ranges; each entry states
+its own parsing rule.
 
 ## Paths and installation
 
@@ -48,7 +52,7 @@ means "disabled" (timeouts: "no timeout").
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `HK2_ENABLE_QUERYREWRITE` | `1`: rewrite each query via an LLM into English function names + keywords before BM25 retrieval (turn start and each `kb_search` call) | `1` | Prerequisite for assess + fast lane |
+| `HK2_ENABLE_QUERYREWRITE` | `1`: rewrite each substantive query via an LLM into English function names + keywords before BM25 retrieval (turn start; fast-lane follow-ups skip the whole pre-agent pipeline). The `kb_search` tool rewrites inline only when an LLM is available and `skip_rewrite=true` was not passed | `1` | Prerequisite for assess + fast lane |
 | `HK2_ENABLE_REQUEST_ASSESS` | `1` (and query rewrite on): after the first query rewrite **and** KB retrieval, an LLM judges whether the request is clear — deliberately with the retrieved project context in hand; unclear requests get a numbered clarification menu whose answer feeds a second rewrite + retrieval pass. Judges against a session digest so follow-ups are not flagged; interactive TTY only; one bounded round; best-effort. Verdict fields recorded in the transcript's `assess` meta | `1` | |
 | `HK2_ASSESS_MIN_CONFIDENCE` | Confidence threshold (0.0–1.0) below which an "unclear" verdict is treated as clear | `0.8` | A spurious menu costs more than an inline follow-up |
 | `HK2_ASSESS_REASONING` | `1`: run the clarity assessment with deep reasoning (better pragmatic reference resolution on strong models; adds latency) | `0` | |
@@ -97,8 +101,20 @@ means "disabled" (timeouts: "no timeout").
 
 | Variable | Purpose | Default | Notes |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Auto-creates an `anthropic` provider on first init | - | Also read by the Claude Code first-run import alongside `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
-| `OPENAI_API_KEY` | Auto-creates an `openai` provider on first init | - | |
+| `ANTHROPIC_API_KEY` | Seeds an `anthropic` provider when the model registry file is first created (not re-scanned on later starts) | - | Also read by the Claude Code first-run import alongside `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` |
+| `OPENAI_API_KEY` | Seeds an `openai` provider when the model registry file is first created | - | |
+
+## Standard terminal environment variables honored
+
+These are not hk2-specific; hk2 reads them the way terminal tools usually do:
+
+| Variable | Used for |
+|---|---|
+| `NO_COLOR` | Disables ANSI colors (same effect as `HK2_NO_COLOR=1`) |
+| `TERM` | Color-mode and TUI capability detection (`dumb` means no color and forces the REPL fallback) |
+| `COLORTERM` | Truecolor detection (`truecolor` / `24bit` → 24-bit color mode) |
+| `WT_SESSION` / `TERM_PROGRAM` | Windows Terminal / VS Code detection for truecolor and UTF-8 assumptions |
+| `LC_ALL` / `LC_CTYPE` / `LANG` | UTF-8 locale detection (glyph vs ASCII fallback rendering) |
 
 ## Related documentation
 

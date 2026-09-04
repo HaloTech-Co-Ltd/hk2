@@ -11,8 +11,10 @@ session transcripts, and logs. The parsing logic lives in
 ## `HK2_HOME` layout
 
 `HK2_HOME` defaults to `~/.hk2` and can be overridden with the `HK2_HOME`
-environment variable. The directory is created 0700; files holding keys are
-0600.
+environment variable. On creation hk2 chmods the directory to 0700 and the
+key-bearing files (`models.json`, `projects.json`) to 0600 (best-effort —
+chmod failures are ignored; POSIX permission semantics may not apply on
+other platforms).
 
 ```text
 ~/.hk2/
@@ -27,6 +29,7 @@ environment variable. The directory is created 0700; files holding keys are
 │   └── <projectId>/                  # Per-project KB (see below)
 ├── sessions/
 │   └── <projectId>/
+│       ├── taskstate.json            # Interrupted-task state (--resume restores it)
 │       ├── <sessionId>.jsonl         # Session transcripts (JSONL)
 │       └── <sessionId>.facts.json    # Session facts store (/remember)
 └── logs/
@@ -109,11 +112,12 @@ validate types, options, and refs.
       "sourceRoot": "src",
       "includeGlobs": ["**/*.js", "**/*.ts", "**/*.py"],
       "excludeGlobs": ["**/node_modules/**"],
-      "extraRoots": [],
+      "extraRoots": [{ "name": "docs", "relRoot": "docs" }],
       "defaultModel": "local/mymodel",
       "phaseModels": { "rewriteQuery": "local/mymodel" },
       "kbBuiltAt": "2026-07-24T16:41:44.248Z",
-      "createdAt": "2026-07-24T16:41:43.000Z"
+      "createdAt": "2026-07-24T16:41:43.000Z",
+      "updatedAt": "2026-07-24T16:41:44.000Z"
     }
   }
 }
@@ -121,15 +125,19 @@ validate types, options, and refs.
 
 Field notes:
 
-- `current` — the active project pointer (a UUID).
+- `current` — the shared/global default project pointer (a UUID). A
+  session started with `hk2 --project=<name>` pins its project for that
+  session without rewriting this pointer.
 - `sourcePath` — where the project lives; `sourceRoot` — the indexed
   sub-directory (whole tree when empty).
 - `includeGlobs` / `excludeGlobs` — the glob sets used by `/kb init`;
   defaults cover common source and document extensions.
 - `extraRoots` — named extra roots registered with
-  `--extra=<name>:<rel>,...`; walked in addition to the main root.
+  `--extra=<name>:<rel>,...`; walked in addition to the main root. Each
+  element has the shape `{ "name": "...", "relRoot": "..." }`.
 - `defaultModel` — per-project default model override written by
   `/model set-default current <ref>`; `--clear` removes it.
+- `updatedAt` — last-modified timestamp maintained on project writes.
 - `phaseModels` — per-project phase model overrides written by
   `/model set-phase` (storage keys `rewriteQuery`, `requestAssess`,
   `planReview`, `codeReview`).
@@ -178,13 +186,16 @@ When a project does not override them, `/kb init` walks with these defaults
 ├── callgraph.json            # Index Space — legacy callgraph (derived from graph)
 ├── symbols.0000.json         # Index Space — sharded symbol table
 ├── stats.json                # Index Space — build statistics
-├── checkpoint.json           # Resumable build state (transient)
+├── checkpoint.json           # Resumable build state (transient — cleared on success)
 ├── summaries/                # Per-symbol summaries (on-demand)
 └── backup/                   # Pre-upgrade knowledge snapshots
 ```
 
 ## Sessions and logs
 
+- **Interrupted-task state** —
+  `~/.hk2/sessions/<projectId>/taskstate.json` persists the interrupted
+  task (original request, summary, plan progress) that `--resume` restores.
 - **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. Each
   turn appends the user message, tool calls, the assistant reply, and
   metadata (`assess`, `rewrite`, `graph`, `codeReview`, `learned_knowledge`,

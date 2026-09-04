@@ -121,7 +121,7 @@ project's KB. All commands operate on the current project.
 | Subcommand | Effect |
 |---|---|
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | Build the KB — **always a full re-index** in the current implementation (`--full` is accepted but redundant; use `/kb update` for incremental), checkpointed and resumable; LLM summary entries when a model is configured and `--skip-summary` is not passed |
-| `update` | Incremental update (sha256 diff) — Index Space only; auto-upgrades a legacy KB losslessly (snapshot to `backup/pre-upgrade-<ts>/` first; a parser-version change triggers a full re-index) |
+| `update` | Incremental update (sha256 diff) — Index Space only; backs up a legacy KB's knowledge entries to `backup/pre-upgrade-<ts>/`, then migrates (a parser-version change triggers a full re-index) |
 | `status` | Per-space statistics |
 | `search <query> [--top-k=N]` | BM25 + reranking symbol search |
 | `symbol <name>` | Look up symbols by exact name |
@@ -151,9 +151,12 @@ Usage: `/kb knowledge <subcommand> [args]`.
 at documents) deep-studies Markdown / PDF / Word / PowerPoint / text files
 into the chosen space (files may live outside the project); **CODE mode**
 (bare, or `--base-dir` = an indexed subdirectory) deep-studies indexed
-source — Phase 0 survey entries, Phase 1 topic planning, Phase 2 extraction.
-Every proposed entry is validated against the existing KB before writing
-(disable with `HK2_KB_LEARN_VALIDATE=0`). Flags:
+source — an optional Phase 0 survey (runs only when not `--dry-run`, no
+`--base-dir`, not `--no-survey`), Phase 1 topic planning, Phase 2
+extraction.
+With `HK2_KB_LEARN_VALIDATE=1` (default) proposed entries are validated
+against the existing KB before writing (`0` switches to the legacy
+heuristic path). Flags:
 `--space` (default eden; CODE mode always writes Eden), `--file`,
 `--base-dir`, `--per-batch-chars` (default 100000), `--dry-run`,
 `--no-survey` (skip Phase 0), `--model`, `--plan-timeout-ms` (default

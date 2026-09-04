@@ -17,7 +17,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 - hk2 支持两种 API 方言：OpenAI 兼容的 chat-completions 协议
   （`--api=openai`，自建网关的常见选择）与 Anthropic messages 协议
   （`--api=anthropic`）。
-- 一份安装可管理不限数量的提供商与模型。
+- 一份安装可管理多个提供商与模型。
 
 ### `id` 与 `name`
 
@@ -66,10 +66,11 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 `--model-type` 声明模型家族，hk2 据此应用家族专属行为。声明了特性的类型会
 校验 `--model-options` 取值——例如 `--model-type=glm-5.3`（与
 `glm-5.3-flash`）接受 `{"reasoning_effort":"max"}`，默认且推荐 max（深度
-推理），可选 high（增强）/ low（轻度）。未列出的类型回退为 `generic`。
+推理），可选 high（增强）/ low（轻度）。省略该参数（或旧记录缺少该字段）
+默认 `generic`；传入**未知**类型会被命令拒绝。
 
-除手动录入外，首次初始化时若环境中存在 `ANTHROPIC_API_KEY` 或
-`OPENAI_API_KEY`，会自动创建对应的提供商。
+除手动录入外，模型注册表文件**首次创建时**，环境中的 `ANTHROPIC_API_KEY`
+或 `OPENAI_API_KEY` 会种子化对应的提供商——之后的启动不会重新扫描或追加。
 
 ## 阶段模型
 
@@ -87,9 +88,12 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 /model set-phase --phase=code-review --clear
 ```
 
-未设置时阶段使用会话模型。已配置的阶段模型不可达时，
-`HK2_ENABLE_PHASEMODEL_FALLBACK` 决定改用会话模型重跑（默认）还是跳过——
-审查阶段始终跳过，绝不静默替换审查者。见[规划与审查](planning-and-review.md)。
+未设置时阶段使用会话模型。已配置的阶段模型先经注册表解析——无法解析的
+引用（未知的提供商 / 模型）根本不会发起网络调用：`rewrite-query` /
+`request-assess` 输出告警并按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认
+改用会话模型重跑，设 `0` 则跳过）；审查阶段始终只告警并跳过，绝不静默替换
+审查者。真实调用后的不可达故障遵循同一策略划分。见
+[规划与审查](planning-and-review.md)。
 
 ## Claude Code 首启导入
 
@@ -133,8 +137,8 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 /project set name new-name
 /project set source /new/path
 /project set source-root src
-/project set include '**/*.sql'
-/project set exclude 'vendor/**'
+/project set include <完整glob列表并加上你的新增项>
+/project set exclude <完整glob列表并加上你的新增项>   # 两者都会整体替换默认集合
 /project show
 /project drop myapp
 ```

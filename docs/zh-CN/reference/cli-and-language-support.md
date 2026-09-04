@@ -62,7 +62,9 @@ hk2 --mode=update-kb
 hk2 --run-mode=serve         # 旧版命令式 REPL（无智能体循环）
 ```
 
-`--run-mode` 接受 `once`（默认）或 `serve`。
+`--run-mode` 接受 `once` 或 `serve`。`once` 是存在 `--mode` 一次性命令时的
+内部默认值；不带 `--mode` 运行 `hk2 --run-mode=once` 会**报错**，不会进入
+交互模式。
 
 ### 版本与帮助
 
@@ -131,14 +133,17 @@ Tree-sitter 不可用时（未 `npm install`、ABI 不匹配、缺少语法）�
 Markdown（`.md` `.markdown`）、纯文本（`.txt` `.rst` `.adoc`）、JSON、
 YAML（`.yaml` `.yml`）、HTML（`.html` `.htm`）、SGML 用标准库解析。无
 扩展名的惯例文件（README、LICENSE、CHANGELOG、CONTRIBUTING、AUTHORS、
-NOTICE……）按文档处理。PDF（`.pdf`）与 Word（`.docx`）需要可选的
-`pdf-parse` / `mammoth` 包；旧版 Office 二进制（`.doc`、`.pptx`、`.ppt`）
-无依赖提取。解析后的文档以 `doc:<relpath>` 条目归入 Eden 空间。
+NOTICE……）按文档处理。PDF（`.pdf`）需要可选的 `pdf-parse` 包；Word（`.docx`）需要 `mammoth`。
+`.pptx` 经内置 OOXML ZIP/XML 读取器提取；更老的 `.doc` / `.ppt` 二进制经
+内置的尽力而为可打印文本启发式提取——内置提取不是完整的 Office 渲染器，
+不保证恢复复杂布局、图表、嵌入对象或全部文本。解析后的文档以
+`doc:<relpath>` 条目归入 Eden 空间。
 
 ### 不覆盖
 
-扩展名不匹配上述任何映射的文件会被索引器跳过——无符号，无文档条目。仅当
-确有需要时再为其添加 include glob 与回退解析。
+没有语言映射的扩展名若被 include glob 命中仍会被扫描，但通用解析器对它
+返回空符号列表（非文档且无映射的文件进入文件注册表但零符号）。上文列出
+的文档格式则交给文档解析器处理。确需从新扩展名产出符号时再添加显式映射。
 
 ## 相关文档
 

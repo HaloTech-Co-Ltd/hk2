@@ -1,10 +1,10 @@
 #!/bin/sh
 # install.sh — install hk2 as a global command.
 #
-# Usage:
+# Usage (must be run from inside the repo — the script copies the local
+# source tree, so piping a lone script into sh cannot work):
 #   ./install.sh                     # install to /usr/local/bin/hk2 (default)
 #   ./install.sh --prefix=$HOME/.local
-#   curl -fsSL https://your-host/install.sh | sh
 #
 # Behavior:
 #   - Clones/copies the project to $HK2_INSTALL_DIR (default: ~/.hk2)

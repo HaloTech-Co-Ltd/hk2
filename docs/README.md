@@ -2,8 +2,8 @@
 
 hk2 is a knowledge-base-driven coding agent: it indexes every project into a
 per-project knowledge base (symbols, call graph, distilled knowledge entries)
-and pre-fetches that context into the agent's prompt for each substantive
-request.
+and pre-fetches that context into the agent's prompt for substantive
+requests (clear follow-ups take a fast lane).
 
 Choose your language:
 

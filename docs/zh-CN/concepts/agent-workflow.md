@@ -22,15 +22,13 @@ flowchart TD
     ASSESS -- 不清晰 --> MENU[澄清菜单] --> RW2[结合答案重新改写] --> KB2[重新检索] --> SP
     ASSESS -- 清晰 --> SP
     KB --> ASSESS
-    SP[系统提示词 + 知识库上下文<br/>最高准则在前] --> LOOP[智能体循环<br/>LLM 调用 + 工具调用]
-    LOOP --> PLAN{调用了 plan 工具?}
-    PLAN -- 是 --> CONFIRM[用户确认计划<br/>+ 可选计划审查]
+    SP[系统提示词 + 知识库上下文<br/>最高准则（非空时）] --> LOOP[智能体循环<br/>LLM 调用 + 工具调用]
+    LOOP --> TOOLS{有工具调用?}
+    TOOLS -- 是 --> EXEC[执行工具] --> QUEUE[在轮次边界注入<br/>排队的用户输入] --> LOOP
+    TOOLS -- 否 --> ANS[最终回答]
+    LOOP -.plan 工具.-> CONFIRM[用户确认计划<br/>+ 可选计划审查]
     CONFIRM --> LOOP
-    PLAN -- 否 --> MORE{还有工具轮次?}
-    MORE -- 是 --> LOOP
-    MORE -- 否 --> ANS[最终回答]
-    LOOP --> |轮次边界| EOT[轮末：<br/>kb update 询问、kb learn 捕获、<br/>冲突同步、代码审查]
-    ANS --> EOT
+    ANS --> EOT[轮末：<br/>kb update 询问、kb learn 捕获、<br/>冲突同步、计划收尾、代码审查]
 ```
 
 ## 智能体前置管线
@@ -79,8 +77,9 @@ flowchart TD
 2. 知识库优先策略与首选的知识库工具
 3. 可用工具与使用准则
 4. 工作目录与项目信息
-5. `# Project Supreme Code (MUST OBEY — never violate)`——始终在**所有**
-   其他注入上下文之前
+5. `# Project Supreme Code (MUST OBEY — never violate)`——仅在条目非空时
+   渲染，始终在**所有**其他注入上下文之前（模型层遵从；条目本身的存储
+   保护才是硬限制）
 6. `# Filesystem permission sandbox`——生效的权限摘要
 7. `# Knowledge-base context`——按请求的检索结果
 8. 项目上下文文件（如 README）与附加尾部
@@ -89,10 +88,11 @@ flowchart TD
 消息。镜像真实文件的内容在源文件被拒绝读取时会被抑制（见
 [安全与权限](../guides/security-and-permissions.md)）。
 
-另一条常驻消息——`## Session facts`——紧跟主系统提示词之后出现在每一轮。
-它承载本会话已记录的事实（`/remember`、`remember` 工具、压缩时抽取），
-且在设计上免受任何压缩影响，因此长会话中任意时刻陈述的环境事实始终在
-上下文内。见[斜杠命令](../reference/slash-commands.md#remember)。
+另一条常驻消息——`## Session facts`——紧跟主系统提示词之后出现在每一轮，
+在设计上免受压缩影响：经 `/remember` 或 `remember` 工具显式保存（且成功
+落盘）的事实被确定性保留；而抢救"即将被总结掉的事实"的压缩时抽取属于
+尽力而为——不保证早期陈述一定被捕获。见
+[斜杠命令](../reference/slash-commands.md#remember)。
 
 ## 智能体循环
 
@@ -104,8 +104,9 @@ flowchart TD
   达到 1000 轮绝对上限时中止。
 - **任务中输入排队**——回合运行期间输入的纯文本进入队列，在下一个轮次
   边界作为任务内指引注入（当前动作完成后、下一次 LLM 调用前），合并为
-  一条消息；斜杠命令等待回合结束。未能在运行中送达的内容会成为新回合——
-  任何输入都不会丢失。见 [REPL 与 TUI](../guides/repl-and-tui.md)。
+  一条消息；斜杠命令等待回合结束。在正常的回合结束路径上，未能在运行中
+  送达的内容会成为新回合——不会丢失（进程崩溃或被强杀不在保证范围内）。
+  见 [REPL 与 TUI](../guides/repl-and-tui.md)。
 
 完整工具注册表见[智能体工具](../reference/agent-tools.md)。
 

@@ -59,7 +59,12 @@ hk2 文档的组织方式、双语对等规则，以及每页必须对照核验�
 |---|---|
 | 斜杠命令 | `src/slash/help.js`、`src/slash/*.js` |
 | CLI 参数 | `src/cli.js` |
+| 运行时系统提示词断言 | `lib/agent/system_prompt.js` |
 | 智能体工具 | `lib/agent/tools.js` 及相关 agent 模块 |
+| 状态栏与计划进度 | `src/commands/status_format.js` |
+| 会话事实 | `lib/agent/session_facts.js` |
+| 中断任务状态 | `lib/agent/task_state.js` |
+| 文档图谱 / 文档索引 | `lib/index/doc_graph.js`、`lib/store/doc_index_store.js` |
 | 文件系统权限 | `lib/config/setting.js`、`setting.example.json` |
 | 模型配置 | `lib/config/home.js`、`src/slash/model.js`、`lib/llm/*` |
 | 环境变量 | 全代码 `process.env` 搜索（`rg -n "process\.env\|HK2_[A-Z0-9_]+" src lib bin install.sh`） |
@@ -84,11 +89,13 @@ hk2 文档的组织方式、双语对等规则，以及每页必须对照核验�
 
 - `docs/en` 与 `docs/zh-CN` 包含相同的相对路径集合；
 - 每对页面互相链接（语言切换）；
-- `README.md`、`README_zh.md` 与 `docs/**/*.md` 中的本地 Markdown 链接与
-  图片指向真实存在的文件；
-- 质量门禁：文档任何位置都没有未填充的仓库地址占位符与未完成工作标记，两个根
-  README 互相链接并各自链接对应语言的文档索引，`docs/README.md` 同时链接
-  两种语言入口。
+- `README.md`、`README_zh.md` 与 `docs/` 下全部文件的本地 Markdown 链接
+  与图片指向真实存在的文件；
+- 每个代码围栏（反引号或波浪线、长度 ≥ 3 均可）都带语言标签，且没有未
+  闭合的围栏；
+- 质量门禁：文档任何位置（含代码示例的原始文本）都没有未填充的仓库地址
+  占位符与未完成工作标记，两个根 README 互相链接并各自链接对应语言的
+  文档索引，`docs/README.md` 同时链接两种语言入口。
 
 检查器在非零退出前报告全部问题——请把它列出的内容全部修完。
 

@@ -16,10 +16,11 @@
  *      file (query/fragment stripped; pure #anchors skipped;
  *      http/https/mailto ignored).
  *   4. Quality gates — no `<repo-url>` placeholders or TODO/TBD markers
- *      anywhere (raw text, including inside code examples); README.md ↔
- *      README_zh.md cross-link; README.md → docs/en/README.md;
- *      README_zh.md → docs/zh-CN/README.md; docs/README.md links both
- *      language indexes.
+ *      anywhere (raw text, including inside code examples); every code
+ *      fence (backtick or tilde, length >= 3) carries a language tag and
+ *      no fence is left unclosed; README.md ↔ README_zh.md cross-link;
+ *      README.md → docs/en/README.md; README_zh.md → docs/zh-CN/README.md;
+ *      docs/README.md links both language indexes.
  *
  * All problems are collected and reported; the process exits non-zero if
  * any check failed.
@@ -57,16 +58,45 @@ async function collectMarkdown(dir, prefix = '') {
 }
 
 /**
+ * Fence scanner (CommonMark-ish): fences are 3+ backticks or 3+ tildoes,
+ * optionally indented up to 3 spaces. A closing fence must use the same
+ * character, be at least as long, and carry no info string. Returns the
+ * text with fenced-block CONTENT blanked (link checks must not fire on
+ * examples) plus per-fence issues: missing language tag / unclosed fence.
+ */
+export function scanFences(raw) {
+  const lines = raw.split('\n');
+  const out = [];
+  const issues = [];
+  let fence = null; // { char, len, line }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (m) {
+      const chars = m[1];
+      const info = m[2].trim();
+      if (!fence) {
+        fence = { char: chars[0], len: chars.length, line: i + 1 };
+        if (!info) issues.push({ line: i + 1, kind: 'no-language' });
+      } else if (chars[0] === fence.char && chars.length >= fence.len && !info) {
+        fence = null; // proper close
+      }
+      out.push(''); // fences themselves are never link-relevant
+      continue;
+    }
+    out.push(fence ? '' : line); // blank content while inside a fence
+  }
+  if (fence) issues.push({ line: fence.line, kind: 'unclosed' });
+  return { stripped: out.join('\n'), issues };
+}
+
+/**
  * Strip fenced code blocks and inline code spans for the LINK checks —
  * links inside code are examples, not live references. (Placeholder and
  * marker checks intentionally run on RAW text; see the quality gates.)
- * Also validates that every opening fence carries a language tag.
  */
 function stripCode(text) {
-  return text
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/~~~[\s\S]*?~~~/g, ' ')
-    .replace(/`[^`\n]*`/g, ' ');
+  return scanFences(text).stripped.replace(/`[^`\n]*`/g, ' ');
 }
 
 /**
@@ -196,18 +226,13 @@ for (const [abs, raw] of rawContents) {
   if (abs.startsWith(DOCS) && /\b(TODO|TBD)\b/.test(raw)) {
     problem(abs, 'contains a TODO/TBD marker');
   }
-  // Every opening fence must carry a language tag (```bash, ```json, ```text, ...).
-  {
-    let inFence = false;
-    for (const line of raw.split('\n')) {
-      const s = line.trim();
-      if (!s.startsWith('```')) continue;
-      if (!inFence) {
-        inFence = true;
-        if (s === '```') problem(abs, 'code fence without a language tag');
-      } else if (s === '```' || /^[`]{3,}$/.test(s)) {
-        inFence = false;
-      }
+  // Fence hygiene: every opening fence needs a language tag, and no fence may
+  // be left unclosed (backticks or tildes, any length >= 3).
+  for (const issue of scanFences(raw).issues) {
+    if (issue.kind === 'no-language') {
+      problem(abs, `code fence at line ${issue.line} has no language tag`);
+    } else {
+      problem(abs, `unclosed code fence starting at line ${issue.line}`);
     }
   }
 }

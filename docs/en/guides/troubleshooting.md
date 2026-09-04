@@ -13,8 +13,9 @@ here come from the shipped code.
 - **Cause**: the Tree-sitter native bindings are missing or ABI-mismatched —
   typically a very new Node version (e.g. Node 25+) against prebuilt
   binaries, or a skipped `npm install`.
-- **Fix**: hk2 already fell back to its regex parsers (lower symbol
-  coverage, same behavior otherwise). For full precision: use Node 20 LTS,
+- **Fix**: hk2 already fell back to its regex parsers — languages with a
+  fallback parser continue at lower symbol precision; languages without one
+  (notably C#) yield no symbols. For full precision: use Node 20 LTS,
   or recompile the bindings from source with `npm rebuild` inside the
   install dir (default `~/.hk2`).
 - **See**: [Installation](../getting-started/installation.md),
@@ -103,8 +104,8 @@ here come from the shipped code.
 ### `/kb update` triggers a full re-index
 
 - **Cause**: the stored parser version changed between hk2 versions — a full
-  re-index is required for correctness. Legacy layouts are upgraded
-  losslessly (knowledge snapshot goes to `backup/pre-upgrade-<ts>/` first).
+  re-index is required for correctness. A legacy layout is migrated with
+  the knowledge entries backed up to `backup/pre-upgrade-<ts>/` first.
 - **Fix**: none needed; let it run.
 
 ### `/kb knowledge learn` planning seems stuck, then fails
@@ -112,8 +113,10 @@ here come from the shipped code.
 - **Cause**: the Phase 1 planning LLM call exceeded the 300s budget, or the
   plan came back unusable.
 - **Fix**: hk2 already retries once with reasoning disabled and then falls
-  back to deterministic directory grouping (full file coverage, never
-  aborts). For slow providers raise the budget:
+  back to deterministic directory grouping — the study does not abort merely
+  because the LLM plan was unparseable (planner reconciliation adds fallback
+  batches for readable, parseable inputs the plan omitted); other errors can
+  still stop or skip content. For slow providers raise the budget:
   `--plan-timeout-ms=600000` or `HK2_PLAN_TIMEOUT_MS`.
 - **See**: [Knowledge workflows](knowledge-workflows.md).
 

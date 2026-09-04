@@ -119,7 +119,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 | 子命令 | 作用 |
 |---|---|
 | `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（`--full` 被接受但为冗余参数；增量请用 `/kb update`），带检查点、可恢复；已配置模型且未传 `--skip-summary` 时生成 LLM 摘要条目 |
-| `update` | 增量更新（sha256 差异）——仅 Index 空间；自动无损升级旧版知识库（先快照到 `backup/pre-upgrade-<ts>/`；解析器版本变化触发全量重建） |
+| `update` | 增量更新（sha256 差异）——仅 Index 空间；旧版知识库先备份知识条目到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
 | `status` | 各空间统计 |
 | `search <查询> [--top-k=N]` | BM25 + 重排序的符号搜索 |
 | `symbol <名称>` | 按精确名称查找符号 |
@@ -148,9 +148,10 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 `learn` 自动选择模式：**文档模式（DOC mode）**（`--file`，或 `--base-dir`
 指向文档）深度研读 Markdown / PDF / Word / PowerPoint / 文本文件并写入所选
 空间（文件可在项目之外）；**代码模式（CODE mode）**（裸调用，或
-`--base-dir` 为已索引子目录）研读已索引源码——阶段 0 概览条目、阶段 1
-主题规划、阶段 2 提取。每个候选条目写入前都会对照现有知识库校验（可用
-`HK2_KB_LEARN_VALIDATE=0` 关闭）。参数：`--space`（默认 eden；代码模式始终
+`--base-dir` 为已索引子目录）研读已索引源码——可选的阶段 0 概览（仅当
+非 `--dry-run`、无 `--base-dir`、无 `--no-survey` 时运行）、阶段 1 主题
+规划、阶段 2 提取。默认 `HK2_KB_LEARN_VALIDATE=1` 时候选条目写入前对照现有知识库校验
+（设 `0` 改走旧式启发式路径）。参数：`--space`（默认 eden；代码模式始终
 写 Eden）、`--file`、`--base-dir`、`--per-batch-chars`（默认 100000）、
 `--dry-run`、`--no-survey`（跳过阶段 0）、`--model`、`--plan-timeout-ms`
 （默认 300000），以及传入每个 LLM 提示词的自由格式尾部指令。

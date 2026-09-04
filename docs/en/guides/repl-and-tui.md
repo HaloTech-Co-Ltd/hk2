@@ -11,8 +11,9 @@ pipeline; only the rendering differs.
 ## Choosing a front-end
 
 - **Line REPL (default)** — `hk2`. The classic readline prompt
-  (`hk2(project|Eden/N Holy/N|model)>`), status bar, and tool cards. Works
-  everywhere, including piped/non-TTY input.
+  (`hk2(project|Eden/N Holy/N|model)>`), status bar, and tool cards. Serves
+  as the fallback whenever the TUI is unavailable, including piped/non-TTY
+  input paths.
 - **Inline TUI** — `hk2 --tui` (or `HK2_UI=tui`). A Claude Code-style
   interface: a bordered multi-line input box pinned at the bottom, streaming
   markdown answers and tool-call cards in the terminal's native scrollback,
@@ -33,8 +34,8 @@ check follows the actual stream).
 - **Live completion menu** — typing `/` + a prefix opens a completion menu
   as you type (no Tab needed): ↑↓ select, pageup/pagedown jump 5 items,
   Tab/Enter accept, Enter on a unique exact match submits, esc closes until
-  the text changes. The menu is derived from the registered commands, so it
-  can never drift from them.
+  the text changes. The menu is derived from the registered commands (a
+  shared data source), which keeps it from drifting as commands change.
 - **Data-argument completion** — model refs, session ids, and project ids
   complete live from the registries: `/model use|set|del|set-default|
   set-phase|add-mcpserver <ref>`, `/session resume|info <id>`,
@@ -68,8 +69,8 @@ check follows the actual stream).
 
 The interface adapts to the terminal: wide terminals (≥ 88 cols) get the
 full welcome card with the tips panel, 60–87 cols a compact single-column
-card, and narrower ones a two-line summary — nothing ever wraps past the
-terminal edge. Returning users (and screens shorter than 30 rows) always get
+card, and narrower ones a two-line summary, keeping content within the
+terminal width under the current layout strategy. Returning users (and screens shorter than 30 rows) always get
 the compact form; `/clear` prints a one-line session summary instead of
 redrawing the whole card.
 
@@ -90,9 +91,12 @@ A status bar is pinned to the bottom of the terminal (TTY mode only):
 streaming │ postgres|kb|glm-5.2 │ ↑1.4k ↓120 0.1%/1.0M │ 4.2s
 ```
 
-- `↑1.4k` — latest LLM call's input tokens
-- `↓120` — latest LLM call's output tokens
-- `0.1%` — current context usage (latest input / context window)
+- `↑1.4k` / `↓120` — input/output tokens **aggregated across the current
+  agent loop** (the user prompt being processed): a multi-step task with N
+  tool-call rounds shows the sum over all N LLM calls, not the latest single
+  call's numbers
+- `0.1%` — context usage, computed from the peak single-call input within
+  the loop relative to the context window (not a simple sum)
 - `1.0M` — context window size
 
 Updates live during streaming, tool calls, and phase transitions. When a
@@ -141,7 +145,9 @@ streaming agent output above can never disturb your in-progress text.
   ends, since they may switch model / KB / project state the in-flight turn
   still depends on. Plan-confirmation menus are unaffected.
 - If the task finishes before a queued instruction can be delivered mid-run,
-  it is handed to a fresh turn right after — nothing you type is lost.
+  it is handed to a fresh turn right after — under normal operation and
+  normal turn-ending paths nothing you type is lost (a crash or kill of the
+  process is outside this guarantee).
 
 ## Input history and its permissions
 

@@ -15,8 +15,9 @@ the model judges a task complex enough to warrant a strategy decision
 several affected subsystems), it calls the `plan` tool:
 
 - a one-line summary, plus
-- 2–5 ordered steps, each with 2–4 candidate strategies — one marked
-  recommended.
+- an intended shape of 2–5 ordered steps, each with 2–4 candidate
+  strategies (one marked recommended). These counts are the expected shape
+  the tool prompt asks the model for, not hard runtime ceilings.
 
 Simple tasks skip `plan` entirely and execute directly.
 
@@ -40,10 +41,13 @@ Once a plan is confirmed, a live panel is pinned above the status bar:
     4. Commit and push
 ```
 
-After finishing each confirmed step the agent calls `plan_step` once to
-advance the panel (`step` is 1-based; omit it to advance the current step).
-Marking the last step done clears the panel automatically — no separate
-finish call is needed. Tasks that never called `plan` never show a panel.
+After finishing each confirmed step the agent calls `plan_step` once; each
+call marks the CURRENT in-progress step done and advances the panel — the
+`step` argument is accepted but deliberately ignored for the mutation, so
+invalid, out-of-range, or out-of-order values never jump steps. When the
+last step completes the panel clears automatically, and when the turn ends
+normally a finalization pass clears any panel left un-advanced (a backstop).
+Tasks that never called `plan` never show a panel.
 
 The panel survives interruption: interrupted-task state (original request,
 summary, plan progress) is persisted, and `hk2 --resume` restores it (see
@@ -64,9 +68,10 @@ LLM re-reviews the finalized plan before execution begins. The reviewer:
 
 The reviewer's thinking stream renders live as `✎ thinking` (dim italic,
 capped at 9 lines by default — `HK2_HIDE_THINKING=0` for the full stream),
-followed by its analysis, which also streams. Reviews always run with
-reasoning enabled and **no fixed timeout** — the reviewer waits for the LLM
-to finish (you can still abort) so a deep review is never cut off mid-reply.
+followed by its analysis, which also streams. Reviews run with reasoning
+enabled and no hk2-side deadline — hk2 does not cut the review off itself,
+but you can still abort, and network failures, provider disconnects, or
+process termination can still end it.
 
 Plan review is active only in interactive TTY mode and is best-effort: any
 failure returns the already-confirmed plan unchanged.

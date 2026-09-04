@@ -40,6 +40,11 @@ flowchart TB
         PLANR[lib/agent/plan.js / plan_review.js / code_review.js]
         MCP[lib/agent/mcp.js]
         TR[lib/agent/transcript.js<br/>JSONL transcript]
+        FACTS[lib/agent/session_facts.js<br/>compaction-immune session facts]
+        TSTATE[lib/agent/task_state.js<br/>interrupted-task state]
+    end
+    subgraph StatusFmt[Shared status formatting]
+        SF[src/commands/status_format.js<br/>status bar + plan progress]
     end
     subgraph Retrieval[Retrieval]
         RW[lib/retrieval/rewrite_query.js]
@@ -54,6 +59,8 @@ flowchart TB
         GB[lib/graph/builder.js]
         GT[lib/graph/traverse.js]
         CKPT[lib/index/checkpoint.js]
+        DGR[lib/index/doc_graph.js<br/>doc links / tables / doc-symbol refs]
+        DIS[lib/store/doc_index_store.js<br/>doc_index.json]
     end
     subgraph Parsers[Parsers]
         AST[lib/parser/ast.js<br/>dispatcher]
@@ -77,6 +84,11 @@ flowchart TB
     REPL & TUI --> SI
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
+    LOOP --> FACTS
+    TURN --> TSTATE
+    REPL & TUI --> SF
+    IDX --> DGR
+    DGR --> DIS
     LOOP --> TOOLS
     TOOLS --> CS & KS & MCP
     GRAPH --> CS
@@ -122,11 +134,14 @@ flowchart TB
   `phase_fallback.js` implements the phase-model fallback policy.
 - **Agent core** — `lib/agent/loop.js` runs the LLM/tool rounds with
   caching and stuck detection; `tools.js` is the tool registry plus the
-  KB-first guard; `system_prompt.js` builds the prompt (Supreme Code before
-  KB context); `graph.js` assembles the per-request KB graph;
-  `plan.js`/`plan_review.js`/`code_review.js` implement planning and
+  KB-first guard; `system_prompt.js` builds the prompt (Supreme Code, when
+  non-empty, before KB context); `graph.js` assembles the per-request KB
+  graph; `plan.js`/`plan_review.js`/`code_review.js` implement planning and
   reviews; `mcp.js` attaches MCP tools; `transcript.js` writes the JSONL
-  session transcript.
+  session transcript; `session_facts.js` maintains the compaction-immune
+  `## Session facts` standing message (persisted as `<sid>.facts.json`);
+  `task_state.js` persists interrupted-task state
+  (`sessions/<projectId>/taskstate.json`) for `--resume` recovery.
 - **Retrieval** — `lib/retrieval/` : `rewrite_query.js` (query rewrite +
   request assessment), `code_search.js` (BM25 search), `context_builder.js`
   and `kb_runtime.js` (in-memory KB cache and context assembly).
@@ -137,8 +152,13 @@ flowchart TB
 - **Index / graph** — `lib/index/indexer.js` orchestrates a build (walk →
   parse → BM25 + graph + file/symbol registries), with `walker.js` (globs +
   `.gitignore`), `checkpoint.js` (resumable builds), `summarize.js` (LLM
-  summaries); `lib/graph/builder.js` builds nodes/edges from Symbols and
-  `traverse.js` answers graph queries.
+  summaries), and `doc_graph.js` (document graph: Markdown links between
+  docs, extracted tables and code blocks, doc↔doc and doc↔symbol
+  references, persisted via `doc_index_store.js` as `doc_index.json`);
+  `lib/graph/builder.js` builds nodes/edges from Symbols and `traverse.js`
+  answers graph queries. `src/commands/status_format.js` is the shared
+  formatting module behind the status bar and the plan-progress panel,
+  used by both front-ends.
 - **Store / config** — `lib/store/*` persists the KB (holy/eden entries,
   graph, indexes, supreme code); `lib/config/home.js` owns `HK2_HOME`,
   `models.json`, `projects.json`; `lib/config/setting.js` loads and resolves
@@ -180,8 +200,10 @@ flowchart TB
 
 Everything hk2 persists lives under `HK2_HOME` (default `~/.hk2`) — see
 [Configuration](../reference/configuration.md) for the full tree: the model
-and project registries, permission rules, per-project KBs, session
-transcripts, theme, input history, and logs.
+and project registries, permission rules, per-project KBs (including
+`doc_index.json` and the per-space knowledge indexes), session transcripts,
+per-session facts (`<sid>.facts.json`) and interrupted-task state
+(`taskstate.json`), theme, input history, and logs.
 
 ## Source tree (condensed)
 

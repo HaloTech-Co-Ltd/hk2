@@ -19,7 +19,9 @@ scanning of `bash` commands) with a Unix-style permission model:
 
 - **Inside the project: permissive by default.** Paths inside the current
   project roots (`cwd` + `HK2_PROJECT_SOURCE`) are fully operable — `rwx`
-  for files and directories. Your own project is trusted.
+  for files and directories — unless an explicit rule or the hard-denoed
+  config paths override it (an `allow: r` rule on a project path makes it
+  read-only; see below).
 - **Outside the project: default deny.** Any path outside those roots is
   denied unless a rule grants it.
 - A rule on a directory covers **everything inside it** (like directory
@@ -29,9 +31,12 @@ scanning of `bash` commands) with a Unix-style permission model:
 
 ## Configuration files
 
-Two layers are merged (see `setting.example.json` at the repo root). **Both
-live under `HK2_HOME` — deliberately outside the agent-writable project
-tree, so the model can never rewrite the rules that bound its own sandbox**:
+Two layers are merged (see `setting.example.json` at the repo root). Both
+live under `HK2_HOME`, which defaults to `~/.hk2` and sits outside the
+project tree — but since `HK2_HOME` can point anywhere, the real guarantee
+is different: **writes to `setting.json` and `settings/**` are hard-denied
+for the agent no matter where they live**, so the model cannot rewrite the
+rules that bound its own sandbox:
 
 > **Reinstall warning**: when the install dir is also `~/.hk2` (the
 > default), re-running `install.sh` from an outside checkout **deletes
@@ -79,10 +84,11 @@ mode set for their target.
 
 Invalid config (e.g. `"allow": "q"`, a missing `allow`/`deny` field, or an
 entry carrying both) is reported as a load-time warning naming the dropped
-entry — only the offending rule is dropped, the system degrades to
-deny-by-default rather than crashing, and every other rule keeps working. An
-empty `permissions: []` array is a valid "no rules" config and produces no
-warning.
+entry — only the offending rule is dropped and every other valid rule keeps
+working. The base policy is unchanged by the drop: outside the project
+roots everything stays denied; inside them the permissive project default
+still applies. An empty `permissions: []` array is a valid "no rules"
+config and produces no warning.
 
 ## What is enforced where
 
@@ -139,9 +145,11 @@ a `read()` of the source file:
 
 ## Credentials and file permissions
 
-- Inputs carrying credentials (`--api-key=…`, `--token=…`, `Authorization`
-  headers, `password=`/`secret=` values) are never written to the input
-  history.
+- Inputs matching the current credential-detection patterns
+  (`--api-key=…`, `--token=…`, `Authorization` headers,
+  `password=`/`secret=` values) are not written to the input history. The
+  detection is pattern-based — it covers these common shapes, not every
+  possible way of typing a secret.
 - `~/.hk2` is created 0700; `models.json`, `projects.json`, and
   `~/.hk2/history.jsonl` are kept owner-only (0600, migrated on boot).
 - MCP server options store the `$APIKEY` placeholder — the provider key is
@@ -163,6 +171,10 @@ What it does **not** provide:
   reachable paths, and untrusted code reviewed before execution.
 - network isolation. Nothing restricts what the agent's `bash` commands or
   MCP servers can reach over the network.
+- any constraint **inside** an MCP server. The local permission service
+  checks the built-in tools (`read`/`write`/`edit`/`find`/`grep`/`ast_*`
+  ...); an external MCP server's own file or network access is not gated by
+  these path checks — trust and restrict MCP servers independently.
 
 ## Related documentation
 

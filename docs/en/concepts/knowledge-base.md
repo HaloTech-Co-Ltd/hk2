@@ -6,9 +6,10 @@ This page explains hk2's per-project knowledge base: the three-space model
 (Holy / Eden / Index), what lives in each space, how entries are updated, and
 Project Supreme Code — the protected entry that outranks everything else.
 
-Every registered project gets its own KB, isolated by project UUID under
-`~/.hk2/kb/<projectId>/`. Nothing is shared between projects; dropping a
-project preserves its KB until you delete it explicitly.
+A project registered with `/project init` gets its own KB once `/kb init`
+runs, isolated by project UUID under `~/.hk2/kb/<projectId>/`. Nothing is
+shared between projects; dropping a project preserves its KB directory until
+you delete it explicitly.
 
 ## The three-space model
 
@@ -40,13 +41,19 @@ change often; Index is derived data that can always be rebuilt from source.
 1. **Creation** — an entry enters Holy or Eden through: manual
    `/kb knowledge add`, deep-study (`/kb knowledge learn`), import
    (`/kb knowledge import`), the end-of-turn `[kb learn]` capture, or
-   `/kb init`'s auto-generated summaries.
+   `/kb init`'s auto-generated summaries. Direct user commands like
+   `/kb knowledge add --space=holy` are themselves the explicit intent and
+   write immediately; confirmation prompts apply to the *agent-proposed*
+   paths (`kb_save_knowledge`, `[kb learn]`, imports into Holy, housekeep
+   merges, conflicts).
 2. **Use** — the agent retrieves entries via `kb_knowledge` / `kb_search_knowledge`,
    and related entries are injected as per-request context.
-3. **Validation on write** — every learned entry is checked against existing
-   entries before writing (duplicates skipped, related entries merged in
-   place, conflicts resolved — Holy conflicts always defer to the user).
-   Disable with `HK2_KB_LEARN_VALIDATE=0`.
+3. **Validation on write** — entries proposed by *learning* paths are
+   validated against existing entries by default
+   (`HK2_KB_LEARN_VALIDATE=1`): duplicates are skipped, related entries
+   merged in place, conflicts resolved — Holy conflicts always defer to the
+   user. With `HK2_KB_LEARN_VALIDATE=0` the legacy heuristic discard path
+   runs instead; validation failures fall through as plain new entries.
 4. **Curation** — `/kb knowledge housekeep` merges duplicates and resolves
    Eden↔Holy conflicts; `/kb transform` moves an entry between spaces
    (confirmation required).
@@ -58,23 +65,26 @@ change often; Index is derived data that can always be rebuilt from source.
 
 Every project's Holy Space carries one **permanent, protected entry** —
 `hk2-supreme-code` — holding the project's *fundamental laws*: short,
-imperative rules that EVERY hk2 operation (reading, writing, editing,
-planning, answering) must obey and can never violate. It is created **empty**
-by `/kb init` (legacy projects get an empty shell auto-created), so nothing is
-enforced until you write laws into it.
+imperative rules that every hk2 operation (reading, writing, editing,
+planning, answering) is instructed to obey at top priority (model-level
+compliance; see the injection note below). It is created **empty** by
+`/kb init` (legacy projects get an empty shell auto-created), so nothing is
+injected until you write laws into it.
 
 - **Design purpose**: a single, always-visible place for the project owner to
   encode non-negotiable constraints — security policies, coding standards,
   compliance requirements — that outrank the agent's general preferences and
   every other KB entry.
-- **Injection**: on each request the items are rendered into the system prompt
-  as a `# Project Supreme Code (MUST OBEY — never violate)` section placed
-  *before* the KB knowledge-graph context. If an operation would violate any
-  item, the agent must refuse it, cite the item's number, and propose a
-  compliant alternative.
-- **Protection**: the entry itself can never be deleted, renamed, moved,
-  emptied, imported over, or auto-updated — enforced at both the command layer
-  and the storage layer.
+- **Injection (model-level)**: when the entry has at least one item, each
+  request renders them into the system prompt as a
+  `# Project Supreme Code (MUST OBEY — never violate)` section placed
+  *before* the KB knowledge-graph context, instructing the agent to refuse
+  violating operations, cite the item's number, and propose a compliant
+  alternative. Compliance is a high-priority model instruction, not a
+  formally verified execution guarantee. An empty entry injects nothing.
+- **Protection (hard limits)**: the entry itself cannot be deleted, renamed,
+  moved, emptied, imported over, or auto-updated — enforced at both the
+  command layer and the storage layer.
 
 Usage (the only way to modify it; every write requires an explicit y/N
 confirmation):
@@ -96,11 +106,11 @@ in their own Holy entry, referenced from a code item as `**KB(entry-id)**`.
 ## Auto-generated Eden entries
 
 `/kb init` and `/kb knowledge learn` produce complementary sets of
-LLM-authored Eden entries. None require manual writing — both commands
-overwrite prior versions on each run.
+LLM-authored Eden entries — no manual writing required.
 
-**`/kb init`** writes 3 high-level structural entries (skipped with
-`--skip-summary`):
+**`/kb init`** rewrites 3 fixed-id structural entries **when a model is
+configured and `--skip-summary` is not passed** (without an LLM the index is
+still built and only these entries are skipped):
 
 | Entry id | Contents |
 |---|---|
@@ -108,7 +118,9 @@ overwrite prior versions on each run.
 | `architecture-diagram` | A Mermaid flowchart of module / layer relationships with a short legend. |
 | `architecture-decisions` | 4–8 ADR-style entries inferred from detected technologies, each with concrete modification suggestions. |
 
-**`/kb knowledge learn`** in CODE mode writes survey + topic entries (see
+**`/kb knowledge learn`** in CODE mode writes an optional Phase-0 survey
+(fixed ids below — generated only when not `--dry-run`, no `--base-dir`,
+and no `--no-survey`) plus validated dynamic topic entries (see
 [Knowledge workflows](../guides/knowledge-workflows.md) for the full mode
 matrix):
 
@@ -127,7 +139,9 @@ Retrieve any of them via `kb_knowledge("<id>")` or
 Two env flags control what the agent may write to the KB without asking:
 
 - `HK2_ENABLE_AUTO_LEARN=1` — end-of-turn knowledge capture writes to Eden
-  silently. **Holy always prompts y/N**, regardless of this flag.
+  silently. **Holy always prompts y/N**, regardless of this flag (this
+  confirmation applies to agent-proposed captures; direct commands like
+  `/kb knowledge add --space=holy` are your own explicit intent).
 - `HK2_ENABLE_AUTOUPDATEKB=1` — a silent incremental `/kb update` (Index
   Space) runs at the end of any turn where the agent fell back to `bash` to
   search source files. This only refreshes derived index data, never Holy or

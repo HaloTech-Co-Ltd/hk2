@@ -51,8 +51,10 @@
  *   hk2 --mode=project-init --name=... --source=... [--source-root=...]
  *                                           Register a project from CLI
  *   hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
- *                                           Build KB for the current project
- *   hk2 --mode=update-kb                     Incrementally update the KB
+ *                                           Build a KB (target resolved via
+ *                                           HK2_KB_NAME, else the current
+ *                                           project's built KB, else 'default')
+ *   hk2 --mode=update-kb                     Incrementally update that KB
  *   hk2 --run-mode=serve                     Legacy REPL
  *   hk2 --help
  */
@@ -133,10 +135,12 @@ Usage:
       Equivalent to: /project init inside the REPL.
 
   hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
-      Build KB for the current project (full re-index).
+      Build a KB (full re-index). The target KB is resolved in order:
+      $HK2_KB_NAME, else the current project's UUID when its KB is already
+      built, else a KB named 'default'.
 
   hk2 --mode=update-kb
-      Incrementally update the current project's KB.
+      Incrementally update the KB resolved the same way.
 
   hk2 --run-mode=serve
       Legacy REPL (command-style, no agent loop).
@@ -148,11 +152,12 @@ Usage:
       Print this help.
 
 Interactive REPL commands (full list via /help; per-command usage via /help <command>):
-  /model list | add | set | set-default | set-phase | types | use | del | show
+  /model list | add | set | set-default | set-phase | add-mcpserver | types | use | del | show
   /project init | list | set | show | drop
-  /kb init | update | status | search | symbol | neighbors | knowledge | transform | drop
+  /kb init | update | status | search | symbol | neighbors | knowledge | code | transform | drop
   /session info | list | new | resume | compact
-  /clear | /compact | /help | /quit
+  /resume | /remember | /forget | /review | /theme
+  /clear | /compact | /help | /quit | /exit
 
 Session resume:
   hk2 --resume                     Resume the current project's latest session

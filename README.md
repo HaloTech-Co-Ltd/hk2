@@ -2,9 +2,10 @@
 
 # hk2
 
-A knowledge-base (KB) driven agent, purpose-built for coding. Every session's
-discoveries are distilled into durable knowledge, so hk2 starts each new
-task already knowing what the last one learned.
+A knowledge-base (KB) driven agent, purpose-built for coding. Discoveries
+made during a session can be distilled into durable knowledge, so later
+tasks can start from what earlier ones learned — provided the knowledge was
+saved and is retrieved as context.
 
 English | [简体中文](README_zh.md)
 
@@ -25,8 +26,9 @@ it.
   Eden Space (fast-moving catalogs and summaries), Index Space (BM25 +
   graph), each with its own update and approval policy.
 - **Tree-sitter AST indexing** — native grammars for 15 languages (14
-  packages), with transparent regex fallback; symbols, call chains, class
-  hierarchies, and imports become a queryable graph.
+  packages); regex fallback covers most languages when grammars are
+  unavailable (C# has no fallback), turning symbols, call chains, class
+  hierarchies, and imports into a queryable graph.
 - **Per-request context injection** — related symbols, call chains, class
   membership, knowledge entries, and docs are retrieved and injected before
   the LLM answers.
@@ -37,8 +39,10 @@ it.
 - **Deep-study** — `/kb knowledge learn` has an LLM survey the codebase (or
   documents) and author reusable knowledge entries; large projects switch
   to directory-level planning automatically.
-- **Project Supreme Code** — a protected, always-injected entry holding the
-  project's non-negotiable laws that every agent operation must obey.
+- **Project Supreme Code** — a protected Holy entry holding the project's
+  non-negotiable laws; once you add items they are rendered into every
+  system prompt at top priority (model-level compliance — the storage-level
+  protections on the entry itself are hard limits).
 - **Plans and reviews** — user-confirmed plans with a live progress panel,
   optional plan review and code review of the completed work.
 - **Two front-ends, one agent** — a classic line REPL and a Claude

@@ -23,15 +23,13 @@ flowchart TD
     ASSESS -- unclear --> MENU[Clarification menu] --> RW2[Re-rewrite with answer] --> KB2[Re-retrieve] --> SP
     ASSESS -- clear --> SP
     KB --> ASSESS
-    SP[System prompt + KB context<br/>Supreme Code first] --> LOOP[Agent loop<br/>LLM call + tool calls]
-    LOOP --> PLAN{plan tool called?}
-    PLAN -- yes --> CONFIRM[User confirms plan<br/>+ optional plan review]
+    SP[System prompt + KB context<br/>Supreme Code when non-empty] --> LOOP[Agent loop<br/>LLM call + tool calls]
+    LOOP --> TOOLS{Tool calls?}
+    TOOLS -- yes --> EXEC[Execute tools] --> QUEUE[Inject queued user input<br/>at the round boundary] --> LOOP
+    TOOLS -- no --> ANS[Final answer]
+    LOOP -.plan tool.-> CONFIRM[User confirms plan<br/>+ optional plan review]
     CONFIRM --> LOOP
-    PLAN -- no --> MORE{More tool rounds?}
-    MORE -- yes --> LOOP
-    MORE -- no --> ANS[Final answer]
-    LOOP --> |mid-round| EOT[End of turn:<br/>kb update offer, kb learn capture,<br/>conflict sync, code review]
-    ANS --> EOT
+    ANS --> EOT[End of turn:<br/>kb update offer, kb learn capture,<br/>conflict sync, plan finalize,<br/>code review]
 ```
 
 ## Pre-agent pipeline
@@ -95,8 +93,10 @@ The system prompt is built with a fixed section order (lib/agent/
 2. Knowledge-base-first policy and the preferred KB tools
 3. Available tools and usage guidelines
 4. Working directory and project info
-5. `# Project Supreme Code (MUST OBEY — never violate)` — always **before**
-   every other injected context
+5. `# Project Supreme Code (MUST OBEY — never violate)` — rendered only
+   when the entry has items, always **before** every other injected context
+   (model-level compliance; the storage protections on the entry itself are
+   the hard limits)
 6. `# Filesystem permission sandbox` — the effective permission summary
 7. `# Knowledge-base context` — the per-request retrieval results
 8. Project context files (e.g. README) and any appended tail
@@ -107,10 +107,12 @@ files is suppressed when its source file is denied read permission (see
 [Security and permissions](../guides/security-and-permissions.md)).
 
 A second standing message — `## Session facts` — sits right after the main
-system prompt on every turn. It carries the session's recorded facts
-(`/remember`, the `remember` tool, compaction-time extraction) and survives
-every compaction by design, so environment facts stated at any point in a
-long session stay in scope. See
+system prompt on every turn. It carries the session's recorded facts and
+survives compaction by design: facts explicitly saved via `/remember` or the
+`remember` tool (and successfully persisted to disk) are preserved
+deterministically, while the compaction-time extraction that rescues facts
+from turns about to be summarized is best-effort — early statements are not
+guaranteed to be captured. See
 [Slash commands](../reference/slash-commands.md#remember).
 
 ## The agent loop
@@ -127,8 +129,9 @@ tools. Guardrails:
 - **Mid-task input queueing** — plain text typed while a turn runs is queued
   and injected as in-task guidance at the next round boundary (after the
   current action completes, before the next LLM call), batched into one
-  message; slash commands wait for the turn to end. Anything not delivered
-  mid-run becomes a fresh turn — nothing is lost. See
+  message; slash commands wait for the turn to end. On normal turn-ending
+  paths anything not delivered mid-run becomes a fresh turn — nothing is
+  lost (a crash or kill of the process is outside this guarantee). See
   [REPL and TUI](../guides/repl-and-tui.md).
 
 The full tool registry is documented in [Agent tools](../reference/agent-tools.md).

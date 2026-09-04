@@ -8,8 +8,10 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
 
 ## `HK2_HOME` 目录结构
 
-`HK2_HOME` 默认为 `~/.hk2`，可通过 `HK2_HOME` 环境变量覆盖。目录以 0700
-创建；存放密钥的文件为 0600。
+`HK2_HOME` 默认为 `~/.hk2`，可通过 `HK2_HOME` 环境变量覆盖。创建时 hk2
+会把目录 chmod 为 0700、存放密钥的文件（`models.json`、`projects.json`）
+chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必具备 POSIX 权限
+语义）。
 
 ```text
 ~/.hk2/
@@ -24,6 +26,7 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
 │   └── <projectId>/                  # 每个项目的知识库（见下文）
 ├── sessions/
 │   └── <projectId>/
+│       ├── taskstate.json            # 中断任务状态（--resume 时还原）
 │       ├── <sessionId>.jsonl         # 会话记录（JSONL）
 │       └── <sessionId>.facts.json    # 会话事实存储（/remember）
 └── logs/
@@ -100,11 +103,12 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
       "sourceRoot": "src",
       "includeGlobs": ["**/*.js", "**/*.ts", "**/*.py"],
       "excludeGlobs": ["**/node_modules/**"],
-      "extraRoots": [],
+      "extraRoots": [{ "name": "docs", "relRoot": "docs" }],
       "defaultModel": "local/mymodel",
       "phaseModels": { "rewriteQuery": "local/mymodel" },
       "kbBuiltAt": "2026-07-24T16:41:44.248Z",
-      "createdAt": "2026-07-24T16:41:43.000Z"
+      "createdAt": "2026-07-24T16:41:43.000Z",
+      "updatedAt": "2026-07-24T16:41:44.000Z"
     }
   }
 }
@@ -112,15 +116,17 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
 
 字段说明：
 
-- `current`——当前项目指针（UUID）。
+- `current`——共享 / 全局默认项目指针（UUID）。经 `hk2 --project=<名称>`
+启动的会话仅固定本会话项目，不改写该指针。
 - `sourcePath`——项目所在路径；`sourceRoot`——被索引的子目录（为空时整棵
   树）。
 - `includeGlobs` / `excludeGlobs`——`/kb init` 使用的 glob 集合；默认值
   覆盖常见源码与文档扩展名。
 - `extraRoots`——通过 `--extra=<名称>:<相对路径>,...` 注册的命名额外根；
-  在主根之外一并遍历。
+  在主根之外一并遍历。元素形状为 `{ "name": "...", "relRoot": "..." }`。
 - `defaultModel`——`/model set-default current <ref>` 写入的项目级默认模型
   覆盖；`--clear` 移除。
+- `updatedAt`——项目写入时维护的最后修改时间戳。
 - `phaseModels`——`/model set-phase` 写入的项目级阶段模型覆盖（存储键为
   `rewriteQuery`、`requestAssess`、`planReview`、`codeReview`）。
 
@@ -167,13 +173,15 @@ hk2 磁盘配置参考：`HK2_HOME` 目录、模型注册表、项目注册表�
 ├── callgraph.json            # Index Space——旧版调用图（由 graph 派生）
 ├── symbols.0000.json         # Index Space——分片符号表
 ├── stats.json                # Index Space——构建统计
-├── checkpoint.json           # 可恢复构建状态（临时）
+├── checkpoint.json           # 可恢复构建状态（临时——成功后清除）
 ├── summaries/                # 每符号摘要（按需）
 └── backup/                   # 升级前知识快照
 ```
 
 ## 会话与日志
 
+- **中断任务状态**——`~/.hk2/sessions/<projectId>/taskstate.json` 持久化
+  被中断的任务（原始请求、摘要、计划进度），`--resume` 时还原。
 - **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。每轮追加
   用户消息、工具调用、智能体回复与元数据（`assess`、`rewrite`、`graph`、
   `codeReview`、`learned_knowledge`、用量统计）。`--resume` 重放记录以还原

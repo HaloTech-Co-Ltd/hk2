@@ -23,13 +23,17 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 ### `read`
 
-读取文件内容——**仅支持文本文件**。超过 **5 MiB** 的文件直接拒绝
+读取 **UTF-8 文本**文件——不支持图片或二进制内容。超过 **5 MiB** 的文件直接拒绝
 （`file too large: N bytes`——分页读取也无济于事）。在此限内，输出带行号，
 超过 2000 行或 256KB（先到为准）时截断；用 `offset`/`limit` 继续读取。
-二进制文件会被拒绝（前 8192 个字符中出现 NUL 字节即返回
-`binary file (NUL byte detected): … — read only supports text files`）。
-对知识库已知的代码文件，内容前附带结构性 `## Outline (from KB)` 章节
-（`outline=false` 禁用）；结果携带 `tag` 用于陈旧锚点保护。写入：否。
+前 8192 个解码字符中含 NUL 字节的文件会按二进制拒绝
+（`binary file (NUL byte detected): … — read only supports text files`）
+——这是 NUL 扫描启发式，不是完整的二进制格式识别。
+对符合条件（eligible）的已索引源文件，内容前附带结构性
+`## Outline (from KB)` 章节（`outline=false` 禁用），且结果可能携带用于
+陈旧锚点保护的 `tag`（见[陈旧锚点保护](#陈旧锚点保护tag)）；资格跟随工具
+注册表识别的扩展名清单，比完整解析器支持范围更窄（例如 `.cs` 与
+`.kts` 会被索引但不在 outline/tag 资格内）。写入：否。
 
 ### `write`
 
@@ -49,17 +53,20 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 在当前工作目录执行 shell 命令；返回 stdout + stderr（截断），可选超时
 （秒）。权限检查为尽力而为（见[安全与权限](../guides/security-and-permissions.md)）。
+可选超时（秒）：默认 60、硬上限 60（更大的值会被钳制；`0` 回退为默认值）。
 写入：可能——请视为写入类工具。
 
 ### `find`
 
 基于 glob 模式的文件搜索；返回相对搜索目录的路径，超过 1000 条截断。
-写入：否。
+内部遍历器跳过 `.git` 与 `node_modules`，但**不**应用仓库的
+`.gitignore`。写入：否。
 
 ### `grep`
 
 正则内容搜索；带 file:line 的匹配行，超过 100 条截断（长行截断到 240
-字符），每次调用最多覆盖 2000 个文件。写入：否。
+字符），每次调用最多覆盖 2000 个文件。内部遍历器跳过 `.git` 与
+`node_modules`，但**不**应用仓库的 `.gitignore`。写入：否。
 
 ## 结构化工具
 
@@ -74,12 +81,13 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 跨文件结构化重写。每个操作为 `{pat, out}`，使用相同的元变量语法（捕获可
 替换进 `out`）。**自身绝不写盘**：返回统一 diff 预览 + `proposalId`，并
-暂存写入。可选 `tag` 在预览时校验目标文件。写入：仅暂存——通过
-`resolve` 应用。
+暂存写入。可选 `tag` 会与**每个**目标文件比对——一个 tag 应用于全部文件，
+因此主要适用于单文件重写；多文件提案请省略 tag，依赖 `resolve` 阶段的
+逐文件复验。写入：仅暂存——通过 `resolve` 应用。
 
 ### `resolve`
 
-`ast_edit` 的两阶段提交：`action:"apply"` 写入全部暂存文件（先逐个复验
+`ast_edit` 的两步预览/应用流程：`action:"apply"` 写入全部暂存文件（先逐个复验
 内容 tag）；失败时**尝试**用先前内容恢复已写入的文件——回滚是尽力而为，
 不是事务性保证（回滚写入自身失败会被记录并跳过）。`action:"discard"`
 丢弃暂存不写入。写入：是（apply 时）。
@@ -97,10 +105,11 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 ### `plan_step`
 
-把当前已确认计划的某一步标记为完成并推进实时进度面板。每个已确认计划
-步骤完成后调用一次；`step` 从 1 开始（省略则推进当前步骤）。无活动计划时
-为空操作；最后一步完成后面板自动清除。请勿在 `plan` 返回已确认计划之前
-调用。写入：否。
+把已确认计划的**当前** in_progress 步骤标记为完成并推进实时进度面板——
+每个步骤完成后调用一次。`step` 参数虽被接受但变更时被刻意忽略（状态机
+始终推进当前步骤；非法、越界或乱序取值都不会导致跳步）。无活动计划时为
+空操作；最后一步完成后面板自动清除，回合正常结束时还有收尾兜底清理未
+推进的面板。请勿在 `plan` 返回已确认计划之前调用。写入：否。
 
 ## 知识库查询工具
 
@@ -109,10 +118,10 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 | 工具 | 用途 |
 |---|---|
-| `kb_search` | 自然语言 / 关键词符号搜索——BM25 + 名称匹配重排，返回文件路径、行范围与摘要。默认经 LLM 改写查询（`skip_rewrite=true` 跳过）；前 3 个结果携带 ±15 行源码切片（`with_slice=false` 禁用） |
+| `kb_search` | 自然语言 / 关键词符号搜索——BM25 + 名称匹配重排，返回文件路径、行范围与摘要。有可用 LLM 时默认经 LLM 改写查询（`skip_rewrite=true` 跳过）；前 3 个结果携带 ±15 行源码切片（`with_slice=false` 禁用）。`top_k`：默认 10，有效范围钳制在 5–50（低于 5 的取值仍至少返回 5 条） |
 | `kb_symbol` | 按精确标识符查找符号；返回全部匹配候选 |
 | `kb_outline` | 来自知识库索引的文件大纲——每个符号的名称 / 种类 / 行号 / 签名 / 父类 / 子项数；对"这个文件里有什么？"比 `read` 更轻量；返回 `tag` 供编辑安全使用 |
-| `kb_neighbors` | 某符号的调用图 1 跳邻居（旧版） |
+| `kb_neighbors` | 某符号的旧版一跳**出向**调用图邻居（它调用了谁；无 direction 参数——要找调用者请用 `kb_callchain` 的 `direction=backward`/`both`） |
 | `kb_callchain` | 对调用图做有界 BFS——按 `max_depth` 跳数返回调用者 / 被调用者，以 `max_nodes` 为上限 |
 | `kb_class` | 类 / 接口 / 结构体查询：签名、docString、成员、父类、直接实现 |
 | `kb_refs` | 反向查找：调用者、导入者、派生类（`kind=call\|import\|inherit\|any`） |
@@ -146,7 +155,8 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 - 尽力而为：存储失败降级为"本轮无事实"，绝不阻塞管线。
 
 用户侧由 `/remember` / `/forget` 驱动同一存储；压缩时的一次抽取也会
-抢救即将被总结掉的事实（见[智能体工作流](../concepts/agent-workflow.md)）。
+*尝试*保留即将被总结掉的事实——该抽取属于尽力而为（见
+[智能体工作流](../concepts/agent-workflow.md)）。
 
 ## MCP 工具
 
@@ -159,13 +169,15 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 
 每条代码发现路径都优先使用知识库索引而非重新解析：
 
-- `kb_outline`、`kb_symbol`、`kb_search` 与图谱工具直接读取索引——无文件
-  系统访问，无重新解析。
+- `kb_outline`、`kb_symbol` 与图谱工具直接读取索引——无文件系统访问，无
+  重新解析。`kb_search` 的排序来自索引中的 BM25，但默认会为前 3 个结果
+  从文件系统加载 ±15 行源码切片（受读取权限约束；`with_slice=false` 关闭）。
 - 对代码文件调用 `read` 会前置知识库大纲，使智能体在查看内容前先了解
   结构。
-- 未先使用知识库工具就调用 `bash grep/find/cat` 或直接 `read`，会得到一次
-  性的 `[kb-first policy hint]` 前置提示；智能体使用任意知识库工具后，该
-  提示停止出现，表明后续的 bash/read 回退是有意为之。
+- `bash grep/find/cat` 与直接 `read` 会得到 `[kb-first policy hint]` 前置
+  提示——**每次 LLM 调用最多一次**，且仅当该次调用尚未使用任何知识库工具
+  （bash、read 与独立的 find/grep 各有自己的提示）；任一知识库工具运行后，
+  本次 LLM 调用内提示停止，表明后续 bash/read 回退是有意为之。
 - 当 `ast_grep` 的模式为单个精确标识符时，会发出同样的提示引导至
   `kb_symbol`。
 
@@ -189,8 +201,11 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 
 ## 陈旧锚点保护（`tag`）
 
-`read` 与 `kb_outline` 的结果包含 `tag`——文件内容哈希的前 8 位十六进制
-字符。把它回传到后续的 `edit` 或 `ast_edit` 调用中，若文件自 tag 生成以来
+`read` 与 `kb_outline` 的结果包含 `tag`——**索引时记录在 KB 索引中的**
+文件哈希的前 8 位十六进制字符（不是对刚读字节的现算哈希；索引之外的
+文件没有 tag）。`edit` 会拿它与当前磁盘内容的哈希比对，因此索引过期
+（文件在上次 `/kb init`/`update` 后变了）可能拒绝一次有效编辑——此时请先
+运行 `/kb update` 再重新 read/kb_outline 获取更新后的索引标签，或省略 tag。把它回传到后续的 `edit` 或 `ast_edit` 调用中，若文件自 tag 生成以来
 已被修改，工具将拒绝该变更：
 
 ```text
@@ -199,7 +214,8 @@ edit({path:"src/foo.js", old_string:..., new_string:..., tag:"a1b2c3d4"})
   -> 匹配则通过；不匹配则报错："stale tag: file changed since read..."
 ```
 
-`resolve` 在应用时复验 tag，任一失败即回滚。
+`resolve` 在应用时复验 tag；失败时尝试恢复已写入的文件——尽力而为，
+不是事务性保证（回滚写入自身失败会被忽略）。
 
 ## 暂缓的能力
 

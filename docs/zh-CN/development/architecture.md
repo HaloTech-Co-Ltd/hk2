@@ -38,6 +38,11 @@ flowchart TB
         PLANR[lib/agent/plan.js / plan_review.js / code_review.js]
         MCP[lib/agent/mcp.js]
         TR[lib/agent/transcript.js<br/>JSONL 会话记录]
+        FACTS[lib/agent/session_facts.js<br/>免压缩会话事实]
+        TSTATE[lib/agent/task_state.js<br/>中断任务状态]
+    end
+    subgraph StatusFmt[共享状态格式]
+        SF[src/commands/status_format.js<br/>状态栏 + 计划进度]
     end
     subgraph Retrieval[检索]
         RW[lib/retrieval/rewrite_query.js]
@@ -52,6 +57,8 @@ flowchart TB
         GB[lib/graph/builder.js]
         GT[lib/graph/traverse.js]
         CKPT[lib/index/checkpoint.js]
+        DGR[lib/index/doc_graph.js<br/>文档链接 / 表格 / 文档-符号引用]
+        DIS[lib/store/doc_index_store.js<br/>doc_index.json]
     end
     subgraph Parsers[解析器]
         AST[lib/parser/ast.js<br/>分发器]
@@ -75,6 +82,11 @@ flowchart TB
     REPL & TUI --> SI
     REPL & TUI --> TURN
     TURN --> RW & GRAPH & LOOP & TSUP & SESSCTX
+    LOOP --> FACTS
+    TURN --> TSTATE
+    REPL & TUI --> SF
+    IDX --> DGR
+    DGR --> DIS
     LOOP --> TOOLS
     TOOLS --> CS & KS & MCP
     GRAPH --> CS
@@ -115,9 +127,12 @@ flowchart TB
   支撑流程；`phase_fallback.js` 实现阶段模型回退策略。
 - **智能体核心**——`lib/agent/loop.js` 运行带缓存与卡死检测的 LLM/工具
   轮次；`tools.js` 是工具注册表与知识库优先守卫；`system_prompt.js` 构建
-  提示词（最高准则先于知识库上下文）；`graph.js` 组装按请求知识图谱；
-  `plan.js`/`plan_review.js`/`code_review.js` 实现规划与审查；`mcp.js`
-  挂载 MCP 工具；`transcript.js` 写 JSONL 会话记录。
+  提示词（非空的最高准则先于知识库上下文）；`graph.js` 组装按请求知识
+  图谱；`plan.js`/`plan_review.js`/`code_review.js` 实现规划与审查；
+  `mcp.js` 挂载 MCP 工具；`transcript.js` 写 JSONL 会话记录；
+  `session_facts.js` 维护免受压缩影响的 `## Session facts` 常驻消息
+  （持久化为 `<sid>.facts.json`）；`task_state.js` 持久化中断任务状态
+  （`sessions/<projectId>/taskstate.json`）供 `--resume` 恢复。
 - **检索**——`lib/retrieval/`：`rewrite_query.js`（查询改写 + 请求评估）、
   `code_search.js`（BM25 搜索）、`context_builder.js` 与 `kb_runtime.js`
   （内存知识库缓存与上下文组装）。
@@ -126,9 +141,12 @@ flowchart TB
   `generic_parser.js`）。`doc_parser.js` 把文档格式处理为 Eden 条目。
 - **索引 / 图谱**——`lib/index/indexer.js` 编排一次构建（遍历 → 解析 →
   BM25 + 图谱 + 文件 / 符号注册表），配合 `walker.js`（globs +
-  `.gitignore`）、`checkpoint.js`（可恢复构建）、`summarize.js`（LLM 摘要）；
-  `lib/graph/builder.js` 从 Symbol 构建节点 / 边，`traverse.js` 应答图谱
-  查询。
+  `.gitignore`）、`checkpoint.js`（可恢复构建）、`summarize.js`（LLM 摘要）
+  与 `doc_graph.js`（文档图谱：文档间 Markdown 链接、提取的表格与代码块、
+  文档↔文档与文档↔符号引用，经 `doc_index_store.js` 持久化为
+  `doc_index.json`）；`lib/graph/builder.js` 从 Symbol 构建节点 / 边，
+  `traverse.js` 应答图谱查询。`src/commands/status_format.js` 是状态栏与
+  计划进度面板共用的格式模块，两个前端都在使用。
 - **存储 / 配置**——`lib/store/*` 持久化知识库（holy/eden 条目、图谱、
   索引、最高准则）；`lib/config/home.js` 拥有 `HK2_HOME`、`models.json`、
   `projects.json`；`lib/config/setting.js` 加载并解析文件系统权限规则。
@@ -167,7 +185,9 @@ flowchart TB
 
 hk2 的全部持久化内容都在 `HK2_HOME`（默认 `~/.hk2`）下——完整目录树见
 [配置](../reference/configuration.md)：模型与项目注册表、权限规则、项目级
-知识库、会话记录、主题、输入历史与日志。
+知识库（含 `doc_index.json` 与各空间知识索引）、会话记录、每会话事实
+（`<sid>.facts.json`）与中断任务状态（`taskstate.json`）、主题、输入历史
+与日志。
 
 ## 源码目录（精简版）
 

@@ -67,7 +67,12 @@ Sections: `getting-started/`, `concepts/`, `guides/`, `reference/`,
 |---|---|
 | Slash commands | `src/slash/help.js`, `src/slash/*.js` |
 | CLI flags | `src/cli.js` |
+| Runtime system prompt claims | `lib/agent/system_prompt.js` |
 | Agent tools | `lib/agent/tools.js`, related agent modules |
+| Status bar and plan progress | `src/commands/status_format.js` |
+| Session facts | `lib/agent/session_facts.js` |
+| Interrupted task state | `lib/agent/task_state.js` |
+| Document graph / doc index | `lib/index/doc_graph.js`, `lib/store/doc_index_store.js` |
 | Filesystem permissions | `lib/config/setting.js`, `setting.example.json` |
 | Model configuration | `lib/config/home.js`, `src/slash/model.js`, `lib/llm/*` |
 | Environment variables | Code-wide `process.env` search (`rg -n "process\.env\|HK2_[A-Z0-9_]+" src lib bin install.sh`) |
@@ -97,11 +102,13 @@ verifies:
 - `docs/en` and `docs/zh-CN` contain the same relative paths;
 - every page pair links to each other (language switch);
 - local Markdown links and images in `README.md`, `README_zh.md`, and
-  `docs/**/*.md` resolve to real files;
+  every file under `docs/` resolve to real files;
+- every fenced code block (backtick or tilde fences, any length ≥ 3)
+  carries a language tag, and no fence is left unclosed;
 - quality gates: no unfilled repository-URL placeholders and no
-  unfinished-work markers anywhere in docs,
-  the root READMEs link to each other, to their language's docs index, and
-  `docs/README.md` links both language indexes.
+  unfinished-work markers anywhere in docs (raw text, including code
+  examples), the root READMEs link to each other, to their language's docs
+  index, and `docs/README.md` links both language indexes.
 
 All problems are reported before a non-zero exit — fix everything it lists.
 

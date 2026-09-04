@@ -19,7 +19,7 @@ own tuning. References always use the form `<provider>/<model-id>`, e.g.
 - hk2 speaks two API dialects: the OpenAI-compatible chat-completions
   protocol (`--api=openai`, the common choice for self-hosted gateways) and
   the Anthropic messages protocol (`--api=anthropic`).
-- One install manages unlimited providers and models.
+- One install manages multiple providers and models.
 
 ### `id` vs `name`
 
@@ -72,12 +72,13 @@ Common flags (full list in [Slash commands](../reference/slash-commands.md)):
 behavior. Types with declared features validate `--model-options` — e.g.
 `--model-type=glm-5.3` (and `glm-5.3-flash`) accepts
 `{"reasoning_effort":"max"}` with max (deep reasoning) the default and
-recommended, or high (enhanced) / low (light). Unlisted types fall back to
-`generic`.
+recommended, or high (enhanced) / low (light). Omitting the flag (or an old
+record missing the field) defaults to `generic`; passing an **unknown** type
+is rejected by the command.
 
-As an alternative to manual entry, setting `ANTHROPIC_API_KEY` or
-`OPENAI_API_KEY` in the environment auto-creates a matching provider on
-first init.
+As an alternative to manual entry, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
+in the environment seeds a matching provider **once, when the model registry
+file is first created** — later starts do not re-scan or append.
 
 ## Phase models
 
@@ -96,10 +97,13 @@ project:
 /model set-phase --phase=code-review --clear
 ```
 
-When unset, a phase uses the session model. If a configured phase model is
-unreachable, `HK2_ENABLE_PHASEMODEL_FALLBACK` decides between re-running the
-phase on the session model (default) or skipping it — the review phases
-always skip rather than silently substitute a different reviewer. See
+When unset, a phase uses the session model. A configured phase model is
+resolved through the registry first — an unresolvable ref (unknown
+provider/model) never reaches the network: `rewrite-query` /
+`request-assess` warn and follow `HK2_ENABLE_PHASEMODEL_FALLBACK` (re-run on
+the session model by default, or skip at `0`), while the review phases
+always warn and skip rather than silently substitute a different reviewer.
+Reachability failures after a real call follow the same policy split. See
 [Planning and review](planning-and-review.md).
 
 ## Claude Code first-run import
@@ -146,8 +150,8 @@ Projects are registered in `~/.hk2/projects.json` with a generated UUID; the
 /project set name new-name
 /project set source /new/path
 /project set source-root src
-/project set include '**/*.sql'
-/project set exclude 'vendor/**'
+/project set include <full-glob-list-with-your-addition>
+/project set exclude <full-glob-list-with-your-addition>   # both REPLACE the defaults
 /project show
 /project drop myapp
 ```

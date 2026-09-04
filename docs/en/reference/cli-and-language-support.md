@@ -68,7 +68,9 @@ hk2 --mode=update-kb
 hk2 --run-mode=serve         # legacy command-style REPL (no agent loop)
 ```
 
-`--run-mode` accepts `once` (default) or `serve`.
+`--run-mode` accepts `once` or `serve`. `once` is the internal default used
+when a `--mode` one-shot command is present; running `hk2 --run-mode=once`
+**without** `--mode` is an error, not the interactive mode.
 
 ### Version and help
 
@@ -141,16 +143,22 @@ Markdown (`.md` `.markdown`), plain text (`.txt` `.rst` `.adoc`), JSON,
 YAML (`.yaml` `.yml`), HTML (`.html` `.htm`), SGML are parsed with the
 standard library. Extension-less convention files (README, LICENSE,
 CHANGELOG, CONTRIBUTING, AUTHORS, NOTICE...) are treated as documents.
-PDF (`.pdf`) and Word (`.docx`) require the optional `pdf-parse` /
-`mammoth` packages; legacy Office binaries (`.doc`, `.pptx`, `.ppt`) are
-extracted dependency-free. Parsed documents are routed into Eden Space as
-`doc:<relpath>` entries.
+`.pdf` requires the optional `pdf-parse` package and Word `.docx` requires
+`mammoth`. `.pptx` is extracted via the built-in OOXML ZIP/XML reader, and
+the older `.doc` / `.ppt` binaries via a built-in best-effort
+printable-text heuristic — the built-in extraction is not a full Office
+renderer and does not guarantee recovery of complex layouts, charts,
+embedded objects, or every text run. Parsed documents are routed into Eden
+Space as `doc:<relpath>` entries.
 
 ### Not covered
 
-Files whose extension matches no mapping above are skipped by the indexer —
-no symbols, no document entries. Add an include glob and a fallback only if
-you need them.
+An extension with no language mapping still gets scanned if an include glob
+matches it, but the generic parser returns an empty symbol list for it
+(non-document files with no mapping end up in the file registry with zero
+symbols). Document formats listed above are handled by the doc parser
+instead. Add an explicit language mapping only if you need symbols from a
+new extension.
 
 ## Related documentation
 

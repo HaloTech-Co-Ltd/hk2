@@ -19,6 +19,8 @@ flowchart LR
     C --> E[Knowledge graph<br/>nodes + edges]
     C --> F[File registry<br/>+ sharded symbol table]
     G[Documents<br/>md/pdf/docx/...] --> H[Doc parser] --> I[Eden doc: entries]
+    G --> K[Doc graph<br/>links, tables, code blocks,<br/>doc-to-doc + doc-to-symbol refs]
+    K --> L[doc_index.json]
     C --> J[LLM summaries<br/>project-overview etc.]
 ```
 
@@ -56,8 +58,9 @@ A Symbol record is the common currency of the KB. Both the Tree-sitter path
 and the regex fallback emit the same shape; the AST path additionally fills
 `qualName`, `parentSymbolId`, `superClass`, `implements`, `imports`, and
 `docString`. Everything downstream — BM25, graph, outlines, call chains —
-consumes Symbols, which is why a missing grammar only lowers precision
-instead of breaking the pipeline.
+consumes Symbols, so a missing grammar lowers precision for languages that
+HAVE a regex fallback — and produces no symbols at all for languages without
+one (notably C#).
 
 ## The knowledge graph
 
@@ -81,6 +84,13 @@ Edge kinds:
 - **imports** — file-level import edges between the symbols they define
 - **inherits** — class → base-class edges
 - **contains** — class → member (method/field) containment
+
+Besides the per-symbol graph, hk2 builds a **document graph**
+(`lib/index/doc_graph.js`, persisted via `doc_index.json`): Markdown links
+between documents, tables and code blocks extracted from docs, references
+between documents, and references from documents to indexed source symbols.
+Query-relevant structured tables and doc↔code references are surfaced with
+the per-request context.
 
 The graph is queried via the agent tools (see
 [Agent tools](../reference/agent-tools.md)):
@@ -108,7 +118,11 @@ mention the fact only in their body).
 
 ## Per-request context injection
 
-For each user message, before the agent loop starts, hk2:
+For each substantive user message, before the agent loop starts, hk2 may
+run (each stage is gated — clear conversational follow-ups take the
+fast lane and skip all of them; rewrite and assessment can be disabled by
+environment variables; assessment runs only where interactive prompting is
+available):
 
 1. Rewrites the query into retrieval terms (LLM call — see
    [Agent workflow](agent-workflow.md) for the full pre-agent pipeline).
@@ -132,14 +146,15 @@ injected context while pure metadata stays visible (see
 
 - **Incremental update** — `/kb update` re-hashes files (sha256) and
   re-parses only the changed ones, then rebuilds the derived indexes. It also
-  auto-detects a legacy KB layout and upgrades it losslessly (knowledge
-  snapshot to `backup/pre-upgrade-<ts>/` first; a parser-version change
-  triggers a full re-index).
+  auto-detects a legacy KB layout: knowledge entries are backed up to
+  `backup/pre-upgrade-<ts>/` first, then the migration is applied (a
+  parser-version change triggers a full re-index).
 - **Checkpoints** — `/kb init` saves a checkpoint every N files
-  (`--checkpoint-interval=N`, default `HK2_KB_CHECKPOINT_INTERVAL=100`). If
-  the build is interrupted, re-running resumes from the checkpoint — no
-  re-parsing of completed files. `--no-checkpoint` disables checkpointing,
-  `--no-resume` starts fresh.
+  (`--checkpoint-interval=N`, default `HK2_KB_CHECKPOINT_INTERVAL=100`).
+  After an interruption, re-running resumes from the most recent saved
+  checkpoint: files recorded there are skipped, while work done after that
+  checkpoint but before the next save is re-done. `--no-checkpoint` disables
+  checkpointing, `--no-resume` starts fresh.
 - **Large projects** — parsing parallelism scales with the CPU count; the
   `/kb knowledge learn` planner switches from file-level to directory-level
   planning above 300 indexed files (see

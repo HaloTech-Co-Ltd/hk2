@@ -24,15 +24,19 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 
 ### `read`
 
-Read file contents — **text files only**. Files larger than **5 MiB** are
+Read **UTF-8 text** files — no image or binary content support. Files larger than **5 MiB** are
 rejected outright (`file too large: N bytes` — pagination cannot help).
 Below that, output is line-numbered and truncated at 2000 lines or 256KB
-(whichever is hit first); continue with `offset`/`limit`. Binary files are
-rejected (a NUL byte in the first 8192 characters returns
-`binary file (NUL byte detected): … — read only supports text files`). For
-code files known to the KB, a structural `## Outline (from KB)` section is
-prepended (`outline=false` disables); the result carries a `tag` for
-stale-anchor protection. Writes: no.
+(whichever is hit first); continue with `offset`/`limit`. Files whose first 8192
+decoded characters contain a NUL byte are rejected as binary
+(`binary file (NUL byte detected): … — read only supports text files`) —
+this is a NUL-scan heuristic, not full binary-format detection. For
+eligible indexed source files, a structural `## Outline (from KB)` section is
+prepended (`outline=false` disables) and the result may carry a `tag` for
+stale-anchor protection (see [Stale-anchor protection](#stale-anchor-protection-tag));
+eligibility follows the tool registry's recognized-extension list, which is
+narrower than full parser support (e.g. `.cs` and `.kts` are indexed but not
+outline/tag-eligible). Writes: no.
 
 ### `write`
 
@@ -55,17 +59,23 @@ minted. Writes: yes.
 Execute a shell command in the current working directory; returns stdout +
 stderr (truncated), optional timeout in seconds. Permission-checked
 best-effort (see [Security and permissions](../guides/security-and-permissions.md)).
-Writes: potentially — treat as a writing tool.
+Optional timeout in seconds: default 60, hard-capped at 60 (larger values
+are clamped; `0` falls back to the default). Writes: potentially — treat as
+a writing tool.
 
 ### `find`
 
 Glob-pattern file search; returns paths relative to the search directory,
-truncated at 1000 results. Writes: no.
+truncated at 1000 results. The internal walker skips `.git` and
+`node_modules` but does **not** evaluate the repository's `.gitignore`.
+Writes: no.
 
 ### `grep`
 
 Regex content search; matching lines with file:line, truncated at 100
-matches (long lines to 240 chars), covering up to 2000 files per call. Writes: no.
+matches (long lines to 240 chars), covering up to 2000 files per call. The
+internal walker skips `.git` and `node_modules` but does **not** evaluate
+the repository's `.gitignore`. Writes: no.
 
 ## Structural tools
 
@@ -82,12 +92,14 @@ identifier the KB knows, a kb-first hint points at `kb_symbol`. Writes: no.
 Structural rewrite across files. Each op is `{pat, out}` using the same
 metavariable syntax (captures substitute into `out`). **Never writes to disk
 itself**: it returns a unified-diff preview plus a `proposalId` and stashes
-the writes. Optional `tag` validates target files at preview time. Writes:
-staged only — applied via `resolve`.
+the writes. The optional `tag` is compared against **every** target file, so
+one tag applies to all files — it mainly suits single-file rewrites; for
+multi-file proposals omit the tag and rely on the per-file re-validation at
+`resolve` time. Writes: staged only — applied via `resolve`.
 
 ### `resolve`
 
-Two-phase commit for `ast_edit`: `action:"apply"` writes every staged file
+Two-step preview/apply flow for `ast_edit`: `action:"apply"` writes every staged file
 (re-validating each content tag); on a failure it **attempts** to restore
 the already-written files from their previous contents — rollback is
 best-effort, not a transactional guarantee (a rollback write that itself
@@ -110,11 +122,14 @@ shape. Writes: no.
 
 ### `plan_step`
 
-Mark a step of the currently confirmed plan complete and advance the live
-progress panel. Call once after finishing each confirmed plan step; `step`
-is 1-based (omit to advance the current step). No-op when no plan is active;
-the panel clears automatically after the last step. Do not call before
-`plan` returns a confirmed plan. Writes: no.
+Advance the live progress panel by marking the CURRENT in-progress step of
+the confirmed plan as done — call once after finishing each step. The
+`step` argument is accepted but deliberately ignored for the mutation (the
+state machine always advances the current step; invalid, out-of-range, or
+out-of-order values never jump steps). No-op when no plan is active; the
+panel clears after the last step, and a normal turn end finalizes any panel
+left un-advanced as a backstop. Do not call before `plan` returns a
+confirmed plan. Writes: no.
 
 ## KB query tools
 
@@ -123,10 +138,10 @@ that mirrors a denied source file is suppressed (metadata stays visible).
 
 | Tool | Purpose |
 |---|---|
-| `kb_search` | Natural-language / keyword symbol search — BM25 + name-match reranking, with file paths, line ranges, snippets. Query is LLM-rewritten by default (`skip_rewrite=true` to skip); top-3 results carry a ±15-line source slice (`with_slice=false` to disable) |
+| `kb_search` | Natural-language / keyword symbol search — BM25 + name-match reranking, with file paths, line ranges, snippets. Query is LLM-rewritten by default when an LLM is available (`skip_rewrite=true` to skip); top-3 results carry a ±15-line source slice (`with_slice=false` to disable). `top_k`: default 10, clamped to an effective range of 5–50 (values below 5 still return at least 5) |
 | `kb_symbol` | Look up a symbol by exact identifier; all matching candidates |
 | `kb_outline` | File outline from the KB index — name / kind / lines / signature / parent / child count per symbol; cheaper than `read` for "what's in this file?"; returns a `tag` for edit safety |
-| `kb_neighbors` | Call-graph 1-hop neighbors of a symbol (legacy) |
+| `kb_neighbors` | Legacy one-hop **outgoing** call-graph neighbors of a symbol (what it calls; no direction parameter — use `kb_callchain` with `direction=backward`/`both` for callers) |
 | `kb_callchain` | Bounded BFS over the call graph — callers and/or callees up to `max_depth` hops, capped at `max_nodes` |
 | `kb_class` | Class / interface / struct lookup: signature, doc string, members, super-classes, direct implementations |
 | `kb_refs` | Reverse lookup: callers, importers, deriving classes (`kind=call\|import\|inherit\|any`) |
@@ -164,8 +179,9 @@ Boundaries (enforced by the tool guidelines the model receives):
   blocks the pipeline.
 
 Users drive the same store via `/remember` / `/forget`; a compaction-time
-extraction pass also rescues facts from turns about to be summarized away
-(see [Agent workflow](../concepts/agent-workflow.md)).
+extraction pass also *attempts* to preserve facts from turns about to be
+summarized away — that extraction is best-effort (see
+[Agent workflow](../concepts/agent-workflow.md)).
 
 ## MCP tools
 
@@ -179,13 +195,18 @@ skipped with a warning. See
 
 Every code-discovery path favours the KB index over fresh parsing:
 
-- `kb_outline`, `kb_symbol`, `kb_search`, and the graph tools read directly
-  from the index — no filesystem hit, no reparse.
+- `kb_outline`, `kb_symbol`, and the graph tools read directly from the
+  index — no filesystem hit, no reparse. `kb_search` ranks via BM25 from
+  the index, but by default loads a ±15-line source slice for the top 3
+  results from the filesystem (bounded by read permissions; disable with
+  `with_slice=false`).
 - `read` on a code file prepends the KB-sourced outline so the agent sees
   structure before content.
-- `bash grep/find/cat` and direct `read` calls without a prior KB tool get a
-  one-time `[kb-first policy hint]` prepend; after the agent uses any KB
-  tool the hint stops, signalling that subsequent bash/read fallbacks are
+- `bash grep/find/cat` and direct `read` calls get a
+  `[kb-first policy hint]` prepend — **once per LLM call** while no KB tool
+  has run yet in that call (bash, read, and standalone find/grep each carry
+  their own hint); once any KB tool runs, the hints stop for the rest of
+  that LLM call, signalling that subsequent bash/read fallbacks are
   intentional.
 - `ast_grep` with a single exact identifier emits the same hint toward
   `kb_symbol`.
@@ -212,7 +233,12 @@ Examples:
 ## Stale-anchor protection (`tag`)
 
 `read` and `kb_outline` results include a `tag` — the first 8 hex chars of
-the file's content hash. Echo it into subsequent `edit` or `ast_edit` calls
+the file hash **recorded in the KB index at indexing time** (not a fresh
+hash of the just-read bytes; files outside the index get no tag). `edit`
+compares it against a hash of the current on-disk content, so a stale index
+(file changed since the last `/kb init`/`update`) can reject a valid edit —
+run `/kb update` and read/kb_outline again to refresh the indexed tag, or
+omit the tag in that case. Echo it into subsequent `edit` or `ast_edit` calls
 and the tool rejects the change if the file was modified since the tag was
 minted:
 
@@ -222,7 +248,9 @@ edit({path:"src/foo.js", old_string:..., new_string:..., tag:"a1b2c3d4"})
   → ok on match, error: "stale tag: file changed since read..." on mismatch
 ```
 
-`resolve` re-validates tags at apply time and rolls back on any failure.
+`resolve` re-validates tags at apply time; on failure it attempts to
+restore already-written files — best-effort, not a transactional guarantee
+(a rollback write that itself fails is ignored).
 
 ## Deferred capabilities
 

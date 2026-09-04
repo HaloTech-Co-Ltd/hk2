@@ -18,6 +18,8 @@ flowchart LR
     C --> E[知识图谱<br/>节点 + 边]
     C --> F[文件注册表<br/>+ 分片符号表]
     G[文档<br/>md/pdf/docx/...] --> H[文档解析器] --> I[Eden doc: 条目]
+    G --> K[文档图谱<br/>链接、表格、代码块、<br/>文档间 + 文档到符号引用]
+    K --> L[doc_index.json]
     C --> J[LLM 摘要<br/>project-overview 等]
 ```
 
@@ -50,7 +52,8 @@ flowchart LR
 Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路径产出相同
 结构；AST 路径额外填充 `qualName`、`parentSymbolId`、`superClass`、
 `implements`、`imports` 与 `docString`。下游一切——BM25、图谱、大纲、调用
-链——都消费 Symbol，这就是缺失语法只会降低精度而不会中断管线的原因。
+链——都消费 Symbol，因此缺失语法对*有*正则回退的语言只是降低精度；对
+没有回退解析器的语言（尤其是 C#）则完全不产出符号。
 
 ## 知识图谱
 
@@ -75,6 +78,11 @@ Symbol 记录是知识库的通用货币。Tree-sitter 路径与正则回退路�
 - **inherits**——类 → 基类边
 - **contains**——类 → 成员（方法 / 字段）包含关系
 
+除符号图谱外，hk2 还构建**文档图谱**（`lib/index/doc_graph.js`，经
+`doc_index.json` 持久化）：文档间的 Markdown 链接、从文档提取的表格与
+代码块、文档之间的引用，以及文档对已索引源码符号的引用。与查询相关的
+结构化表格和文档↔代码引用会随按请求上下文一起呈现。
+
 图谱通过智能体工具查询（见[智能体工具](../reference/agent-tools.md)）：
 
 - `kb_callchain`——对调用图做有界 BFS（前向、后向、双向）
@@ -98,7 +106,9 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 
 ## 按请求注入上下文
 
-对每条用户消息，智能体循环开始之前，hk2 会：
+对每条实质性用户消息，智能体循环开始之前，hk2 *可能*执行以下阶段
+（每个阶段都有开关——明确的会话性后续输入走快速通道全部跳过；改写与
+评估可经环境变量关闭；评估仅在可交互提示的场景运行）：
 
 1. 把查询改写为检索词（LLM 调用——完整前置管线见
    [智能体工作流](agent-workflow.md)）。
@@ -118,13 +128,14 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 ## 增量更新、检查点与恢复
 
 - **增量更新**——`/kb update` 对文件重新计算 sha256，仅重新解析变化的
-  文件，然后重建派生索引。它还会自动检测旧版知识库布局并无损升级（先把
-  知识内容快照到 `backup/pre-upgrade-<ts>/`；解析器版本变化会触发全量
-  重建）。
+  文件，然后重建派生索引。它还会自动检测旧版知识库布局：先把
+  知识条目备份到 `backup/pre-upgrade-<ts>/`，再按当前迁移代码处理（解析器
+  版本变化会触发全量重建）。
 - **检查点**——`/kb init` 每处理 N 个文件保存一次检查点
-  （`--checkpoint-interval=N`，默认 `HK2_KB_CHECKPOINT_INTERVAL=100`）。构建
-  被中断后重新运行会从检查点恢复——已完成文件无需重新解析。
-  `--no-checkpoint` 禁用检查点，`--no-resume` 从头开始。
+  （`--checkpoint-interval=N`，默认 `HK2_KB_CHECKPOINT_INTERVAL=100`）。中断
+  后重新运行从*最近一次*已保存的检查点恢复：其中记录的文件被跳过，而该
+  检查点之后、下次保存之前完成的工作会被重做。`--no-checkpoint` 禁用
+  检查点，`--no-resume` 从头开始。
 - **大型项目**——解析并行度随 CPU 数扩展；`/kb knowledge learn` 的规划器
   在索引文件超过 300 个时从文件级切换为目录级规划（见
   [知识库工作流](../guides/knowledge-workflows.md)）。
