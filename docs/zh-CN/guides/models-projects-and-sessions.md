@@ -80,28 +80,36 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 |---|---|
 | `rewrite-query` | BM25 检索前的查询改写 |
 | `request-assess` | 请求清晰度评估 |
-| `plan-review` | 已确认计划的复审（`HK2_ENABLE_PLANREVIEW=1`） |
-| `code-review` | 已完成任务的审查（`HK2_ENABLE_CODEREVIEW=1` 与 `/review code`） |
+| `plan-review` | 已确认计划的自动复审（`HK2_ENABLE_PLANREVIEW=1`） |
+| `code-review` | 轮末对已完成任务的自动审查（`HK2_ENABLE_CODEREVIEW=1`）；手动 `/review code` 命令的模型单独解析 |
 
 ```text
 /model set-phase --phase=rewrite-query local/mymodel
 /model set-phase --phase=code-review --clear
 ```
 
-未设置时阶段使用会话模型。阶段模型选择有三种不同结果：
+未设置时阶段使用会话模型。自动管线阶段与手动 `/review code` 命令的模型选择
+行为不同：
 
-- **过期 / 无法解析的注册表引用**（未知提供商或模型——`resolveModelRef`
-  返回 null）：本次解析会**静默**视为没有覆盖。阶段使用会话模型，无告警、
-  也不产生 fallback/skip 审计事件。配置中的 ref 仍然保留；提供商 / 模型恢复
-  后仍可能重新解析成功。
-- **解析本身抛出异常**（例如注册表读取或解析异常）：调用方告警并使用会话模型，
-  这不同于返回 `null` 的过期引用。
-- **已成功解析但实际调用失败**（传输 / HTTP / 超时）：`rewrite-query` /
-  `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认告警并用会话
-  模型重跑；`0` = 告警并跳过）；`plan-review` / `code-review` 告警并跳过，绝不
-  静默替换审查者。只有这类 fallback/skip 结果会作为审计记录。
+- **自动阶段**（`rewrite-query`、`request-assess` 以及自动的 `plan-review` /
+  `code-review`）——三种不同结果：
+  - **过期 / 无法解析的注册表引用**（未知提供商或模型——`resolveModelRef`
+    返回 null）：本次解析会**静默**视为没有覆盖。阶段使用会话模型，无告警、
+    也不产生 fallback/skip 审计事件。配置中的 ref 仍然保留；提供商 / 模型恢复
+    后仍可能重新解析成功。
+  - **解析本身抛出异常**（例如注册表读取或解析异常）：调用方告警并使用会话
+    模型，这不同于返回 `null` 的过期引用。
+  - **已成功解析但实际调用失败**（传输 / HTTP / 超时）：`rewrite-query` /
+    `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认告警并用
+    会话模型重跑；`0` = 告警并跳过）；自动审查则告警并跳过，绝不静默替换
+    审查者。只有这类 fallback/skip 结果会作为审计记录。
+- **手动 `/review code`**——显式无效或不存在的 `--model` 直接终止、绝不回退；
+  无显式 `--model` 时，项目 `code-review` 阶段引用过期、或阶段引用解析抛出
+  异常，都会告警并使用会话模型；审查者一旦选定，实际调用失败时告警并跳过
+  审查，不再换用另一个模型。
 
-见[规划与审查](planning-and-review.md)；静默的过期引用行为是已知限制。
+见[规划与审查](planning-and-review.md#审查模型)中的模型解析对照表；自动阶段的
+静默过期引用行为是已知限制。
 
 ## Claude Code 首启导入
 

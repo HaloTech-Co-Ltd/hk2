@@ -254,3 +254,38 @@ test('key runtime contract tokens are present in both language pages', () => {
   assert.match(enArch, /common outer gate/i);
   assert.match(zhArch, /共同外层门/);
 });
+
+test('agent-workflow: continuation upgrade lives in the request-assessment item, not auto-compact', () => {
+  const en = readFileSync('docs/en/concepts/agent-workflow.md', 'utf8');
+  const zh = readFileSync('docs/zh-CN/concepts/agent-workflow.md', 'utf8');
+  // A numbered item runs from its "N. **title**" line until the next
+  // column-0 "N. " list marker (continuation lines are indented).
+  const item = (doc, n, titleRe) =>
+    doc.match(new RegExp(`^${n}\\.\\s\\*\\*(?:${titleRe.source})\\*\\*[^\\n]*(?:\\n(?!\\d\\.\\s).*)*`, 'm'))?.[0] ?? '';
+  for (const [doc, lang] of [[en, 'English'], [zh, 'Chinese']]) {
+    const item2 = item(doc, 2, /Auto-compact check|自动压缩检查/) || '';
+    const item6 = item(doc, 6, /Request-clarity assessment|请求清晰度评估/) || '';
+    assert.ok(item2.length > 0, `${lang}: auto-compact item found`);
+    assert.ok(item6.length > 0, `${lang}: request-assessment item found`);
+    // The continuation-upgrade machinery belongs to the assessment item...
+    assert.ok(/HK2_ENABLE_CONTINUATION_UPGRADE/.test(item6), `${lang}: item 6 documents the upgrade gate`);
+    assert.ok(/enableReasoning:true/.test(item6), `${lang}: item 6 documents reasoning-enabled assessment`);
+    // ...and NOT to the auto-compact item.
+    assert.doesNotMatch(item2, /CONTINUATION_UPGRADE|followupUpgrade|enableReasoning/,
+      `${lang}: auto-compact item must not carry continuation-upgrade material`);
+  }
+});
+
+test('slash-command reference: /help <command> is the universal entry, not <command> help', () => {
+  const en = readFileSync('docs/en/reference/slash-commands.md', 'utf8');
+  const zh = readFileSync('docs/zh-CN/reference/slash-commands.md', 'utf8');
+  assert.match(en, /`\/help <command>` is the universal detailed-help entry/);
+  assert.match(zh, /`\/help <命令>` 是任意已注册命令的通用详细帮助入口/);
+  for (const [doc, lang] of [[en, 'English'], [zh, 'Chinese']]) {
+    assert.doesNotMatch(doc, /every family also supports/i, `${lang}: no every-family-help claim`);
+    assert.doesNotMatch(doc, /每个命令族.*help/, `${lang}: no every-family-help claim`);
+  }
+  // The /remember usage keeps the flag in the real (first-argument) position.
+  assert.match(en, /Usage: `\/remember \[--project\|-p\] \[fact\]`/);
+  assert.match(zh, /用法：`\/remember \[--project\|-p\] \[事实\]`/);
+});

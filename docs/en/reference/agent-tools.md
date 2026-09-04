@@ -204,11 +204,17 @@ filtered channels (metadata stays visible — see
 
 Persist a short, self-contained session fact (environment endpoints and
 addresses, ports, versions, account or machine names, deployment constraints,
-explicit preferences like "always run tests with X"). After successful
-persistence, the fact is injected into subsequent turns via a standing
-`## Session facts` system message placed right after the main system prompt and
-survives context compaction by design; a missing callback or failed write
-returns failure rather than recording it. Writes: session facts file only.
+explicit preferences like "always run tests with X"). The result contract is
+explicit: a persistence callback that writes successfully returns `ok:true`;
+a missing callback, or one returning `null`/`false`, returns `ok:false` (the
+model is told to state the fact in its reply instead); a callback that throws
+returns an `error`. After successful persistence, the fact is injected into
+subsequent turns via a standing `## Session facts` system message placed
+right after the main system prompt and survives context compaction by design.
+Writes: session facts file only. This differs from the `/remember` slash
+command, which persists via `addSessionFact()` directly and therefore
+records the fact even when the live-refresh hook is absent (see
+[Slash commands](slash-commands.md#remember)).
 
 Boundaries (enforced by the tool guidelines the model receives):
 

@@ -89,34 +89,43 @@ project:
 |---|---|
 | `rewrite-query` | Query rewrite before BM25 retrieval |
 | `request-assess` | Request-clarity assessment |
-| `plan-review` | Review of a confirmed plan (`HK2_ENABLE_PLANREVIEW=1`) |
-| `code-review` | Review of the completed task (`HK2_ENABLE_CODEREVIEW=1` and `/review code`) |
+| `plan-review` | Automatic review of a confirmed plan (`HK2_ENABLE_PLANREVIEW=1`) |
+| `code-review` | Automatic end-of-turn review of the completed task (`HK2_ENABLE_CODEREVIEW=1`); the manual `/review code` command resolves its model separately |
 
 ```text
 /model set-phase --phase=rewrite-query local/mymodel
 /model set-phase --phase=code-review --clear
 ```
 
-When unset, a phase uses the session model. Phase-model selection has three
-distinct outcomes:
+When unset, a phase uses the session model. Phase-model selection differs
+between the automatic pipeline phases and the manual `/review code` command:
 
-- **Stale/unresolvable registry ref** (unknown provider or model —
-  `resolveModelRef` returns null): treated **silently** as no override for this
-  resolution attempt. The phase uses the session model, with no warning and no
-  fallback/skip audit event. The stored ref remains in configuration and can
-  resolve again if the provider/model is restored.
-- **Resolution throws** (for example, a registry read or resolution
-  exception): the caller warns and uses the session model. This is different
-  from a stale ref returning `null`.
-- **Successfully resolved, then the call fails** (transport/HTTP/timeout):
-  `rewrite-query` / `request-assess` follow
-  `HK2_ENABLE_PHASEMODEL_FALLBACK` (warn + re-run on the session model by
-  default; `0` = warn + skip), while `plan-review` / `code-review` warn and
-  skip rather than silently substitute a different reviewer. These are the
-  fallback/skip outcomes recorded for auditing.
+- **Automatic phases** (`rewrite-query`, `request-assess`, and the automatic
+  `plan-review` / `code-review` runs) — three distinct outcomes:
+  - **Stale/unresolvable registry ref** (unknown provider or model —
+    `resolveModelRef` returns null): treated **silently** as no override for
+    this resolution attempt. The phase uses the session model, with no
+    warning and no fallback/skip audit event. The stored ref remains in
+    configuration and can resolve again if the provider/model is restored.
+  - **Resolution throws** (for example, a registry read or resolution
+    exception): the caller warns and uses the session model. This is
+    different from a stale ref returning `null`.
+  - **Successfully resolved, then the call fails** (transport/HTTP/timeout):
+    `rewrite-query` / `request-assess` follow
+    `HK2_ENABLE_PHASEMODEL_FALLBACK` (warn + re-run on the session model by
+    default; `0` = warn + skip), while the automatic reviews warn and skip
+    rather than silently substitute a different reviewer. These are the
+    fallback/skip outcomes recorded for auditing.
+- **Manual `/review code`** — an explicitly invalid or nonexistent
+  `--model` aborts the command with no fallback; with no explicit `--model`,
+  a stale project `code-review` phase ref — or a phase-ref resolution
+  exception — warns and uses the session model; once a reviewer is
+  selected, an actual call failure warns and skips the review rather than
+  switching to another model.
 
-See [Planning and review](planning-and-review.md); the silent-stale-ref
-behavior is a known limitation.
+See the model-resolution comparison table in
+[Planning and review](planning-and-review.md#review-models); the
+silent-stale-ref behavior of the automatic phases is a known limitation.
 
 ## Claude Code first-run import
 

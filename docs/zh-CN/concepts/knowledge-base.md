@@ -153,13 +153,13 @@ parser-owned 条目；删除或排除文档时可以删除对应条目。不要�
   移除已删除或被排除文档的 parser-owned 条目）；不会触碰手工撰写的 Holy
   或普通 Eden 条目。
 
+两者默认为 `0`（关闭）。见[环境变量](../reference/environment-variables.md)。
+
 ### status 自愈写入
 
 `/kb status` 通常只读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，
 它会先尽力创建空的永久条目；失败会被忽略且不单独报告，这个兼容路径可能有写盘
 副作用。首次加载 `KBRuntime` 也会尝试同样的缺失条目自愈。
-
-两者默认为 `0`（关闭）。见[环境变量](../reference/environment-variables.md)。
 
 ## 相关文档
 

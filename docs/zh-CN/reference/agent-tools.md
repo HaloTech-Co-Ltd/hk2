@@ -171,10 +171,14 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 ### `remember`
 
 持久化一条简短、自包含的会话事实（环境端点与地址、端口、版本、账号
-或机器名、部署约束、"总是用 X 跑测试"这类显式偏好）。成功持久化后，事实通过
-一条紧跟主系统提示词之后的常驻 `## Session facts` system 消息注入后续轮次，
-并按设计免受上下文压缩影响；无 callback 或写入失败会返回失败，不会记录事实。
-写入：仅会话事实文件。
+或机器名、部署约束、"总是用 X 跑测试"这类显式偏好）。结果契约是显式的：
+persistence callback 写入成功返回 `ok:true`；缺少 callback、或 callback 返回
+`null`/`false`，返回 `ok:false`（模型会被提示改为在回答中陈述该事实）；
+callback 抛出异常则返回 `error`。成功持久化后，事实通过一条紧跟主系统提示词
+之后的常驻 `## Session facts` system 消息注入后续轮次，并按设计免受上下文
+压缩影响。写入：仅会话事实文件。这与 `/remember` slash 命令不同——后者直接
+经 `addSessionFact()` 持久化，因此即使缺少实时刷新 hook 也会记录事实（见
+[斜杠命令](slash-commands.md#remember)）。
 
 边界（由模型收到的工具准则约束）：
 

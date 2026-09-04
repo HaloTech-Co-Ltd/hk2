@@ -10,9 +10,20 @@
  *
  * This module is the single source of truth for detailed usage. It backs:
  *   - `/help`               → one-line command index (from SLASH_COMMANDS descriptions)
- *   - `/help <command>`     → full usage + flags + examples for one command
- *   - `<command> help`      → same full text, reachable from each family
- *   - `<command>` (no args) → same full text via each family's default branch
+ *   - `/help <command>`     → full usage + flags + examples for one command —
+ *                             the UNIVERSAL detailed-help entry: it works for
+ *                             every registered command, families and flat
+ *                             commands alike (HELP_ALIASES maps /help exit to
+ *                             the quit text).
+ *
+ * Two further dispatch forms exist but are NOT universal:
+ *   - `<command> help` (family-local help) — only families whose dispatcher
+ *     routes a `help` subcommand offer it (/model help set,
+ *     /kb knowledge help learn, /session help, ...). Flat commands do not:
+ *     `/remember help` records the fact "help", `/clear help` clears.
+ *   - `<command>` with no args — only families with a default help branch
+ *     print help; flat commands execute their own behavior (/remember with
+ *     no args lists facts).
  *
  * Each entry in HELP_TEXT maps a command name (without the leading slash)
  * to an array of lines. Keep the lines in this style:
@@ -407,7 +418,62 @@ export const HELP_TEXT = {
     `Usage: /quit`,
     `Exit the REPL. Same as Ctrl+D. /exit is an alias.`,
   ],
+  remember: [
+    `Usage: /remember [--project|-p] [fact]`,
+    `Record a session-scoped fact (environment endpoints, ports, versions,`,
+    `account names, constraints, preferences) that later turns must not`,
+    `forget. Facts are dedup'd, capped at 100 per session / 500 chars each,`,
+    `persisted for this session, injected into every subsequent turn via the`,
+    `standing "## Session facts" system message, and survive compaction.`,
+    ``,
+    `  /remember <fact>       record the fact (persists to disk first)`,
+    `  /remember              list the current facts`,
+    ``,
+    `Flags:`,
+    `  --project | -p         ALSO append the fact to the project-level Eden`,
+    `                         entry "env-facts" (cross-session, searchable via`,
+    `                         kb_search_knowledge). Recognized only as the`,
+    `                         FIRST argument. Best-effort: a failed project`,
+    `                         save does not undo the session fact already stored.`,
+    ``,
+    `Persistence is the source of truth: the fact is recorded as soon as the`,
+    `disk write succeeds. A missing live-refresh hook only delays the`,
+    `in-memory message refresh until the next turn or reload — it never`,
+    `blocks the save. Only a storage failure leaves the fact unrecorded.`,
+    ``,
+    `Related: /forget <substring>, /help forget, /help help.`,
+  ],
+  forget: [
+    `Usage: /forget [substring]`,
+    `Remove session facts recorded via /remember.`,
+    ``,
+    `  /forget <substring>    remove EVERY fact containing the substring`,
+    `                         (substring match; prints removed/left counts)`,
+    `  /forget                remove ALL facts (y/N confirmation first)`,
+    ``,
+    `A substring that matches nothing prints the current facts list so you`,
+    `can pick a better substring. Removed facts leave the standing`,
+    `"## Session facts" message on the next refresh.`,
+    ``,
+    `Related: /help remember.`,
+  ],
+  help: [
+    `Usage: /help [command]`,
+    `The central detailed-help entry for every command.`,
+    ``,
+    `  /help                  one-line index of all commands`,
+    `  /help <command>        full usage + flags + examples for one command`,
+    `                         (e.g. /help remember, /help kb, /help model)`,
+    ``,
+    `Command families with subcommands ALSO support family-local help`,
+    `forms such as /model help set or /kb knowledge help learn. Flat`,
+    `commands (like /remember) execute their own behavior when given an`,
+    `argument — use /help <command> for their details.`,
+  ],
 };
+
+// /exit is a registered alias of /quit and shares its help text.
+const HELP_ALIASES = { exit: 'quit' };
 
 /**
  * Render the full help text for one command.
@@ -416,7 +482,8 @@ export const HELP_TEXT = {
  */
 export function renderHelp(name) {
   const key = String(name || '').replace(/^\//, '').toLowerCase();
-  return HELP_TEXT[key] ? HELP_TEXT[key].slice() : null;
+  const resolved = HELP_ALIASES[key] || key;
+  return HELP_TEXT[resolved] ? HELP_TEXT[resolved].slice() : null;
 }
 
 /**

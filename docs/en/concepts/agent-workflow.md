@@ -51,25 +51,14 @@ for obvious follow-ups:
    `HK2_AUTOCOMPACT_PCTUSED`% (default 90) of the context window, the earlier
    conversation is compacted: the last 4 user/assistant MESSAGES stay
    verbatim (messages, not 4 full turns — an alternating exchange is roughly
-   two back-and-forth rounds),
-   everything older (including tool results) is LLM-summarized into one
-   system message, with naive truncation as the fallback. Before the turns
-   are summarized away, durable user-stated facts are extracted into the
-   session facts store (best-effort, fail-open), and the summarizer input
-   keeps the conversation's head *and* tail so opening-stated facts reach
-   the summary. Facts saved explicitly via `/remember` / the `remember`
-   tool survive compaction by design; the automatic extraction is
-   best-effort. hk2 always requests `enableReasoning:true`; this does not
-   guarantee a separate reasoning stream from every provider. When tier 1 did not classify the input as a continuation, the existing assessment result can
-drive a tier-2 continuation upgrade when
-`HK2_ENABLE_CONTINUATION_UPGRADE=1`, confidence reaches
-`HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` (default `0.6`), and a prior
-conversational referent exists: a pre-commit plan, `lastTask`, or prior
-user/assistant messages. The upgrade reuses the assessment result, restores
-only available plan/task state, injects resume context only when a restored
-`lastTask` is non-empty, and records `followupUpgrade`; it is not an
-additional LLM call. With conversation history alone it performs no
-resume-context injection.
+   two back-and-forth rounds), everything older (including tool results) is
+   LLM-summarized into one system message, with naive truncation as the
+   fallback. Before the turns are summarized away, durable user-stated facts
+   are extracted into the session facts store (best-effort, fail-open), and
+   the summarizer input keeps the conversation's head *and* tail so
+   opening-stated facts reach the summary. Facts saved explicitly via
+   `/remember` / the `remember` tool survive compaction by design; the
+   automatic extraction is best-effort.
 3. **Follow-up fast lane** (`HK2_ENABLE_FOLLOWUP_FASTLANE`, default on) —
    inputs that are certainly conversational follow-ups skip the whole
    pre-agent pipeline and go straight to the agent loop, which sees the full
@@ -94,13 +83,26 @@ resume-context injection.
    one bounded LLM round judges whether the request is clear, *against the
    session context* (available task context, active plan, the assistant's latest
    message, recent turns, recorded session facts) so real follow-ups are not
-   flagged. An unclear
-   verdict surfaces a numbered clarification menu (with a free-text "other"
-   option); the chosen answer is fed back into a second rewrite + retrieval
-   pass. A low-confidence "unclear" verdict (below
+   flagged. hk2 always requests `enableReasoning:true` for this assessment;
+   this does not guarantee a separate reasoning stream from every provider.
+   An unclear verdict surfaces a numbered clarification menu (with a
+   free-text "other" option); the chosen answer is fed back into a second
+   rewrite + retrieval pass. A low-confidence "unclear" verdict (below
    `HK2_ASSESS_MIN_CONFIDENCE`, default 0.8) is treated as clear, and any
    failure falls through to the normal rewrite — the assessment is
    best-effort.
+
+   The assessment result also feeds the tier-2 continuation upgrade. When
+   tier 1 did not classify the input as a continuation, the existing
+   assessment result can drive the upgrade when
+   `HK2_ENABLE_CONTINUATION_UPGRADE=1`, confidence reaches
+   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` (default `0.6`), and a prior
+   conversational referent exists: a pre-commit plan, `lastTask`, or prior
+   user/assistant messages. The upgrade reuses the assessment result,
+   restores only available plan/task state, injects resume context only when
+   a restored `lastTask` is non-empty, and records `followupUpgrade`; it is
+   not an additional LLM call. With conversation history alone it performs
+   no resume-context injection.
 
 ## System prompt and KB context
 

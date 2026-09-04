@@ -69,17 +69,20 @@ flowchart TD
 6. **请求清晰度评估**（`HK2_ENABLE_REQUEST_ASSESS`，默认开启）——一轮
    有界 LLM 判断请求是否清晰，判断依据*包含会话上下文*（可用的任务上下文、活跃
    计划、助手最近消息、近期对话轮次、已记录的会话事实），因此真正的后续
-   输入不会被误判。不清晰的请求弹出编号澄清菜单（含自由文本"其他"
-   选项）；选定的答案会反馈到第二次改写 + 检索。低置信度的"不清晰"结论
-   （低于
-   `HK2_ASSESS_MIN_CONFIDENCE`，默认 0.8）按清晰处理；任何失败都回退到
-   正常改写流程——评估是尽力而为的。hk2 始终请求 `enableReasoning:true`，但
-   这不保证每个提供商都会返回独立 reasoning 流。当 tier 1 没有把输入分类为后续时，已有评估结果可能在 `HK2_ENABLE_CONTINUATION_UPGRADE=1`、置信度达到
-`HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`（默认 `0.6`）且存在可供后续输入引用的
-先前会话上下文（pre-commit plan、`lastTask` 或历史 user/assistant 消息）时驱动
- tier-2 continuation upgrade。升级复用评估结果，只恢复实际存在的 plan/task 状态；
-只有恢复后的 `lastTask` 非空时才注入恢复上下文，并记录 `followupUpgrade`；它不
-增加额外 LLM 调用。仅有历史对话时不会注入恢复上下文。
+   输入不会被误判。hk2 始终对该评估请求 `enableReasoning:true`，但这不保证
+   每个提供商都会返回独立 reasoning 流。不清晰的请求弹出编号澄清菜单（含
+   自由文本"其他"选项）；选定的答案会反馈到第二次改写 + 检索。低置信度的
+   "不清晰"结论（低于 `HK2_ASSESS_MIN_CONFIDENCE`，默认 0.8）按清晰处理；
+   任何失败都回退到正常改写流程——评估是尽力而为的。
+
+   评估结果还供 tier-2 continuation upgrade 使用。当 tier 1 没有把输入分类为
+   后续时，已有评估结果可能在 `HK2_ENABLE_CONTINUATION_UPGRADE=1`、置信度达到
+   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`（默认 `0.6`）且存在可供后续输入
+   引用的先前会话上下文（pre-commit plan、`lastTask` 或历史 user/assistant
+   消息）时驱动 tier-2 continuation upgrade。升级复用评估结果，只恢复实际存在
+   的 plan/task 状态；只有恢复后的 `lastTask` 非空时才注入恢复上下文，并记录
+   `followupUpgrade`；它不增加额外 LLM 调用。仅有历史对话时不会注入恢复
+   上下文。
 
 ## 系统提示词与知识库上下文
 

@@ -6,9 +6,10 @@ Complete reference for hk2's REPL/TUI slash commands. The runtime source of
 truth is `src/slash/help.js` (backing `/help` and `/help <command>`) — when
 editing this page, re-check it against that file and the command
 implementations in `src/slash/*.js`. The latest help is always available
-inside hk2 via `/help` and `/help <command>` (e.g. `/help kb`,
-`/help knowledge`); every family also supports `<command> help` drilling
-(e.g. `/model help set`, `/kb knowledge help learn`).
+inside hk2: `/help <command>` is the universal detailed-help entry for any
+registered command, and command families with subcommands additionally
+support family-local `<command> help` drilling (e.g. `/model help set`,
+`/kb knowledge help learn`).
 
 Commands are tokenized shell-style, so quoted flag values may contain
 spaces: `--title="SPI Extension Pattern"`.
@@ -219,18 +220,23 @@ Equivalent to `/session resume` — Claude Code's convention.
 
 ## `/remember`
 
-Usage: `/remember [fact] [--project|-p]` — record a session fact that, after successful persistence, stays
+Usage: `/remember [--project|-p] [fact]` — record a session fact that, after successful persistence, stays
 in scope for the whole session and survives compaction by design.
 
 - No args — list the recorded facts.
 - With a fact — persist it (max 100 facts per session, each trimmed to 500
   characters; normalized dedup). After successful persistence, the fact is
   injected into every subsequent turn via a standing `## Session facts`
-  system message, refreshed live; failed or non-interactive saves are not
-  recorded.
+  system message, refreshed live. The disk write is the source of truth:
+  only a storage failure leaves the fact unrecorded. A missing
+  live-refresh hook does not prevent the slash command from persisting the
+  fact; it only delays the in-memory message refresh until the next turn
+  or reload.
 - `--project` / `-p` — additionally append the fact to the project-level
   Eden entry `env-facts` (cross-session, searchable via
-  `kb_search_knowledge`; capped at 200 lines, append-deduped).
+  `kb_search_knowledge`; capped at 200 lines, append-deduped). The flag is
+  recognized only as the first argument, and a failed project-level append
+  never undoes the session fact already persisted.
 - Requires an active project session; without one it refuses cleanly.
 
 Facts are for environment/constraints/preferences (endpoints, ports,
@@ -266,7 +272,7 @@ unparseable verdict is reported as UNKNOWN, never as "no issues found".
 `--model` overrides the phase-configured model
 (`/model set-phase --phase=code-review`), then the session model.
 
-## Review model resolution
+### Review model resolution
 
 Automatic plan/code review and manual `/review code` resolve models differently:
 
@@ -314,9 +320,13 @@ durable session facts are extracted first (see [`/remember`](#remember)).
 
 ## `/help`
 
-`/help` lists all commands; `/help <command>` prints the full usage, flags,
-and examples for one family. The same text is reachable as
-`<command> help` (e.g. `/model help set-phase`).
+`/help` lists all commands; `/help <command>` is the universal detailed-help
+entry — it prints the full usage, flags, and examples for any registered
+command, families and flat commands alike (`/help remember`, `/help kb`,
+`/help exit`). Command families with subcommands also support family-local
+help forms such as `/model help set` or `/kb knowledge help learn`; flat
+commands do not — `/remember help` records the fact "help", `/forget help`
+removes facts matching "help", and `/clear help` still clears.
 
 ## `/quit` / `/exit`
 

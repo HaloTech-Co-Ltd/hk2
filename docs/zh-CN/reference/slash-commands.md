@@ -4,9 +4,9 @@
 
 hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/help.js`
 （支撑 `/help` 与 `/help <命令>`）——编辑本页时，请对照该文件与
-`src/slash/*.js` 中的命令实现重新核验。最新帮助始终可在 hk2 内通过
-`/help` 与 `/help <命令>`（如 `/help kb`、`/help knowledge`）查看；每个
-命令族也支持 `<命令> help` 下钻（如 `/model help set`、
+`src/slash/*.js` 中的命令实现重新核验。最新帮助始终可在 hk2 内查看：
+`/help <命令>` 是任意已注册命令的通用详细帮助入口；带子命令的命令族
+还额外支持族内 `<命令> help` 下钻（如 `/model help set`、
 `/kb knowledge help learn`）。
 
 命令按 shell 风格分词，因此带引号的参数值可以包含空格：
@@ -207,14 +207,18 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 
 ## `/remember`
 
-用法：`/remember [事实] [--project|-p]`——记录一条成功持久化后在整个会话内保持上下文、并按设计免受压缩影响的会话事实。
+用法：`/remember [--project|-p] [事实]`——记录一条成功持久化后在整个会话内保持上下文、并按设计免受压缩影响的会话事实。
 
 - 无参数——列出已记录的事实。
 - 带事实——持久化该条（每会话上限 100 条，每条裁剪到 500 字符；规范化
   去重）。成功持久化后，事实通过一条常驻的 `## Session facts` system 消息
-  注入后续每一轮，并实时刷新；失败或非交互保存不会记录。
+  注入后续每一轮，并实时刷新。磁盘写入是事实来源：只有存储失败才不会
+  记录该事实。缺少实时刷新 hook 不会阻止 slash 命令持久化事实，只会使
+  当前内存中的 system message 延迟到下一轮或重新加载时刷新。
 - `--project` / `-p`——同时把事实追加到项目级 Eden 条目 `env-facts`
   （跨会话，可被 `kb_search_knowledge` 检索；上限 200 行，追加时去重）。
+  该标志仅在第一个参数位置识别；项目级追加失败不会撤销已成功保存的
+  session fact。
 - 需要处于活动项目会话中；没有则干净地拒绝。
 
 事实用于环境信息 / 约束 / 偏好（端点、端口、版本、账号名——绝不包括
@@ -247,7 +251,7 @@ hk2 REPL/TUI 斜杠命令的完整参考。运行时的事实源是 `src/slash/h
 问题"。`--model` 覆盖阶段配置的模型
 （`/model set-phase --phase=code-review`），其次会话模型。
 
-## 审查模型解析
+### 审查模型解析
 
 自动 plan/code 审查与手动 `/review code` 的模型解析不同：
 
@@ -292,9 +296,12 @@ key（解析优先级：精确工具名 > 分组 key > `*` > 内置默认）：`
 
 ## `/help`
 
-`/help` 列出全部命令；`/help <命令>` 打印单个命令族的完整用法、参数与
-示例。同样的文本可通过 `<命令> help` 查看（如
-`/model help set-phase`）。
+`/help` 列出全部命令；`/help <命令>` 是通用的详细帮助入口——为任意已注册
+命令（无论命令族还是扁平命令）打印完整用法、参数与示例（`/help remember`、
+`/help kb`、`/help exit`）。带子命令的命令族还支持 `/model help set`、
+`/kb knowledge help learn` 等族内帮助形式；扁平命令不支持——`/remember help`
+会记录事实 "help"，`/forget help` 会删除匹配 "help" 的事实，`/clear help`
+仍会执行清空。
 
 ## `/quit` / `/exit`
 
