@@ -124,6 +124,21 @@ export function createSession(pinnedProjectId = null) {
     // at the next turn start) and used by auto context compaction.
     lastContextTokens: 0,
     planProgress: null,
+    // Cross-process interruption recovery, DEFERRED activation. reloadAll
+    // stashes a previous process's persisted planProgress here instead of
+    // pinning it onto the live panel: a FRESH session's conversation knows
+    // nothing about that plan, so silently showing it (the old behavior —
+    // "next launch shows the previous session's plan") was confusing. The
+    // first turn consumes the stash: a continuation cue ("请继续 / continue")
+    // PROMOTES it back onto the panel; a fresh task DISCARDS it. While a
+    // slash command runs it stays pending (no turn consumed it).
+    //   { planProgress, userRequest, sessionId, interruptedAt }
+    pendingRecovery: null,
+    // Boot notice for the pendingRecovery stash, built by buildRecoveryNotice
+    // when reloadAll stashes; emitted (and cleared) by the front-ends after
+    // the banner/welcome card — the same deferred-print pattern as
+    // resumeNotice (the TTY clear at status-bar/frame setup would wipe it).
+    recoveryNotice: null,
     // Set when the agent confirms a plan this turn (planConfirm callback). Used
     // to decide whether the end-of-turn Code Review step should run. lastPlanText
     // is the confirmed plan text, captured for the code-review prompt.
@@ -467,6 +482,12 @@ export async function resumeSessionInto(session, sessionId) {
   // project id `pid` — NOT session.project — so a session whose owner project
   // was deregistered (session.project === null now) still recovers its
   // interrupted task/planProgress.
+  //
+  // The boot-time pendingRecovery stash (reloadAll) is superseded here: the
+  // resume performs its own sessionId-keyed restore, and the boot notice
+  // gives way to the resumeNotice below.
+  session.pendingRecovery = null;
+  session.recoveryNotice = null;
   const saved = await loadTaskState(pid);
   if (saved && saved.userRequest && saved.sessionId === id) {
     session.lastTask = {
@@ -1066,13 +1087,22 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
       session.transcript = new Transcript(session.project.id);
       await session.transcript.logMeta('start', { pid: process.pid, cwd: process.cwd() });
     }
-    // Cross-process interruption recovery: if a previous process for this
-    // project was interrupted mid-task and persisted its task state, restore
-    // it into session.lastTask / planProgress so a "请继续 / continue" cue can
-    // resume the work. Only on the initial project load (flags.project) and
-    // only when we don't already have in-session context (a reloaded session
-    // keeps its own lastTask).
-    if (flags.project && !session.lastTask && session.project) {
+    // Cross-process interruption recovery, DEFERRED activation. A previous
+    // process for this project may have been interrupted mid-task and
+    // persisted its state (taskstate.json). Restore lastTask (so a
+    // "请继续 / continue" cue can resume the work) but do NOT pin the plan
+    // onto the live panel: this session's conversation knows nothing about
+    // that plan, and pinning it at boot was the "next launch shows the
+    // previous session's plan" bug. The plan is stashed in
+    // session.pendingRecovery instead; the FIRST turn decides — a
+    // continuation cue (or a tier-2 upgrade) promotes it back onto the
+    // panel, a fresh task discards it (see turn.js). Only on the initial
+    // project load (flags.project), only without in-session context (an
+    // existing lastTask keeps its own world), and only with an EMPTY
+    // conversation — a mid-session /project switch must not inject the new
+    // project's stale plan into a live chat.
+    if (flags.project && !session.lastTask && session.project
+        && (session.messages?.length || 0) === 0) {
       const saved = session.project ? await loadTaskState(session.project.id) : null;
       if (saved && saved.userRequest) {
         session.lastTask = {
@@ -1080,12 +1110,19 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
           capturedAt: saved.interruptedAt,
           restored: true,
         };
-        // Restore the live progress panel too, so the user sees where the
-        // interrupted task left off as soon as the session comes up.
         if (saved.planProgress && Array.isArray(saved.planProgress.steps) &&
             saved.planProgress.steps.some(st => st.status !== 'done')) {
-          session.planProgress = saved.planProgress;
-          session.statusBar?.update();
+          session.pendingRecovery = {
+            planProgress: saved.planProgress,
+            userRequest: saved.userRequest,
+            sessionId: saved.sessionId || null,
+            interruptedAt: saved.interruptedAt || null,
+          };
+          // Deferred boot notice (same pattern as resumeNotice): the REPL/TUI
+          // clear the screen for the status bar / frame AFTER reloadAll runs,
+          // so printing here would be wiped. The front-ends emit it after the
+          // banner / welcome card.
+          session.recoveryNotice = buildRecoveryNotice(session);
         }
       }
     }
@@ -1455,6 +1492,67 @@ Original user request:
 ${session.lastTask.userRequest || '(unavailable)'}${planText}
 
 Do NOT restart from scratch or re-confirm the plan. Continue the in-flight work: complete the current step, then proceed to the next. If the plan is already fully done, summarize what was accomplished and stop.`;
+}
+
+/**
+ * Promote a boot-time stashed cross-process recovery onto the live panel.
+ *
+ * reloadAll stashes a previous process's interrupted planProgress in
+ * session.pendingRecovery instead of pinning it at boot (a fresh session's
+ * conversation knows nothing about that plan). The turn pipeline calls this
+ * exactly when the user's input turns out to advance THAT task: a tier-1
+ * continuation cue ("请继续 / continue") or a tier-2 assessor upgrade. A
+ * fresh task never calls it — the stash is discarded instead
+ * (discardPendingRecovery), which is what fixes "next launch shows the
+ * previous session's plan".
+ *
+ * One-shot: consumes the stash whether or not the promotion lands. Never
+ * clobbers a live plan of this session's own. Returns the promoted
+ * planProgress (also assigned to session.planProgress), or null when nothing
+ * was promoted. Pure session mutation; the caller refreshes the status bar.
+ */
+export function promotePendingRecovery(session) {
+  const stash = session?.pendingRecovery;
+  if (!stash || !stash.planProgress) return null;
+  session.pendingRecovery = null; // consumed either way
+  // A plan this session confirmed on its own outranks the stale stash.
+  if (session.planProgress) return null;
+  const steps = Array.isArray(stash.planProgress.steps) ? stash.planProgress.steps : [];
+  if (!steps.some(s => s.status !== 'done')) return null; // nothing left to do
+  session.planProgress = stash.planProgress;
+  return stash.planProgress;
+}
+
+/**
+ * Drop a boot-time recovery stash without activating it. Called from
+ * runTurn's finally (and the clarification-cancel early return): the turn had
+ * its chance to promote, and a surviving stash must never resurface on a
+ * later turn paired with an unrelated task.
+ */
+export function discardPendingRecovery(session) {
+  if (session) {
+    session.pendingRecovery = null;
+    session.recoveryNotice = null;
+  }
+}
+
+/**
+ * Human-readable boot notice for a stashed cross-process recovery — tells the
+ * user WHERE the pending plan came from and HOW to resume or drop it. Built
+ * when reloadAll stashes (deferred printing: the front-ends emit it after the
+ * banner/welcome card, mirroring resumeNotice). Returns null when nothing is
+ * pending. Pure; exported for unit testing.
+ */
+export function buildRecoveryNotice(session) {
+  const stash = session?.pendingRecovery;
+  if (!stash || !stash.planProgress) return null;
+  const steps = Array.isArray(stash.planProgress.steps) ? stash.planProgress.steps : [];
+  const done = steps.filter(s => s.status === 'done').length;
+  const req = typeof stash.userRequest === 'string' && stash.userRequest.trim()
+    ? stash.userRequest.trim().replace(/\s+/g, ' ').slice(0, 120)
+    : '(original request unavailable)';
+  return `[recovery] A previous session was interrupted mid-task (${done}/${steps.length} plan steps done): ${req}\n`
+    + `  Type "continue" / "请继续" to resume that task — or start a new one and the old plan is dropped.`;
 }
 
 /**

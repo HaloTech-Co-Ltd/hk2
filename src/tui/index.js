@@ -780,6 +780,13 @@ export async function runTui(opts = {}) {
     session.resumeOutputsPreview = null;
     frame.writeLine('');
   }
+  // Boot-time cross-process recovery notice (pendingRecovery): same
+  // deferred-print pattern as resumeNotice — reloadAll ran before the frame
+  // cleared the screen, so emit it here after the welcome card.
+  if (session.recoveryNotice) {
+    frame.writeLine(session.recoveryNotice);
+    session.recoveryNotice = null;
+  }
   frame.requestRender();
 
   // Event-driven from here: keys drive everything; exit goes through shutdown().

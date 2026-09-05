@@ -87,6 +87,7 @@ export {
   isContinuationCue, captureMidTaskInput, buildMidTaskInjection,
   disarmMidTaskCapture, flushMidTaskQueue, buildResumeContext, buildSessionDigest,
   shouldUpgradeToContinuation,
+  promotePendingRecovery, discardPendingRecovery, buildRecoveryNotice,
 } from './session_ctx.js';
 export {
   modelTagFor, promptFor, kbBrief, formatPlanProgressLines, finalizePlanProgress, advancePlanStep,
@@ -254,6 +255,14 @@ export async function interactive(opts = {}) {
     for (const line of session.resumeOutputsPreview) console.error(line);
     session.resumeOutputsPreview = null;
     console.error('');
+  }
+  // Boot-time cross-process recovery notice (pendingRecovery): printed here
+  // for the same screen-clear reason as resumeNotice — reloadAll ran before
+  // the status-bar setup wiped the viewport. Tells the user an interrupted
+  // task's plan is PENDING (not shown) and how to resume or drop it.
+  if (session.recoveryNotice) {
+    console.error(session.recoveryNotice);
+    session.recoveryNotice = null;
   }
 
   const enqueue = async (line) => {

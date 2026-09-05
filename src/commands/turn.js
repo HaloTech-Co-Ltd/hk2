@@ -66,6 +66,7 @@ import { saveTaskState, clearTaskState } from '../../lib/agent/task_state.js';
 import {
   buildResumeContext, buildSessionDigest, buildMidTaskInjection, disarmMidTaskCapture,
   isContinuationCue, detectFollowupFast, shouldUpgradeToContinuation, reloadAll,
+  promotePendingRecovery, discardPendingRecovery,
 } from './session_ctx.js';
 import { getKbMeta } from '../../lib/index/registry.js';
 import {
@@ -459,6 +460,17 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // "continue". For a fresh (non-continuation) task, refresh lastTask now so a
   // *later* interruption can be recovered the same way.
   if (opts.continuation && session.lastTask) {
+    // A boot-time cross-process recovery stash (pendingRecovery) is PROMOTED
+    // here FIRST: this input advances the interrupted task, so its plan
+    // becomes the live panel again and the completing turn counts for the
+    // Code Review gate. Promotion must precede buildResumeContext so the
+    // injected resume message carries the promoted plan's step lines (a bare
+    // "original request" with no steps, while the text says "complete the
+    // current step", is the degraded tier-1 variant review caught).
+    if (promotePendingRecovery(session)) {
+      planActiveAtStart = true;
+      ui.statusRefresh();
+    }
     const resumeMsg = buildResumeContext(session);
     if (resumeMsg) session.messages.push({ role: 'system', content: resumeMsg });
     // Continuation with an in-flight task: the live plan block (if any) is
@@ -790,6 +802,13 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         // asserts this input advances the plan-owning task, so the completing
         // turn counts for the end-of-turn Code Review gate.
         if (preCommitPlan) planActiveAtStart = true;
+        // Same promotion as the tier-1 path: when the rolled-back plan is
+        // absent but a boot-time recovery stash is pending, the upgrade says
+        // this input advances THAT interrupted task — promote its plan now.
+        if (!preCommitPlan && promotePendingRecovery(session)) {
+          planActiveAtStart = true;
+          ui.statusRefresh();
+        }
         // Resume context — the same injection a tier-1 continuation gets at
         // the top of the turn (buildResumeContext), so the model knows it is
         // advancing the interrupted in-flight task, not starting fresh. It
@@ -842,6 +861,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
           // disarm here explicitly — leaving agentTurnActive armed would make
           // enqueue() capture (and never deliver) every subsequent line.
           disarmMidTaskCapture(session);
+          // The turn had its chance to promote the boot-time recovery stash;
+          // cancelling the clarification discards it (a later turn pairing it
+          // with an unrelated task would resurface a stale plan).
+          discardPendingRecovery(session);
           // Input box follows the same early-exit: disappear now, not on the
           // next turn's arm.
           session.disarmInputBox?.();
@@ -1637,6 +1660,15 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     }
   } finally {
     if (interruptHook) interruptHook();
+    // Boot-time recovery stash lifecycle: the turn had its chance to PROMOTE
+    // the stashed plan (tier-1 continuation / tier-2 upgrade). Whatever is
+    // still pending here is discarded — the user started (or continued into)
+    // something that did not advance the interrupted task, and a surviving
+    // stash must never resurface paired with an unrelated task on a later
+    // turn. This is the guarantee that "next launch shows the previous
+    // session's plan" cannot happen: the first real turn always consumes the
+    // stash one way or the other.
+    discardPendingRecovery(session);
     // Mid-task input: the turn is over. Disarm capture FIRST so lines arriving
     // from now on go through the normal queue path, then hand any instructions
     // that never reached a round boundary (e.g. the model's final reply had no
