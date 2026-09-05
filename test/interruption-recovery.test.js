@@ -9,11 +9,19 @@
  *
  * Run:  node --test test/interruption-recovery.test.js
  *----------------------------------------------------------------------*/
+// HK2_HOME isolation MUST happen before ANY module that captures it at load
+// time. lib/config/home.js freezes HK2_HOME / SESSIONS_ROOT into module-level
+// consts during its ESM evaluation, so setting process.env.HK2_HOME in
+// test.before() ran TOO LATE — the task_state tests below silently wrote to
+// the REAL ~/.hk2/sessions/<projectId>/taskstate.json (leftover 'proj-rt'
+// dirs) instead of an isolated temp home. _learn_setup.js is evaluated FIRST
+// (ESM evaluates imports in source order) and points HK2_HOME at a fresh
+// mkdtemp dir before any project module loads. Same pattern as the other 20+
+// test files.
+import './_learn_setup.js';
+
 import { test } from 'node:test';
 import assert from 'node:assert';
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs/promises';
 import { isContinuationCue } from '../src/commands/interactive.js';
 import { buildResumeContext, buildSessionDigest, advancePlanStep } from '../src/commands/interactive.js';
 import { saveTaskState, loadTaskState, clearTaskState } from '../lib/agent/task_state.js';
@@ -69,24 +77,9 @@ test('isContinuationCue: "continue with X" is a continuation (word boundary)', (
 });
 
 /* ----- task_state round-trip ----- */
-// task_state uses projectTaskStatePath = SESSIONS_ROOT/<projectId>/taskstate.json.
-// To test it in isolation without touching the real ~/.hk2, we point HK2_HOME
-// at a temp dir for this process.
-
-let tmpHome = '';
-let origHome = '';
-
-test.before(async () => {
-  origHome = process.env.HK2_HOME || '';
-  tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-taskstate-'));
-  process.env.HK2_HOME = tmpHome;
-});
-
-test.after(async () => {
-  if (origHome) process.env.HK2_HOME = origHome;
-  else delete process.env.HK2_HOME;
-  await fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {});
-});
+// task_state uses projectTaskStatePath = SESSIONS_ROOT/<projectId>/taskstate.json,
+// rooted at the HK2_HOME temp dir set up by _learn_setup.js (see the top-of-file
+// comment for why a test.before()-based isolation cannot work here).
 
 test('task_state: load returns null when nothing persisted', async () => {
   const state = await loadTaskState('proj-no-such');
