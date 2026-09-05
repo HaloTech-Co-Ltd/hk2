@@ -265,11 +265,12 @@ test('plan_step tool drives the REAL state machine via the planStep callback', a
   assert.equal(session.planProgress.steps[1].status, 'in_progress');
 });
 
-test('plan_step tool with no planStep callback still returns ok (no-op)', async () => {
+test('plan_step without a progress callback acknowledges the report without state', async () => {
   const tools = buildTools(null, { allowWrite: false });
   const res = await executeToolCall(tools, { name: 'plan_step', arguments: { step: 1 } });
   assert.equal(res.ok, true);
-  assert.match(res.result.message, /step 1/i);
+  assert.match(res.result.message, /No interactive progress state is available/i);
+  assert.doesNotMatch(res.result.message, /Marked .* as done|Advanced plan progress/);
 });
 
 /* ----- helpers ----- */
@@ -287,3 +288,10 @@ function populateProgress(session, plan, choices) {
     current: 0,
   };
 }
+
+test('plan_step callback with no active plan reports ignored instead of advancing', async () => {
+  const tools = buildTools(null, { allowWrite: false, planStep: async () => null });
+  const res = await executeToolCall(tools, { name: 'plan_step', arguments: { step: 999 } });
+  assert.equal(res.ok, true);
+  assert.match(res.result.message, /No active plan.*ignored/);
+});

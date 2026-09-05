@@ -1,20 +1,28 @@
 /**
  * /remember, /forget — session-facts management.
  *
- *   /remember <fact>       record a session-scoped fact (environment facts,
+ *   /remember [--project|-p] <fact>
+ *                          record a session-scoped fact (environment facts,
  *                          constraints, preferences — anything later turns
  *                          must not forget); dedup'd, persisted to
  *                          ~/.hk2/sessions/<pid>/<sid>.facts.json, injected
  *                          into every subsequent turn via the standing
  *                          "## Session facts" system message, immune to
- *                          context compaction.
+ *                          context compaction. The flag is recognized only
+ *                          as the FIRST argument.
  *   /remember              list the current facts
  *   /forget <substring>    remove matching fact(s) (substring match)
  *   /forget                remove ALL facts (with confirmation)
  *
- * The command writes to disk + refreshes the in-memory message via the
- * ctx.sessionFacts hook (wired in buildBaseCtx); when the hook is absent
- * (non-interactive hosts) it degrades to a read-only notice.
+ * The command persists the fact FIRST (addSessionFact writes the session
+ * facts file — that disk write is the source of truth) and then refreshes
+ * the in-memory standing message via the ctx.sessionFacts hook (wired in
+ * buildBaseCtx). A missing live-refresh hook does NOT prevent the slash
+ * command from persisting the fact; it only delays the in-memory message
+ * refresh until the next turn or reload — the command prints a note saying
+ * exactly that. Only a failed addSessionFact leaves the fact unrecorded,
+ * and a failed --project append never undoes the already-persisted session
+ * fact.
  */
 
 import {
@@ -84,7 +92,7 @@ export async function cmdRemember(args, ctx) {
   if (!text) {
     const facts = await loadSessionFacts(pid, sid);
     if (facts.length === 0) {
-      ctx.print('No session facts yet. Usage: /remember <fact>  (e.g. /remember 测试环境地址 10.1.2.3)');
+      ctx.print('No session facts yet. Usage: /remember <fact>  (e.g. /remember staging endpoint 192.0.2.10)');
       return;
     }
     ctx.print(`Session facts (${facts.length}):`);

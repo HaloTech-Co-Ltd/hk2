@@ -324,7 +324,7 @@ export async function compactMessages(session) {
   const conversation = session.messages.filter(m => m.role === 'user' || m.role === 'assistant');
   if (conversation.length < 6) return null;
 
-  const keep = 4;   // keep the last 4 user/assistant turns verbatim
+  const keep = 4;   // keep the last 4 user/assistant MESSAGES verbatim (not 4 full turns)
   const toCompact = conversation.slice(0, conversation.length - keep);
   const kept = conversation.slice(conversation.length - keep);
 
@@ -538,6 +538,10 @@ export async function maybeAutoCompact(session, ctx) {
  * that evolve with the codebase).
  */
 export async function maybeOfferKbUpdate(session, ctx) {
+  // A qualifying bash source-search is the common outer gate for both the
+  // refresh offer/auto-update and fallback knowledge extraction. The save and
+  // cooldown checks below are nested within that gate; conflict sync and Code
+  // Review are separate end-of-turn paths.
   if (!session.project) return;
   if (!session.bashSearchCommands || session.bashSearchCommands.length === 0) return;
 
@@ -552,9 +556,9 @@ export async function maybeOfferKbUpdate(session, ctx) {
   if (autoUpdate) {
     await runKbUpdate(session, ctx);
   } else {
-    const ok = await ctx.confirm('Run /kb update now to refresh Index Space? (y/N) ', { title: 'Update index' });
+    const ok = await ctx.confirm('Run /kb update now to refresh the derived index and synchronize parser-owned document entries? (y/N) ', { title: 'Update index' });
     if (ok) await runKbUpdate(session, ctx);
-    else ctx.print('[kb hint] Skipped Index Space refresh. Run /kb update manually when ready.');
+    else ctx.print('[kb hint] Skipped KB refresh. Run /kb update manually when ready.');
   }
 
   // 2. Eden / Holy — ask the model to extract what it learned, then route
@@ -666,12 +670,13 @@ function kbLearnInCooldown(session) {
 }
 
 async function runKbUpdate(session, ctx) {
-  ctx.print('[kb update] refreshing Index Space (incremental re-index)...');
+  ctx.print('[kb update] refreshing derived index + syncing parser-owned doc entries (incremental)...');
   try {
     const { buildIndex } = await import('../../lib/index/indexer.js');
     const { markKbBuilt } = await import('../../lib/config/home.js');
     const { dropRuntime } = await import('../../lib/retrieval/kb_runtime.js');
-    // Legacy-KB upgrade check: fix stale layout signals losslessly before the
+    // Legacy-KB upgrade check: back up knowledge entries first, then migrate
+    // (best-effort — not a zero-risk guarantee) before the
     // incremental re-index (same flow as /kb update and --mode=update-kb).
     let full = false;
     try {
@@ -705,8 +710,11 @@ async function runKbUpdate(session, ctx) {
 }
 
 /**
- * End-of-turn Code Review (HK2_ENABLE_CODEREVIEW, default 0). Runs after the
- * agent finishes executing a plan and the plan block has been finalized. It
+ * End-of-turn Code Review (HK2_ENABLE_CODEREVIEW, default 0). Runs after a
+ * normal agent return when finalization has cleared the plan panel and this
+ * turn either confirmed a plan or started while continuing one. This is a
+ * completion-by-normal-return signal, not proof that every plan_step was
+ * called or every displayed step was executed. It
  * collects the working-tree result (diff + changed files) and the final answer,
  * reviews them with a configurable phase model
  * (`/model set-phase --phase=code-review`), and prints any issues one-by-one.
@@ -717,8 +725,10 @@ async function runKbUpdate(session, ctx) {
 export async function runCodeReview(session, ctx, ui, { planText, assistantText, resolvePhaseLlm, signal }) {
   if (!session.llm) return;
 
-  // Resolve a per-phase model override for the code-review phase; fall back to
-  // the session model when unset or unresolvable (matching plan-review).
+  // An unset or stale/unresolvable ref returns null and silently selects the
+  // session model. If a resolved reviewer later becomes unreachable, review
+  // uses skip-on-unreachable rather than substituting the session model. An
+  // exception from resolution itself is warned about and uses session model.
   let reviewLlm = session.llm;
   let usingPhaseModel = false;
   try {

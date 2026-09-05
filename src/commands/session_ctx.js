@@ -46,7 +46,7 @@
  * three prompt primitives a UI must own:
  *
  *   io.print(text)                        one line of output
- *   io.confirm(promptText)   -> boolean   y/N (re-prompts on garbage)
+ *   io.confirm(promptText)   -> Promise<boolean>   y/N (re-prompts on garbage)
  *   io.choose(promptText, options) -> 1-based index
  *
  * The line REPL passes `replIo(session)` (readline consumeNext mechanics,
@@ -263,6 +263,61 @@ export function createSession(pinnedProjectId = null) {
   return base;
 }
 
+/**
+ * Reset conversation-scoped in-memory state while preserving project/model/KB
+ * bindings and front-end objects.  Session replacement and resume use this
+ * rather than rebuilding the whole session object.
+ */
+export function resetConversationScopedState(session, {
+  startedAt = new Date().toISOString(),
+} = {}) {
+  session.messages = [];
+  session.lastAnswer = null;
+  session.toolCallCount = 0;
+  session.needsSystemPrompt = false;
+
+  session.lastTask = null;
+  session.lastCompletedTask = null;
+  session.planProgress = null;
+  session.hadPlanThisTurn = false;
+  session.lastPlanText = null;
+
+  session.lastContextTokens = 0;
+  session.kbLearnHandledAt = 0;
+  session.kbConflicts = [];
+  session.kbSavedThisTurn = false;
+  session.kbSavedEntries = [];
+  session.bashSearchCommands = [];
+
+  session.loopKbCalls = [];
+  session.loopFallbackCalls = [];
+  session.loopKbPrefetch = null;
+  session.loopCallSeq = 0;
+
+  session.tokens = {
+    callIn: 0,
+    callOut: 0,
+    loopIn: 0,
+    loopOut: 0,
+    loopPeakIn: 0,
+    loopPeakOut: 0,
+    cumIn: 0,
+    cumOut: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+  };
+
+  session.sessionFacts = [];
+  session.phase = 'idle';
+  session.turnStart = 0;
+  session.startedAt = startedAt;
+  session.userInputQueue = [];
+  session.agentTurnActive = false;
+  session.inputEchoOn = false;
+  session.progress = null;
+  session.kbGuard?.reset?.();
+}
+
 /* ------------------------------------------------------------------ */
 
 /**
@@ -430,6 +485,34 @@ export async function resumeSessionInto(session, sessionId) {
   const t = new Transcript(pid, id);
   if (!await exists(t.path)) return false;
 
+  // ── PREPARE (no live-session mutation) ─────────────────────────────────
+  // Read + replay the target transcript into LOCALS before touching the live
+  // session: if the file vanished between the existence check and the read,
+  // cannot be read as a regular file (e.g. the path is a directory), or the
+  // replay fails, the CURRENT conversation, transcript, task/plan snapshots,
+  // project pin, tokens, and facts must all stay intact (prepare-then-commit,
+  // not clear-then-read). Errors rethrow with the real path/cause so the
+  // dispatcher reports them instead of a misleading "session not found".
+  let text;
+  try {
+    text = await fs.readFile(t.path, 'utf8');
+  } catch (err) {
+    throw new Error(`failed to read session transcript ${t.path}: ${err.message}`);
+  }
+  let replayed;
+  try {
+    replayed = replayTranscript(text);
+  } catch (err) {
+    throw new Error(`failed to replay session transcript ${t.path}: ${err.message}`);
+  }
+  const { messages, firstTs, lastTs } = replayed;
+
+  // ── COMMIT ─────────────────────────────────────────────────────────────
+  // A resume replaces the live conversation. Clear old task/review/plan
+  // snapshots before replaying the target; only matching taskstate may then
+  // restore an interrupted task and unfinished plan.
+  resetConversationScopedState(session);
+
   // [P0 fix] Unify project ownership BEFORE replaying: the conversation
   // must execute in the OWNER project's context (KB, tools, permissions),
   // never in whatever project happened to be current. If the owner is
@@ -466,14 +549,12 @@ export async function resumeSessionInto(session, sessionId) {
       session.reloadFlags.model = !session.sessionModelRef; // re-resolve default unless session-pinned
     }
   }
-  const text = await fs.readFile(t.path, 'utf8');
-  const { messages, lastUserText, firstTs, lastTs } = replayTranscript(text);
-
   session.transcript = t;
   session.messages = messages;
   session.lastAnswer = null;
   session.toolCallCount = 0;
   session.needsSystemPrompt = messages.length > 0;
+  session.startedAt = firstTs || new Date().toISOString();
 
   // Restore interrupted-task context when task_state points at this session.
   // (A /quit'd session that finished its task normally has no taskstate on
@@ -501,11 +582,11 @@ export async function resumeSessionInto(session, sessionId) {
     }
   } else {
     session.lastTask = null;
-    // In-memory only (never persisted): after a resume, /review falls back
-    // to the deterministic message scan instead of a stale snapshot.
-    session.lastCompletedTask = null;
     session.planProgress = null;
   }
+  // In-memory only (never persisted): after any resume, /review falls back
+  // to the deterministic message scan instead of a stale snapshot.
+  session.lastCompletedTask = null;
 
   await t.logMeta('resume', {
     pid: process.pid,
@@ -847,21 +928,7 @@ export function buildBaseCtx(session, io) {
         // Fresh-session state on the target — the in-memory mirror of a
         // /quit + relaunch. Everything conversation- or status-related
         // resets; llm/modelCfg are rebuilt by the model reload below.
-        session.messages = [];
-        session.lastAnswer = null;
-        session.toolCallCount = 0;
-        session.needsSystemPrompt = false;
-        session.lastTask = null;
-        session.lastCompletedTask = null;
-        session.planProgress = null;
-        session.hadPlanThisTurn = false;
-        session.lastPlanText = null;
-        session.phase = 'idle';
-        session.turnStart = 0;
-        session.lastContextTokens = 0;
-        session.kbLearnHandledAt = 0;
-        session.startedAt = new Date().toISOString();
-        session.tokens = { callIn: 0, callOut: 0, loopIn: 0, loopOut: 0, loopPeakIn: 0, loopPeakOut: 0, cumIn: 0, cumOut: 0, cacheRead: 0, cacheCreation: 0 };
+        resetConversationScopedState(session);
         session.reloadFlags.project = true;
         session.reloadFlags.kb = true;
         // The effective default model is project-scoped (resolveDefaultModel
@@ -894,15 +961,23 @@ export function buildBaseCtx(session, io) {
     },
     newSession: async () => {
       const oldProject = session.project;
-      session.transcript = null;
-      session.messages = [];
-      session.lastAnswer = null;
-      session.toolCallCount = 0;
-      session.needsSystemPrompt = false;
+      const oldTranscript = session.transcript;
+      // PREPARE: fully initialize the replacement transcript (constructor +
+      // session_start meta on disk) BEFORE touching the live session. If this
+      // fails, the current conversation and transcript remain usable — the
+      // old transcript file is never deleted either way.
+      let nextTranscript = null;
       if (oldProject) {
-        session.transcript = new Transcript(oldProject.id);
-        await session.transcript.logMeta('start', { pid: process.pid, cwd: process.cwd(), reason: 'new-session' });
+        nextTranscript = new Transcript(oldProject.id);
+        await nextTranscript.logMeta('start', { pid: process.pid, cwd: process.cwd(), reason: 'new-session' });
       }
+      // COMMIT: only now finalize the old transcript and swap the live state.
+      if (oldTranscript) {
+        try { await oldTranscript.flush(); } catch { /* best-effort flush */ }
+      }
+      resetConversationScopedState(session);
+      session.transcript = nextTranscript;
+      session.statusBar?.update();
     },
     resumeSession: async (sessionId) => {
       // sessionId undefined/null → the project's latest PREVIOUS session
@@ -1183,8 +1258,8 @@ export async function reloadAll(session, ctx, flags = { project: true, kb: true,
  * Detect whether a trimmed user line is a short continuation cue
  * ("continue" / "请继续" / "go ahead" / ...) rather than a fresh task.
  *
- * Used by handleLine to decide whether to keep the live planProgress block
- * (a continuation preserves the in-flight plan; a fresh prompt clears it)
+ * Used by handleLine to decide whether to keep the task's in-flight
+ * planProgress block (a continuation preserves it; a fresh prompt clears it)
  * and by the turn pipeline to inject interruption-recovery context. Supports
  * both English and Chinese cues - without the Chinese branch, a 中文 "请继续"
  * after an interrupted task used to be misclassified as a new task, wiping
@@ -1209,18 +1284,18 @@ export function isContinuationCue(text) {
  * regex, but it can only match phrasings it enumerates: a follow-up like
  * "那么按照刚才的方案推进吧" falls through as a fresh task, and the deferred
  * fresh-task commit inside runTurn then retires the live plan block and
- * overwrites `session.lastTask` even though the user was advancing the
- * in-flight task.
+ * overwrites `session.lastTask` even though the user was advancing the task
+ * that may still be in progress.
  *
  * The request-clarity assessor (Pass 1.5) already classifies exactly this
  * case with the full session digest in view: its `followup` verdict is true
  * for continuation/progress cues, confirmations, and references to earlier
  * work. This function consumes that verdict: when tier 1 said "not a
  * continuation", the assessor said "follow-up" with enough confidence, and
- * the session actually has an in-flight task to continue, the turn should be
+ * a prior conversational referent exists, the turn should be
  * treated as a continuation after all — runTurn then rolls back the deferred
- * fresh-task transition (plan block + lastTask restored) and injects resume
- * context, exactly as if the regex had matched.
+ * fresh-task transition, restores only the pre-commit plan/task state that
+ * exists, and injects resume context only when a task anchor was restored.
  *
  * `inFlight` MUST be computed BEFORE the deferred fresh-task commit runs (the
  * commit nulls planProgress and overwrites lastTask with THIS request, which
@@ -1252,8 +1327,9 @@ export function shouldUpgradeToContinuation(assessment, opts = {}) {
     return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.6;
   })();
   if (confidence < minConf) return null;
-  // Without an in-flight task (no plan, no lastTask, no prior turns) a
-  // "follow-up" has no referent: treat the input as the fresh task it starts
+  // Without a prior conversational referent (no plan, no lastTask, no prior
+  // turns), a "follow-up" has nothing to refer to: treat the input as the
+  // fresh task it starts
   // — its own lastTask snapshot is then the right recovery anchor for a later
   // interruption.
   if (!inFlight) return null;

@@ -473,7 +473,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     }
     const resumeMsg = buildResumeContext(session);
     if (resumeMsg) session.messages.push({ role: 'system', content: resumeMsg });
-    // Continuation with an in-flight task: the live plan block (if any) is
+    // Continuation with prior task context: the live plan block (if any) is
     // deliberately kept — planAction stays 'keep'.
   } else if (opts.continuation) {
     // Continuation cue with NO task to resume (fresh session, or the previous
@@ -533,10 +533,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // Tier-2 continuation upgrade gate (HK2_ENABLE_CONTINUATION_UPGRADE,
   // default 1, mirroring HK2_ENABLE_FOLLOWUP_FASTLANE's A/B convention):
   // when the tier-1 regex says "fresh task" but the Pass-1.5 assessor comes
-  // back followup:true with an in-flight task to continue, upgrade the
+  // back followup:true with a prior conversational referent, upgrade the
   // classification and roll back the deferred fresh-task commit. Set 0 to
   // keep tier 1 (the regex) as the sole decision-maker.
-  const enableUpgrade = envFlag('HK2_ENABLE_CONTINUATION_UPGRADE', 1);  if (fastLane) {
+  const enableUpgrade = envFlag('HK2_ENABLE_CONTINUATION_UPGRADE', 1);
+  if (fastLane) {
     await session.transcript?.logMeta('followupFastLane', { rule: fastLane, input: userText.slice(0, 160) });
     // Follow-up turns start straight on the model wait (no rewrite, no KB
     // retrieval, no assessment — the referent lives in the conversation).
@@ -549,9 +550,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // session.llm (the default, unchanged behavior). The phase model is resolved
   // once per turn and reused for both the pass-1 rewrite and the post-
   // clarification pass-2 rewrite, so the two passes stay consistent.
-  // resolvePhaseLlm returns null when no override is configured or the
-  // override can't be resolved (in which case we fall back to session.llm and
-  // warn, rather than silently running on the wrong model).
+  // resolvePhaseLlm returns null when no override is configured OR the
+  // override can't be resolved (unresolvable ref → silently treated as
+  // "no override": the phase runs on session.llm with NO warning and no
+  // fallback/skip audit event — the warn/fallback policy below only applies
+  // to a resolved model whose actual call then fails).
   const resolvePhaseLlm = async (phase) => {
     const ref = getPhaseModelRef(session.project, phase);
     if (!ref) return null;
@@ -571,9 +574,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
 
   // Same mechanism for the request-clarity assessment phase ('assessing
   // request'): /model set-phase --phase=request-assess <ref> runs the assessor
-  // on that model instead of the session model. Resolved once per turn;
-  // resolve failure falls back to session.llm with a warning (never silently
-  // run on the wrong model).
+  // on that model instead of the session model. Resolved once per turn. A
+  // stale/unresolvable ref returns null and silently means no override; only
+  // an exception while resolving is warned about. Actual call failures enter
+  // the configured phase fallback policy.
   let assessLlm = null;
   if (canAssess) {
     try {
@@ -732,7 +736,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         ctxLines.push('Knowledge entries:');
         for (const k of graph.knowledge.slice(0, 4)) ctxLines.push(`  - ${k.title}`);
       }
-      // Session task context (in-flight task / plan progress / recent turns)
+      // Session task context (available task state / plan progress / recent turns)
       // so follow-ups that are terse in isolation but unambiguous given the
       // conversation are not flagged unclear. The deferred fresh-task commit
       // runs right AFTER the digest is built (the digest must still see the
@@ -740,7 +744,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // final: lastTask points at THIS request (a later interruption must
       // resume it) and the stale plan block is retired. The ONE exception is
       // the tier-2 continuation upgrade below: when the assessor's followup
-      // verdict says this input actually advances the in-flight task, the
+      // verdict says this input refers to the prior conversational context, the
       // commit is rolled back from the pre-commit snapshot. When the assessor
       // is disabled the transition happens at the pass-2 boundary below
       // without this block, so every path commits exactly once.
@@ -780,8 +784,8 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // as fresh tasks, and the deferred commit above has ALREADY retired the
       // live plan block + overwritten lastTask. The assessor judged this
       // request with the session digest in view; when it comes back
-      // followup:true (with confidence) and the session HAD an in-flight task
-      // at the digest boundary, roll the fresh-task commit back and treat the
+      // followup:true (with confidence) and a prior conversational referent
+      // existed at the digest boundary, roll the fresh-task commit back and treat the
       // turn as the continuation it actually is.
       const upgrade = !fastLane && !opts.continuation && enableUpgrade
         ? shouldUpgradeToContinuation(assessment, {
@@ -810,8 +814,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
           ui.statusRefresh();
         }
         // Resume context — the same injection a tier-1 continuation gets at
-        // the top of the turn (buildResumeContext), so the model knows it is
-        // advancing the interrupted in-flight task, not starting fresh. It
+        // the top of the turn (buildResumeContext), when a task anchor was
+        // restored, so the model knows it is advancing that task rather than
+        // starting fresh. It
         // lands here (before the user message is pushed at agent-loop entry)
         // rather than at the top of runTurn because the classification only
         // became known now. Appended (not replacing) buildResumeContext so
@@ -898,7 +903,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   }
 
   // Deferred fresh-task transition: a fast-lane follow-up ALWAYS counts as a
-  // continuation of the in-flight task — the plan block and lastTask stay as
+  // continuation of the prior task context — the plan block and lastTask stay as
   // they are. Otherwise commit at the pass-2 boundary as before.
   if (!fastLane) commitFreshTaskIfPending();
 
@@ -992,14 +997,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     llm: session.llm,
     projectId: session.project?.id,
     guard: session.kbGuard,
-    // Plan-confirmation interface: when the agent calls the `plan` tool,
+    // Optional plan-confirmation interface: when the agent calls the `plan`
     // surface its proposed plan to the user for per-step strategy
     // selection (confirmPlan) and return the finalized plan. The progress
     // spinner is paused while the interactive menu is on screen so its
     // per-200ms \r refresh does not overwrite the choice prompt.
     //
-    // Plan Review (HK2_ENABLE_PLANREVIEW, default 0): AFTER the user confirms
-    // the plan, if enabled, an LLM reviews the finalized plan for problems.
+    // Plan Review (HK2_ENABLE_PLANREVIEW, default 0): AFTER the interactive
+    // user confirms the plan, if enabled, an LLM reviews the finalized plan for problems.
     // When the reviewer raises issues, each is surfaced to the user one-by-one
     // for confirmation (accept the reviewer's suggestion / dismiss / type your
     // own); the confirmed resolutions are appended to the finalized plan text
@@ -1016,9 +1021,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       session.hadPlanThisTurn = true;
       session.lastPlanText = confirmed;
       if (!envFlag('HK2_ENABLE_PLANREVIEW', 0) || !session.llm) return confirmed;
-      // Resolve a per-phase model override for the plan-review phase; fall
-      // back to the session model when unset or unresolvable (with a warn,
-      // matching the rewrite-query phase handling).
+      // An unset or stale/unresolvable ref returns null and silently leaves
+      // the session model selected. A resolved reviewer uses skip-on-unreachable
+      // if its actual call fails; an exception during resolution is warned about
+      // and uses the session model.
       let reviewLlm = session.llm;
       let usingPhaseModel = false;
       try {
@@ -1122,10 +1128,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // progress block above the status bar in real time. When the last step
     // completes the plan is cleared (block disappears).
     //
-    // Robust to sloppy model step args (fast reasoning models like
-    // deepseek-v4-flash emit numeric strings, 0-based indices, or off-by-one
-    // values): any invalid step falls back to the current one so the panel
-    // never gets stuck on an in_progress step that can never flip to done.
+    // The supplied step is a reporting hint only. The state machine deliberately
+    // ignores it when selecting state and always advances the current in_progress
+    // step; callback errors do not select an arbitrary step.
     // Returns the 1-based step actually marked (or null when no plan is
     // active) so the tool result can report it accurately.
     planStep: async (stepIndex, note) => {
@@ -1279,12 +1284,12 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   session.tokens.loopPeakOut = 0;
 
   // Planning is now LLM-driven: the system prompt instructs the agent to act
-  // as its own triage assistant and call the `plan` tool when (and only when)
-  // it decides the task is complex enough to warrant a user-confirmed plan.
-  // There is no separate pre-execution assessment / generation pass here;
-  // the `plan` tool (registered via buildTools planConfirm) is the interface
-  // that receives the LLM plan decision and surfaces it to the user for
-  // per-step confirmation. Simple tasks flow straight into execution.
+  // as its own triage assistant and call the `plan` tool when a task benefits
+  // from explicit strategy decomposition. There is no separate pre-execution
+  // assessment / generation pass here. When the optional planConfirm callback
+  // is wired, the tool surfaces the LLM plan for per-step user selection;
+  // without it, the recommended strategies are auto-accepted. Simple tasks
+  // flow straight into execution.
 
   session.messages.push({ role: 'user', content: userText });
   await session.transcript?.logUser(userText);
@@ -1295,12 +1300,14 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   ui.phase('waiting for model');
 
   let assistantText = '';
+  let assistantAttemptStart = 0;
   // Per-LLM-call renderers (markdown + reasoning) live inside ui.stream;
   // initialize the pair here (mirroring the original eager construction) —
   // every onTurnStart resets them fresh.
   ui.stream.reset();
   const callbacks = {
     onTurnStart: (_turnIdx) => {
+      assistantAttemptStart = assistantText.length;
       // Each LLM stream call inside the agent loop starts a new "turn".
       // Commit the previous call's per-call maxima to the cumulative session
       // total, then reset callIn/callOut. loopIn/loopOut are NOT touched
@@ -1451,6 +1458,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // partial output; the ui drops the orphaned partial render and tells the
     // user why the stream visibly restarts.
     onRetry: (evt) => {
+      // A retry restarts the current LLM call. Keep prior completed rounds,
+      // but remove text emitted by the failed attempt from answer-bearing state.
+      assistantText = assistantText.slice(0, assistantAttemptStart);
       ui.retryNotice(evt);
     },
   };
@@ -1482,9 +1492,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         temperature: session.modelCfg.temperature,
         enableReasoning: session.modelCfg.enableReasoning,
       },
-      // No fixed maxTurns — the loop runs until the task is done, with
-      // stuck-detection (identical-repeat / no-progress) and a high
-      // absolute safety cap as backstops. See lib/agent/loop.js.
+      // No fixed maxTurns — the loop runs until a final text answer, the
+      // fourth identical signature/result round, the 1000-round absolute cap,
+      // abort, or an exception. The NO_PROGRESS_TURNS branch is currently
+      // unreachable; see lib/agent/loop.js.
     });
 
     // Final flush of the markdown renderer in case the last LLM call left a
@@ -1560,7 +1571,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
 
     // End-of-turn KB update: if the agent fell back to bash-search at all,
     // the project source may have new files / the KB may be stale. Offer to
-    // run an incremental update unless HK2_ENABLE_AUTO_UPDATEKB=1, in which
+    // run an incremental update unless HK2_ENABLE_AUTOUPDATEKB=1, in which
     // case update silently.
     await maybeOfferKbUpdate(session, ctx);
 
@@ -1580,10 +1591,9 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // still shows" bug). The catch path below stays conservative.
     finalizePlanProgress(session, { turnCompleted: true });
     ui.statusRefresh();
-    // Task completed normally and (if a plan existed) all steps are done:
-    // clear the persisted task state so the next session doesn't resume a
-    // finished task. We only clear when there's no planProgress left, because a
-    // multi-step plan that's mid-flight should remain recoverable across turns.
+    // A normal final answer is this turn's completion signal. Finalization
+    // clears the panel even when some or all plan_step calls were skipped, so
+    // this cleanup is not proof that every displayed step was executed.
     if (!session.planProgress) {
       // Snapshot the completed task's ORIGINAL request before clearing
       // lastTask: /review code reads session.lastCompletedTask as the
@@ -1603,13 +1613,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     }
 
     // ---- Code Review (HK2_ENABLE_CODEREVIEW, default 0) -------------------
-    // After a plan completes, review the ENTIRE result (working-tree diff +
-    // final answer) for correctness / completeness / quality. Runs only when
-    // the plan is actually complete (planProgress cleared) AND a plan was
-    // involved this turn: either confirmed this turn, or a multi-turn plan that
-    // was already active at turn start. A plan confirmed but still mid-flight
-    // keeps planProgress non-null and does NOT trigger review. Best-effort;
-    // never blocks the turn.
+    // On a normal return, review the ENTIRE result (working-tree diff + final
+    // answer) when a plan was confirmed this turn or was active at turn start.
+    // Clearing the panel is a completion-by-normal-return signal, not proof
+    // that every plan_step ran; an ordinary mid-plan final question can also
+    // trigger review. Best-effort; never blocks the turn.
     const planCompleted = !session.planProgress && (session.hadPlanThisTurn || planActiveAtStart);
     if (envFlag('HK2_ENABLE_CODEREVIEW', 0) && session.llm && planCompleted) {
       await runCodeReview(session, ctx, ui, {

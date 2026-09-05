@@ -51,8 +51,10 @@
  *   hk2 --mode=project-init --name=... --source=... [--source-root=...]
  *                                           Register a project from CLI
  *   hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
- *                                           Build KB for the current project
- *   hk2 --mode=update-kb                     Incrementally update the KB
+ *                                           Build a KB (target resolved via
+ *                                           HK2_KB_NAME, else the current
+ *                                           project's built KB, else 'default')
+ *   hk2 --mode=update-kb                     Incrementally update that KB
  *   hk2 --run-mode=serve                     Legacy REPL
  *   hk2 --help
  */
@@ -113,9 +115,9 @@ Usage:
   hk2 --project-id=<id>
       Enter the REPL with a specific project selected. <name> matches
       projects.json's name field; <id> matches the UUID. The chosen project
-      becomes the new current project (persisted to projects.json). Only one
-      of the two flags may be given. Only meaningful with the default
-      interactive mode (no --mode).
+      is pinned for this session only — the shared current pointer in
+      projects.json is NOT rewritten. Only one of the two flags may be
+      given. Only meaningful with the default interactive mode (no --mode).
 
   hk2 --resume [<sessionId>]
       Resume a previous session: reopen its transcript and restore the full
@@ -133,10 +135,12 @@ Usage:
       Equivalent to: /project init inside the REPL.
 
   hk2 --mode=build-kb [--source=<path>] [--source-root=<rel>]
-      Build KB for the current project (full re-index).
+      Build a KB (full re-index). The target KB is resolved in order:
+      $HK2_KB_NAME, else the current project's UUID when its KB is already
+      built, else a KB named 'default'.
 
   hk2 --mode=update-kb
-      Incrementally update the current project's KB.
+      Incrementally update the KB resolved the same way.
 
   hk2 --run-mode=serve
       Legacy REPL (command-style, no agent loop).
@@ -148,11 +152,12 @@ Usage:
       Print this help.
 
 Interactive REPL commands (full list via /help; per-command usage via /help <command>):
-  /model list | add | set | set-default | set-phase | types | use | del | show
+  /model list | add | set | set-default | set-phase | add-mcpserver | types | use | del | show
   /project init | list | set | show | drop
-  /kb init | update | status | search | symbol | neighbors | knowledge | transform | drop
+  /kb init | update | status | search | symbol | neighbors | knowledge | code | transform | drop
   /session info | list | new | resume | compact
-  /clear | /compact | /help | /quit
+  /resume | /remember | /forget | /review | /theme
+  /clear | /compact | /help | /quit | /exit
 
 Session resume:
   hk2 --resume                     Resume the current project's latest session
@@ -162,12 +167,12 @@ Session resume:
 Config locations:
   ~/.hk2/models.json           Multi-provider model registry
   ~/.hk2/projects.json         Project registry + current pointer
-  ~/.hk2/kb/<projectId>/       Per-project KB (holy / eden / index spaces)
+  $HK2_KB_DIR/<projectId>/     Per-project KB (default: $HK2_HOME/kb/<projectId>/)
   ~/.hk2/sessions/<projectId>/<sessionId>.jsonl   Session transcripts
 
 Environment variables:
   HK2_HOME              Override ~/.hk2 location
-  HK2_KB_DIR            Override KB root (default ~/.hk2/kb)
+  HK2_KB_DIR            Override KB root (default $HK2_HOME/kb)
   HK2_KB_NAME           KB name for legacy --mode commands
   HK2_PROJECT_SOURCE    Project source root for tool sandbox
   HK2_PLAN_TIMEOUT_MS   /kb knowledge learn Phase 1 planning timeout (ms;

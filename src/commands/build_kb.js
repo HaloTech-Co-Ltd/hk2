@@ -52,6 +52,7 @@
 import path from 'node:path';
 import { exists } from '../../lib/util/fs_atomic.js';
 import { resolveKbName } from '../kb_name.js';
+import { kbDir } from '../../lib/store/kb_store.js';
 
 export async function buildKb(flags) {
   const sourcePathRaw = flags.source || '../../../';
@@ -71,7 +72,7 @@ export async function buildKb(flags) {
   console.error(`[build-kb] kb name: ${kbName}`);
   console.error(`[build-kb] source: ${sourcePath}`);
   console.error(`[build-kb] sourceRoot: ${sourceRoot || '(none)'}`);
-  console.error(`[build-kb] kb dir: ~/.hk2/kb/${kbName}/`);
+  console.error(`[build-kb] kb dir: ${kbDir(kbName)}/`);
 
   await addKb(kbName, sourcePath, { root: sourceRoot });
 

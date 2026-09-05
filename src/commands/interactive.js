@@ -46,9 +46,10 @@
  *   2. Load current project (warn if none)
  *   3. Load KB (warn if not built)
  *   4. Resolve default model config → LLMClient
- *   5. Enter REPL: one line per interaction
- *        - Lines starting with / → slash dispatch
- *        - Otherwise → agent loop (streaming + tool calls + KB graph)
+ *   5. Enter REPL: command-shaped first tokens recognized by
+ *      looksLikeSlashCommand are dispatched; path-like or prose inputs
+ *      beginning with / continue to the agent loop. Multi-line pastes can
+ *      form one submission.
  *
  * Reload: project / model / KB changes flag a reload; next prompt redraws state.
  */
@@ -83,7 +84,7 @@ import { createReplHints } from './repl_hints.js';
 export {
   createSession, buildCtx, buildBaseCtx, replIo, reloadAll, flushSessionReloads,
   splitOutputUnits, formatRecentOutputs, userMarkerLines, allLines,
-  resumeSessionInto, confirmThreeWay,
+  resumeSessionInto, resetConversationScopedState, confirmThreeWay,
   isContinuationCue, captureMidTaskInput, buildMidTaskInjection,
   disarmMidTaskCapture, flushMidTaskQueue, buildResumeContext, buildSessionDigest,
   shouldUpgradeToContinuation,
@@ -671,4 +672,3 @@ async function handleLine(line, session, ctx) {
 async function runAgentTurn(userText, session, ctx, opts = {}) {
   return runTurn(userText, session, ctx, makeReplUi(session), opts);
 }
-
