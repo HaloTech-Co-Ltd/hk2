@@ -159,15 +159,21 @@ test('edit: verbatim LF oldText on an LF file is untouched by the fallback (no b
   await fs.rm(tree, { recursive: true, force: true });
 });
 
-test('edit: a CRLF-form oldText on an LF file fails loudly (fallback is one-directional)', async () => {
+test('edit: a CRLF-form oldText on an LF file is absorbed by the fuzzy fallback and the file stays pure LF', async () => {
   const tree = await makeTree();
   const f = path.join(tree, 'lf_strict.js');
   await fs.writeFile(f, 'alpha\nbeta\n');
   await withWorkspace(tree, async () => {
     const { edit } = getTools();
-    const r = await edit.execute({ path: f, old_string: 'alpha\r\nbeta', new_string: 'x' });
-    assert.ok(r.error && r.error.includes('oldText not found'), 'CRLF anchor on LF file must keep failing');
-    assert.equal(await fs.readFile(f, 'utf8'), 'alpha\nbeta\n', 'file untouched');
+    // The EOL-specific fallback stays one-directional (never CRLF-ifies an LF
+    // file), but the whitespace-insensitive fuzzy layer anchors on the file's
+    // own bytes: EOL drift is just whitespace drift, and the LF file must
+    // NEVER gain CRLF endings from it — that is the real invariant.
+    const r = await edit.execute({ path: f, old_string: 'alpha\r\nbeta', new_string: 'x\ny' });
+    assert.equal(r.error, undefined, `EOL drift must be absorbed via fuzzy, got ${JSON.stringify(r)}`);
+    assert.ok(Array.isArray(r.fuzzyAdapted) && r.fuzzyAdapted.length === 1, 'fuzzy adaptation surfaced');
+    const after = await fs.readFile(f, 'utf8');
+    assert.equal(after, 'x\ny\n', 'file stays pure LF — no CRLF injected');
   });
   await fs.rm(tree, { recursive: true, force: true });
 });

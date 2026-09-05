@@ -374,7 +374,7 @@ The agent can call these tools mid-turn (OpenAI/Anthropic native tool-calling):
 |---|---|
 | `read` | Read file contents (line-numbered, offset/limit). Code files known to the KB get an `## Outline (from KB)` section prepended and a `tag` field returned for stale-anchor protection. |
 | `write` | Create or overwrite a file |
-| `edit` | Precise string replacement (supports multiple disjoint edits). Optional `tag` rejects stale-anchor edits. |
+| `edit` | Precise string replacement (supports multiple disjoint edits). Optional `tag` rejects stale-anchor edits. Whitespace-insensitive fallback absorbs indent/tab/trailing-ws/EOL drift while preserving the file's style; failures carry a near-line locator; `replaceAll` replaces every occurrence. |
 | `bash` | Execute shell commands (sandboxed to workspace) |
 | `find` | Glob-pattern file search |
 | `grep` | Regex content search |
