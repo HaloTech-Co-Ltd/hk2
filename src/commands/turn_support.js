@@ -53,7 +53,7 @@ import { runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
 import { reviewCode, buildCodeReviewContent, createVerdictFilter } from '../../lib/agent/code_review.js';
 import * as style from '../../lib/agent/style.js';
 import { fmtTok } from './status_format.js';
-import { confirmThreeWay, extractTaskRequirement } from './session_ctx.js';
+import { confirmThreeWay, extractTaskRequirement, buildResumeContext } from './session_ctx.js';
 
 /**
  * Parse a 0/1 env flag. Returns defaultValue if unset; treats 0/no/false/off as false.
@@ -517,6 +517,118 @@ export async function maybeAutoCompact(session, ctx) {
     kept: out.kept,
   });
   ctx.print(`[auto-compact] context ${fmtTok(current)} ≥ ${fmtTok(threshold)} (${pctUsed}% of ${fmtTok(windowTokens)}) → compacted ${out.dropped} messages, kept ${out.kept}.`);
+}
+
+/**
+ * Recognize a provider "context too long" rejection. These surface as
+ * deterministic 4xx errors that the transport retry layer deliberately
+ * refuses to retry (correctly — re-sending an identical oversized prompt
+ * cannot succeed), so the ONLY meaningful recovery is shrinking the prompt:
+ * compaction + a controlled re-run of the interrupted task (see
+ * compactForContextOverflow + runTurn's overflow retry loop).
+ *
+ * Conservative on purpose: every pattern below appears only in genuine
+ * context-overflow failures, never in shape/auth/model 4xx errors.
+ *
+ * Known shapes (message text as the adapters surface it):
+ *   - Anthropic HTTP 400: "Anthropic 400: {\"type\":\"error\",...\"code\":\"1261\"
+ *     ...,\"message\":\"[1261][prompt is too long][...]\"}"
+ *   - OpenAI-compatible: "...maximum context length... tokens ..."
+ *     (openai: context_length_exceeded; qwen/dashscope: Throttling.Input...
+ *     is too long)
+ *   - Gemini: "...exceeds the maximum number of tokens..."
+ *   - GLM/generic gateways: "prompt is too long" / "input too long" /
+ *     "request too large" phrasings on a 4xx status
+ */
+const CTX_OVERFLOW_PATTERNS = [
+  /\bprompt is too long\b/i,
+  /\bcontext[_ ]length[_ ]exceeded\b/i,
+  /\bcontext length exceeded\b/i,
+  /\bmaximum context length\b/i,
+  /\bmaximum number of tokens\b/i,
+  /\binput(?: is)? too long\b/i,
+  /\brequest entity too large\b/i,
+  /\[\d+\]\s*\[prompt is too long\]/i,
+];
+
+/**
+ * True when `err` is a context-window overflow rejection (any provider).
+ * Matches against the full message text (the adapters embed the HTTP status
+ * line AND the JSON body), so it also catches the "Anthropic 400 ... 1261"
+ * shape from the issue report. Never matches user aborts or transient 5xx.
+ */
+export function isContextTooLongError(err) {
+  if (!err) return false;
+  const msg = String(err.message || err);
+  if (!msg) return false;
+  return CTX_OVERFLOW_PATTERNS.some(re => re.test(msg));
+}
+
+/**
+ * Mid-task context compaction for the overflow-recovery path. The turn-time
+ * auto-compact (maybeAutoCompact) is deliberately gentle — it only fires at
+ * safe turn boundaries — so a task whose context balloons mid-run (huge tool
+ * results) eventually hits the provider's hard "prompt is too long" 400 and
+ * the whole task died. This helper is the recovery half: shrink the transcript
+ * NOW, at the interruption point, then hand control back so the caller can
+ * re-run the agent loop on the compacted history.
+ *
+ * Same machinery as the boundary compaction (compactMessages keeps the last 4
+ * user/assistant turns verbatim, folds everything older — including their tool
+ * results and prior summaries — into one LLM summary, and preserves the
+ * tool_use/tool_result pairing of the kept tail), plus:
+ *   - calibrated token re-estimate (applyCompactTokenEstimate) so the status
+ *     bar and the NEXT threshold check stay truthful;
+ *   - a recovery `system` message appended AFTER the compacted tail telling
+ *     the model to resume the interrupted task (original request + live plan
+ *     progress, same material buildResumeContext uses). Tail position is safe:
+ *     both front-ends' adapters hoist mid-list system messages into the top-
+ *     level system prompt.
+ *
+ * @returns {Promise<{compacted:boolean, reason?:string}>}
+ *   compacted:true  — session.messages was replaced; resume message injected.
+ *   compacted:false — nothing to do; `reason` explains why (feature disabled,
+ *   too few messages, compaction failed).
+ */
+export async function compactForContextOverflow(session, ctx) {
+  // Feature gate mirrors maybeAutoCompact: recovery is only meaningful when
+  // auto-compaction is enabled at all.
+  if (!envFlag('HK2_ENABLE_AUTOCOMPACT', 1)) {
+    return { compacted: false, reason: 'auto-compact disabled (HK2_ENABLE_AUTOCOMPACT=0)' };
+  }
+
+  const preEstimate = estimateMessagesTokens(session.messages);
+  let out;
+  try {
+    out = await compactMessages(session);
+  } catch (err) {
+    return { compacted: false, reason: `compaction failed: ${err?.message || err}` };
+  }
+  if (!out) {
+    return { compacted: false, reason: 'not enough messages to compact' };
+  }
+
+  session.messages = out.messages;
+  applyCompactTokenEstimate(session, preEstimate);
+
+  // Recovery instruction: the compacted summary carries WHAT was done, but
+  // the model must also be told that it was interrupted and should continue
+  // (not answer, not ask). Reuse the resume-context builder so the original
+  // request + live plan progress are stated exactly like a user-driven
+  // "continue" turn would state them.
+  const recovery = buildResumeContext(session) || '## Resuming an interrupted task\nThe previous conversation was compacted because it exceeded the model context window. Continue the task that was in progress using the summary above as background. Do not restart from scratch and do not ask the user what to do — pick up the in-flight work and finish it.';
+  session.messages.push({
+    role: 'system',
+    content: `## Interrupted by context limit — resume\nYour just-issued request hit the provider's context-length limit and the conversation has been compacted (older turns summarized above; recent turns kept verbatim). You must CONTINUE the interrupted task, not restart it and not ask the user what to do.\n\n${recovery}`,
+  });
+
+  await session.transcript?.logMeta('auto-compact-overflow', {
+    dropped: out.dropped,
+    kept: out.kept,
+    afterTokens: session.lastContextTokens,
+  });
+  ctx?.print?.(`[auto-compact] context overflow error → compacted ${out.dropped} messages, kept ${out.kept} — resuming the interrupted task.`);
+  return { compacted: true, dropped: out.dropped, kept: out.kept };
 }
 
 // Note: bash search detection lives in lib/agent/tools.js's KbFirstGuard

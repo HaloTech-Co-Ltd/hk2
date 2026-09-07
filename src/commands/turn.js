@@ -74,6 +74,7 @@ import {
 } from './status_format.js';
 import {
   envFlag, maybeAutoCompact, maybeOfferKbUpdate, syncConflictingEden, runCodeReview,
+  isContextTooLongError, compactForContextOverflow,
 } from './turn_support.js';
 
 /**
@@ -1455,8 +1456,24 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     },
   };
 
+  // ---- Overflow-recovery re-run loop --------------------------------------
+  // The turn-boundary auto-compact (maybeAutoCompact at the top of runTurn) is
+  // deliberately gentle: it never interrupts an in-flight action, so a task
+  // whose context balloons mid-run (huge tool results) can still hit the
+  // provider's hard "prompt is too long" 400 — historically a dead turn. When
+  // auto-compaction is enabled, that error becomes a TRIGGER instead: compact
+  // the transcript at the interruption point, inject a resume instruction,
+  // and re-run the agent loop on the shrunken history so the task continues.
+  // Capped at 2 recoveries per turn: if compaction cannot make the prompt fit
+  // (e.g. the tail itself exceeds the window), we surface the original error
+  // rather than looping compact→400→compact forever.
+  const MAX_OVERFLOW_RECOVERIES = 2;
+  let overflowRecoveries = 0;
+  let result;
   try {
-    const result = await runLoop({
+    for (;;) {
+      try {
+        result = await runLoop({
       llm: session.llm,
       messages: session.messages,
       tools,
@@ -1485,7 +1502,42 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // No fixed maxTurns — the loop runs until the task is done, with
       // stuck-detection (identical-repeat / no-progress) and a high
       // absolute safety cap as backstops. See lib/agent/loop.js.
-    });
+      });
+        break; // task finished normally
+      } catch (loopErr) {
+        // Context-overflow recovery: only when auto-compaction is on, this is
+        // genuinely a context-length rejection (not an abort / 5xx / stuck),
+        // and we still have recovery budget. Everything else re-throws to the
+        // outer catch, preserving the historic error path verbatim.
+        const canRecover = !abortCtrl.signal.aborted
+          && envFlag('HK2_ENABLE_AUTOCOMPACT', 1)
+          && isContextTooLongError(loopErr)
+          && overflowRecoveries < MAX_OVERFLOW_RECOVERIES;
+        if (!canRecover) throw loopErr;
+
+        overflowRecoveries++;
+        // The aborted LLM call can leave a trailing assistant tool_use whose
+        // tool_result never landed — Anthropic 400s on the resend. Same fix
+        // the outer catch applies, done BEFORE compaction so the pairing is
+        // already clean when compactMessages preserves the tail.
+        stripDanglingToolUse(session.messages);
+        const out = await compactForContextOverflow(session, ctx);
+        if (!out.compacted) throw loopErr; // compaction couldn't help; original error is the honest report
+
+        // Fresh render state for the re-run: the interrupted attempt may have
+        // streamed partial text/reasoning that is now void (same contract as
+        // the client-level 'retry' event), and the per-loop token accounting
+        // must restart so the status bar reflects the compacted reality.
+        ui.stream.reset();
+        assistantText = '';
+        session.tokens.loopIn = 0;
+        session.tokens.loopOut = 0;
+        session.tokens.loopPeakIn = 0;
+        session.tokens.loopPeakOut = 0;
+        ui.phase('waiting for model');
+        // loop re-runs on session.messages (now compacted + resume-injected)
+      }
+    }
 
     // Final flush of the markdown renderer in case the last LLM call left a
     // trailing partial line (no terminating newline). Renders it before the
