@@ -91,7 +91,7 @@ test('ast_edit still produces normal proposals below the diff budget', async () 
         proposal_id: result.proposalId,
         action: 'discard',
       });
-      assert.equal(discarded.discarded, true);
+      assert.equal(discarded.discarded, 1);
     });
   } finally {
     await fs.rm(tree, { recursive: true, force: true });
