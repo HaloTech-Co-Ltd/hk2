@@ -56,7 +56,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { loadModels, saveModels } from '../lib/config/home.js';
+import { loadModels, withModels } from '../lib/config/home.js';
 
 const ENV_OFF = /^(0|no|false|off)$/i;
 const PROVIDER = 'claude';
@@ -100,8 +100,8 @@ export async function autoImportClaudeModel({ homeDir } = {}) {
     return { imported: false, reason: 'disabled' };
   }
 
-  // Read models.json ONCE (a second read below would risk a lost update
-  // against a concurrent import).
+  // Use an unlocked read only for fast no-op checks.
+  // The write path checks the latest snapshot again while holding the lock.
   const modelsData = await loadModels();
   if (modelsData.default) {
     return { imported: false, reason: 'already-configured' };
@@ -143,7 +143,7 @@ export async function autoImportClaudeModel({ homeDir } = {}) {
     if (!seen.has(id)) { seen.add(id); ids.push(id); }
   }
 
-  modelsData.providers[PROVIDER] = {
+  const provider = {
     api: 'anthropic',
     apiKey,
     baseUrl,
@@ -158,7 +158,17 @@ export async function autoImportClaudeModel({ homeDir } = {}) {
       temperature: 0.2,
     })),
   };
-  modelsData.default = `${PROVIDER}/${ids[0]}`;
-  await saveModels(modelsData);
-  return { imported: true, ref: modelsData.default, models: ids };
+  return withModels((latestModels) => {
+    if (latestModels.default) {
+      return { imported: false, reason: 'already-configured' };
+    }
+    if (latestModels.providers[PROVIDER]) {
+      return { imported: false, reason: 'provider-exists' };
+    }
+
+    const ref = `${PROVIDER}/${ids[0]}`;
+    latestModels.providers[PROVIDER] = provider;
+    latestModels.default = ref;
+    return { imported: true, ref, models: ids };
+  });
 }

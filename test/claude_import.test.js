@@ -12,6 +12,7 @@ import assert from 'node:assert';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { autoImportClaudeModel, claudeSettingsPath } from '../src/claude_import.js';
 import { loadModels, MODELS_PATH } from '../lib/config/home.js';
 import { HK2_HOME } from './_claude_import_setup.js';
@@ -26,6 +27,57 @@ async function reset({ modelsJson = null, claudeEnv = null } = {}) {
     await fs.mkdir(path.join(claudeHome, '.claude'), { recursive: true });
     await fs.writeFile(claudeSettingsPath(claudeHome), JSON.stringify({ env: claudeEnv }));
   }
+}
+
+function startLockedModelWriter() {
+  const script = `
+    import { withModels } from ${JSON.stringify(new URL('../lib/config/home.js', import.meta.url).href)};
+    await withModels(async (data) => {
+      data.providers.concurrent = {
+        api: 'openai',
+        apiKey: 'keep',
+        models: [{ id: 'winner', name: 'winner' }],
+      };
+      data.default = 'concurrent/winner';
+      console.log('locked');
+      await new Promise((resolve) => process.stdin.once('data', resolve));
+    });
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, HK2_HOME },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let output = '';
+  let readyResolve;
+  let readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+    if (output.includes('locked')) readyResolve();
+  });
+  child.stderr.on('data', (chunk) => { output += chunk; });
+  const done = new Promise((resolve, reject) => {
+    child.on('error', (error) => {
+      readyReject(error);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else {
+        const error = new Error(`locked writer failed (${code}): ${output}`);
+        readyReject(error);
+        reject(error);
+      }
+    });
+  });
+  return {
+    ready,
+    done,
+    release: () => child.stdin.end('release\n'),
+  };
 }
 
 beforeEach(async () => {
@@ -118,6 +170,29 @@ test('provider-exists: a user-configured claude provider is never overwritten', 
   assert.equal(saved.providers.claude.api, 'openai');
   assert.equal(saved.providers.claude.apiKey, 'keep');
   assert.equal(saved.providers.claude.baseUrl, 'https://keep');
+});
+
+test('auto-import preserves a default configured by a concurrent writer', async () => {
+  await reset({ claudeEnv: {
+    ANTHROPIC_AUTH_TOKEN: 'new',
+    ANTHROPIC_BASE_URL: 'https://new',
+  }});
+  const writer = startLockedModelWriter();
+  await writer.ready;
+
+  const importPromise = autoImportClaudeModel({ homeDir: claudeHome });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  writer.release();
+
+  const result = await importPromise;
+  await writer.done;
+  assert.equal(result.imported, false);
+  assert.equal(result.reason, 'already-configured');
+
+  const saved = await loadModels();
+  assert.equal(saved.default, 'concurrent/winner');
+  assert.equal(saved.providers.concurrent.apiKey, 'keep');
+  assert.equal(saved.providers.claude, undefined);
 });
 
 
