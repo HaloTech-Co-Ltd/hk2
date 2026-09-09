@@ -29,55 +29,34 @@ async function reset({ modelsJson = null, claudeEnv = null } = {}) {
   }
 }
 
-function startLockedModelWriter() {
+function runModelWriter() {
   const script = `
     import { withModels } from ${JSON.stringify(new URL('../lib/config/home.js', import.meta.url).href)};
-    await withModels(async (data) => {
+    await withModels((data) => {
       data.providers.concurrent = {
         api: 'openai',
         apiKey: 'keep',
         models: [{ id: 'winner', name: 'winner' }],
       };
       data.default = 'concurrent/winner';
-      console.log('locked');
-      await new Promise((resolve) => process.stdin.once('data', resolve));
     });
   `;
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
     env: { ...process.env, HK2_HOME },
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
-  let readyResolve;
-  let readyReject;
-  const ready = new Promise((resolve, reject) => {
-    readyResolve = resolve;
-    readyReject = reject;
-  });
-  child.stdout.on('data', (chunk) => {
-    output += chunk;
-    if (output.includes('locked')) readyResolve();
-  });
+  child.stdout.on('data', (chunk) => { output += chunk; });
   child.stderr.on('data', (chunk) => { output += chunk; });
-  const done = new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     child.on('error', (error) => {
-      readyReject(error);
       reject(error);
     });
     child.on('close', (code) => {
       if (code === 0) resolve();
-      else {
-        const error = new Error(`locked writer failed (${code}): ${output}`);
-        readyReject(error);
-        reject(error);
-      }
+      else reject(new Error(`model writer failed (${code}): ${output}`));
     });
   });
-  return {
-    ready,
-    done,
-    release: () => child.stdin.end('release\n'),
-  };
 }
 
 beforeEach(async () => {
@@ -172,27 +151,46 @@ test('provider-exists: a user-configured claude provider is never overwritten', 
   assert.equal(saved.providers.claude.baseUrl, 'https://keep');
 });
 
-test('auto-import preserves a default configured by a concurrent writer', async () => {
+test('auto-import rechecks a stale snapshot after a concurrent default write', async () => {
   await reset({ claudeEnv: {
     ANTHROPIC_AUTH_TOKEN: 'new',
     ANTHROPIC_BASE_URL: 'https://new',
   }});
-  const writer = startLockedModelWriter();
-  await writer.ready;
+  const originalReadFile = fs.readFile;
+  let reachedSettingsRead;
+  let resumeSettingsRead;
+  const settingsRead = new Promise((resolve) => { reachedSettingsRead = resolve; });
+  const resume = new Promise((resolve) => { resumeSettingsRead = resolve; });
+  const settingsPath = claudeSettingsPath(claudeHome);
+  fs.readFile = async (file, ...args) => {
+    const content = await originalReadFile(file, ...args);
+    if (String(file) === settingsPath) {
+      // The initial models snapshot exists before this settings read.
+      reachedSettingsRead();
+      await resume;
+    }
+    return content;
+  };
 
-  const importPromise = autoImportClaudeModel({ homeDir: claudeHome });
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  writer.release();
+  try {
+    const importPromise = autoImportClaudeModel({ homeDir: claudeHome });
+    await settingsRead;
+    // Commit the competing default before the importer enters its locked write.
+    await runModelWriter();
+    resumeSettingsRead();
 
-  const result = await importPromise;
-  await writer.done;
-  assert.equal(result.imported, false);
-  assert.equal(result.reason, 'already-configured');
+    const result = await importPromise;
+    assert.equal(result.imported, false);
+    assert.equal(result.reason, 'already-configured');
 
-  const saved = await loadModels();
-  assert.equal(saved.default, 'concurrent/winner');
-  assert.equal(saved.providers.concurrent.apiKey, 'keep');
-  assert.equal(saved.providers.claude, undefined);
+    const saved = await loadModels();
+    assert.equal(saved.default, 'concurrent/winner');
+    assert.equal(saved.providers.concurrent.apiKey, 'keep');
+    assert.equal(saved.providers.claude, undefined);
+  } finally {
+    resumeSettingsRead();
+    fs.readFile = originalReadFile;
+  }
 });
 
 
