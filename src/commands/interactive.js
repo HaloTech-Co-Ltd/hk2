@@ -58,6 +58,7 @@ import { dispatchSlash, allSlashCompletionLabels, slashCompletions } from '../sl
 import { dynamicContextKey, fetchDynamicItems } from '../slash/completions.js';
 import { StatusBar } from '../../lib/agent/statusbar.js';
 import { PasteHandler } from '../../lib/agent/paste.js';
+import { repairBurstInserts } from '../../lib/agent/burst_insert.js';
 import { MultiLineCollector } from '../../lib/agent/multiline.js';
 import * as style from '../../lib/agent/style.js';
 import { renderLogo } from '../../lib/agent/logo.js';
@@ -436,6 +437,10 @@ export async function interactive(opts = {}) {
   // idempotent) and cheap when the box is off.
   readline.emitKeypressEvents(session.rl.input);
   session.rl.input.on('keypress', () => { refreshInputEcho(); });
+  // IME commits arrive as multi-char data chunks; Node readline appends all
+  // but the last char at end-of-line when the cursor is mid-line (see
+  // lib/agent/burst_insert.js). Repair after every keystroke burst.
+  const unrepairBursts = repairBurstInserts(session.rl);
 
   // Keep readline from auto-closing on Ctrl+C: with no rl-level 'SIGINT'
   // listener, readline closes the interface itself — the mid-turn interrupt
@@ -510,6 +515,7 @@ export async function interactive(opts = {}) {
   await new Promise((resolve) => { session.exitResolve = resolve; });
 
   unpatchRefresh();
+  unrepairBursts();
   replHints?.dispose();
   paste.stop();
   session.statusBar?.stop();
