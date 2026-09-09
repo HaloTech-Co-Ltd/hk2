@@ -12,30 +12,34 @@
  *
  *   phase:
  *     code   Manual code review of the just-completed task (plan-review
- *            phase target: implemented). Sends ONLY the original user
- *            request + the claimed result (final answer, changed files,
- *            working-tree diff) to the review model - the conversation
- *            context and the execution process are deliberately EXCLUDED so
- *            they cannot anchor or pollute the review.
+ *            phase target: implemented). Sends the original user request,
+ *            queued mid-task additions, and the claimed result (final answer,
+ *            changed files, working-tree diff) to the review model; the
+ *            execution process is deliberately EXCLUDED so it cannot anchor
+ *            or pollute the review.
  *     plan   Reserved for a future manual plan-review (NOT implemented yet).
  *
  *   --model=<provider>/<model-id>
- *            Run the review with this specific model. When omitted, the
+ *            Run the review with this specific model. An invalid or missing
+ *            explicit ref fails fast; it never falls back. When omitted, the
  *            project's phase-configured model is used
  *            (/model set-phase --phase=code-review <ref>), falling back to
- *            the current session (main) model when no phase override exists.
+ *            the current session model when no phase override exists. A stale
+ *            phase ref warns before using the session model; a phase-resolution
+ *            exception is also warned and handled as a session-model fallback.
  *
  * The review itself runs through reviewCode() with the manual
- * regression-check system prompt (see lib/agent/code_review.js), under the
- * same "skip on unreachable" policy as the automatic end-of-turn review
- * (never silently re-runs on another model). The reviewer's analysis
+ * regression-check system prompt (see lib/agent/code_review.js). A selected
+ * reviewer that is unreachable is skipped rather than replaced, matching the
+ * automatic review call-failure policy; model resolution differs for stale
+ * phase refs and explicit flags. The reviewer's analysis
  * (requirement re-analysis, coverage check, correctness check, conclusion)
  * streams live to the terminal as it is produced; the machine-readable
  * verdict JSON is never shown raw — only the parsed issues/verdict line.
  *
- * Context isolation: by design the review messages contain ONLY the request
- * and the result material. The reviewer never sees the implementation
- * process (tool calls, reasoning, intermediate turns).
+ * Context isolation: by design the review messages contain the original
+ * request, queued mid-task additions, and result material. The reviewer never
+ * sees the implementation process (tool calls, reasoning, intermediate turns).
  */
 import {
   splitModelRef, resolveModelRef, getPhaseModelRef,
@@ -86,10 +90,11 @@ function printUsage(ctx) {
   ctx.print(`                                  (default: the phase-configured model,`);
   ctx.print(`                                   then the current session model)`);
   ctx.print(``);
-  ctx.print(`How it works: only the original task request and the completed`);
-  ctx.print(`result (final answer + changed files + working-tree diff) are sent`);
-  ctx.print(`to the review model - the task's implementation context is ignored,`);
-  ctx.print(`so it cannot influence or pollute the review.`);
+  ctx.print(`How it works: the original task request, any queued mid-task`);
+  ctx.print(`additions that extended it, and the completed result (final answer +`);
+  ctx.print(`changed files + working-tree diff) are sent to the review model.`);
+  ctx.print(`Tool calls, reasoning, and intermediate turns are excluded, so they`);
+  ctx.print(`cannot influence or pollute the review.`);
   ctx.print(``);
   ctx.print(`The reviewer's analysis (requirement re-analysis, per-point coverage`);
   ctx.print(`check, correctness check, conclusion) streams live while it reviews;`);
@@ -170,7 +175,7 @@ export async function cmdReview(args, ctx) {
     }
   }
 
-  // ---- Collect ONLY the request + the result ----------------------------
+  // ---- Collect the original request, additions, and result --------------
   // ctx.getConversation() returns { requestText, additionalInstructions,
   // answerText }: the ORIGINAL task request (from the completed-task snapshot
   // — never the last user message, which after mid-task additions used to be
@@ -205,7 +210,7 @@ export async function cmdReview(args, ctx) {
   ctx.print(``);
   ctx.print(`Manual Code Review`);
   ctx.print(`  Reviewing the completed task with ${modelLabel} (${via})...`);
-  ctx.print(`  Scope: the original request and the completed result only - implementation context is ignored.`);
+  ctx.print(`  Scope: the original request, queued mid-task additions, and the completed result; tool calls, reasoning, and intermediate turns are excluded.`);
   ctx.print(`  Checks: correctness, completeness, quality, and consistency of the result (regression check).`);
   ctx.print(`  ${changedFiles.length > 0
     ? `Files changed (${changedFiles.length}): ${changedFiles.slice(0, 12).join(', ')}${changedFiles.length > 12 ? '...' : ''}`

@@ -10,9 +10,20 @@
  *
  * This module is the single source of truth for detailed usage. It backs:
  *   - `/help`               → one-line command index (from SLASH_COMMANDS descriptions)
- *   - `/help <command>`     → full usage + flags + examples for one command
- *   - `<command> help`      → same full text, reachable from each family
- *   - `<command>` (no args) → same full text via each family's default branch
+ *   - `/help <command>`     → full usage + flags + examples for one command —
+ *                             the UNIVERSAL detailed-help entry: it works for
+ *                             every registered command, families and flat
+ *                             commands alike (HELP_ALIASES maps /help exit to
+ *                             the quit text).
+ *
+ * Two further dispatch forms exist but are NOT universal:
+ *   - `<command> help` (family-local help) — only families whose dispatcher
+ *     routes a `help` subcommand offer it (/model help set,
+ *     /kb knowledge help learn, /session help, ...). Flat commands do not:
+ *     `/remember help` records the fact "help", `/clear help` clears.
+ *   - `<command>` with no args — only families with a default help branch
+ *     print help; flat commands execute their own behavior (/remember with
+ *     no args lists facts).
  *
  * Each entry in HELP_TEXT maps a command name (without the leading slash)
  * to an array of lines. Keep the lines in this style:
@@ -102,17 +113,19 @@ export const HELP_TEXT = {
     `  set name <new-name>                  Rename the current project`,
     `  set source <path>                    Update the source path`,
     `  set source-root <rel-path>           Update the indexed sub-root`,
-    `  set include <glob1,glob2,...>        Extra include globs`,
-    `  set exclude <glob1,glob2,...>        Extra exclude globs`,
+    `  set include <glob1,glob2,...>        Replace the include glob set`,
+    `  set exclude <glob1,glob2,...>        Replace the exclude glob set`,
     `  show                                 Show the current project's settings`,
-    `  drop <id|name>                       Remove a project (requires confirmation)`,
+    `  drop <id|name>                       Remove a project's registration (no confirmation;`,
+    `                                       KB dir stays under the old UUID and is NOT`,
+    `                                       reattached by re-registering the same path)`,
     ``,
     `Flags (init):`,
     `  --name=<name>            Project display name (defaults to directory name)`,
     `  --source=<path>          (required) Absolute or relative source path`,
     `  --source-root=<rel>      Indexed sub-directory (e.g. src); default = whole tree`,
-    `  --include=<globs>        Comma-separated extra include globs`,
-    `  --exclude=<globs>        Comma-separated extra exclude globs`,
+    `  --include=<globs>        Comma-separated include globs (REPLACES the default set)`,
+    `  --exclude=<globs>        Comma-separated exclude globs (REPLACES the default set)`,
     `  --extra=<name>:<rel>,... Named extra roots, e.g. docs:docs,spec:spec`,
     ``,
     `Examples:`,
@@ -125,19 +138,27 @@ export const HELP_TEXT = {
   ],
   kb: [
     `Usage: /kb <subcommand> [args]`,
-    `Lifecycle and queries for the current project's knowledge base.`,
+    `Lifecycle and queries for the current session project's knowledge base.`,
     ``,
     `Three-space model:`,
-    `  Holy Space   stable knowledge (design principles); updates need approval`,
-    `  Eden Space   frequently-updated knowledge; auto-updatable`,
-    `  Index Space  code index + callgraph; auto-updatable`,
+    `  Holy Space   stable knowledge; agent-proposed writes confirm (explicit`,
+    `               user commands are your own intent; DOC learn --space=holy`,
+    `               prompts once per run, merges/overwrites confirm per entry)`,
+    `  Eden Space   frequently-updated; agent writes follow AUTO_LEARN;`,
+    `               parser-owned doc: entries synced by init/update`,
+    `  Index Space  derived indexes; explicit init/update run immediately,`,
+    `               end-of-turn auto update gated on AUTOUPDATEKB`,
     ``,
     `Subcommands:`,
     `  init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]`,
-    `                          Build the KB (full re-index, with checkpointing)`,
-    `  update                  Incremental update (sha256 diff) — Index Space only`,
-    `  status                  Show per-space statistics`,
-    `  search <query> [--top-k=N]   BM25 symbol search`,
+    `                          Build the KB (full re-index, with checkpointing); attempts`,
+    `                          three fixed-id Eden summaries when an LLM is configured`,
+    `                          and --skip-summary is not set (each non-empty success writes independently)`,
+    `                          interactive env interval uses || 100; explicit invalid/0 values`,
+    `                          are not a disable switch; empty = falls back — use --no-checkpoint`,
+    `  update                  Incremental re-index + parser-owned doc: Eden sync`,
+    `  status                  Show per-space statistics (legacy KBs missing Supreme Code get a best-effort empty-entry self-heal; failures are silent)`,
+    `  search <query> [--top-k=N]   BM25 symbol search (default top-k=20; no LLM rewrite or source slices)`,
     `  symbol <name>           Look up symbols by exact name`,
     `  neighbors <symbol_id>   Call-graph neighbors (symbol_id looks like <fileId>:<line>)`,
     `  knowledge <sub> [...]   Manage knowledge entries — see /kb help knowledge`,
@@ -158,12 +179,12 @@ export const HELP_TEXT = {
     `  /kb code del 2`,
     `  /kb transform sql-commands eden holy`,
     ``,
-    `All commands operate on the current project (/project set current).`,
+    `/kb commands use the current session project. --project/--project-id pins this session; without a pin, the shared projects.json.current pointer is used. /project set current changes the shared default and the current interactive session.`,
     `Knowledge entry management: /kb help knowledge`,
   ],
   knowledge: [
     `Usage: /kb knowledge <subcommand> [args]`,
-    `Manage knowledge entries (Holy + Eden spaces) for the current project.`,
+    `Manage knowledge entries (Holy + Eden spaces) for the current session project.`,
     ``,
     `Subcommands:`,
     `  list [--space=holy|eden]                 List entries (both spaces by default)`,
@@ -179,7 +200,9 @@ export const HELP_TEXT = {
     `        LLM-assisted: broken-entry scan, duplicate/similar merge`,
     `        (y/N), Eden↔Holy conflict resolution (all mode, per-pair choice).`,
     `        Always confirms; supreme-code never touched; indexes rebuilt.`,
-    `  empty <eden|holy|all>                    Bulk delete entries in a space (always confirms y/N)`,
+    `  empty <eden|holy|all>                    Delete every ordinary entry in the space(s);`,
+`                                           the permanent Supreme Code entry is preserved`,
+`                                           (always confirms y/N)`,
     `  export <eden|holy|all> <path>            Dump entries to JSON (with space tags)`,
     `  import <path> [eden|holy|adaptive] [--overwrite]   Import entries from JSON`,
     `  del <id>                                 Delete one entry (confirm required)`,
@@ -189,12 +212,16 @@ export const HELP_TEXT = {
     `      deep-study Markdown / PDF / Word / PowerPoint / text files and write`,
     `      extracted entries to the chosen space. Files may live outside the project.`,
     `  CODE mode  (no --file/--base-dir, or --base-dir = an indexed subdirectory):`,
-    `      deep-study the project's indexed source. Phase 0 generates project-wide`,
-    `      survey entries, Phase 1 plans topic batches, Phase 2 extracts entries.`,
+    `      deep-study the project's indexed source. Phase 0 attempts project-wide`,
+    `      survey entries, Phase 1 plans topic batches, Phase 2 performs one extraction`,
+    `      call per batch and may produce zero or more candidate entries.`,
     ``,
     `learn flags:`,
     `  --space=eden|holy        Target space (default eden). CODE mode always targets eden.`,
-    `                           Holy writes require interactive confirmation.`,
+    `                           DOC --space=holy prompts once per run (non-dry-run`,
+`                           only); after the gate new Holy entries write directly,`,
+`                           merges/overwrites of existing Holy entries confirm per`,
+`                           entry. CODE mode always writes Eden.`,
     `  --file=<path>            Learn a single document (DOC mode).`,
     `  --base-dir=<dir>         Learn every supported file under a directory (DOC mode),`,
     `                           or restrict the CODE-mode study to an indexed subdirectory.`,
@@ -231,7 +258,7 @@ export const HELP_TEXT = {
     `  /kb knowledge housekeep all`,
     `  /kb knowledge del sql-cmds`,
     ``,
-    `Aliases: ls=get, get=show, create/set=add, study/init/bootstrap/scan=learn,`,
+    `Aliases: ls=list, get=show, create/set=add, study/init/bootstrap/scan=learn,`,
     `         housekeeping/cleanup/clean=housekeep, clear/wipe=empty, rm=del`,
     ``,
     `The supreme-code entry ("hk2-supreme-code") can NOT be deleted, renamed,`,
@@ -327,12 +354,16 @@ export const HELP_TEXT = {
     `  --model=<provider>/<model-id>   Review with this specific model`,
     `                                  (default: the phase-configured model`,
     `                                   /model set-phase --phase=code-review,`,
-    `                                   then the current session model)`,
+    `                                   then the current session model; invalid`,
+    `                                   explicit refs fail without fallback)`,
     ``,
-    `How /review code works: only the original task request and the completed`,
-    `result (final answer + changed files + working-tree diff) are sent to the`,
-    `review model - the task's implementation context is ignored, so it cannot`,
-    `influence or pollute the review (fresh-eyes regression check).`,
+    `How /review code works: the original task request, queued mid-task`,
+    `additions that extended it, and the completed result (final answer +`,
+    `changed files + working-tree diff) are sent to the review model. Tool calls,`,
+    `reasoning, and intermediate turns are excluded (fresh-eyes regression check).`,
+    `Manual resolution warns and uses the session model for a stale phase ref`,
+    `or resolution exception; a selected reviewer call failure warns and skips`,
+    `rather than switching models.`,
     ``,
     `The reviewer's analysis streams live while it works: requirement`,
     `re-analysis, per-point coverage check, correctness check, and conclusion.`,
@@ -387,7 +418,62 @@ export const HELP_TEXT = {
     `Usage: /quit`,
     `Exit the REPL. Same as Ctrl+D. /exit is an alias.`,
   ],
+  remember: [
+    `Usage: /remember [--project|-p] [fact]`,
+    `Record a session-scoped fact (environment endpoints, ports, versions,`,
+    `account names, constraints, preferences) that later turns must not`,
+    `forget. Facts are dedup'd, capped at 100 per session / 500 chars each,`,
+    `persisted for this session, injected into every subsequent turn via the`,
+    `standing "## Session facts" system message, and survive compaction.`,
+    ``,
+    `  /remember <fact>       record the fact (persists to disk first)`,
+    `  /remember              list the current facts`,
+    ``,
+    `Flags:`,
+    `  --project | -p         ALSO append the fact to the project-level Eden`,
+    `                         entry "env-facts" (cross-session, searchable via`,
+    `                         kb_search_knowledge). Recognized only as the`,
+    `                         FIRST argument. Best-effort: a failed project`,
+    `                         save does not undo the session fact already stored.`,
+    ``,
+    `Persistence is the source of truth: the fact is recorded as soon as the`,
+    `disk write succeeds. A missing live-refresh hook only delays the`,
+    `in-memory message refresh until the next turn or reload — it never`,
+    `blocks the save. Only a storage failure leaves the fact unrecorded.`,
+    ``,
+    `Related: /forget <substring>, /help forget, /help help.`,
+  ],
+  forget: [
+    `Usage: /forget [substring]`,
+    `Remove session facts recorded via /remember.`,
+    ``,
+    `  /forget <substring>    remove EVERY fact containing the substring`,
+    `                         (substring match; prints removed/left counts)`,
+    `  /forget                remove ALL facts (y/N confirmation first)`,
+    ``,
+    `A substring that matches nothing prints the current facts list so you`,
+    `can pick a better substring. Removed facts leave the standing`,
+    `"## Session facts" message on the next refresh.`,
+    ``,
+    `Related: /help remember.`,
+  ],
+  help: [
+    `Usage: /help [command]`,
+    `The central detailed-help entry for every command.`,
+    ``,
+    `  /help                  one-line index of all commands`,
+    `  /help <command>        full usage + flags + examples for one command`,
+    `                         (e.g. /help remember, /help kb, /help model)`,
+    ``,
+    `Command families with subcommands ALSO support family-local help`,
+    `forms such as /model help set or /kb knowledge help learn. Flat`,
+    `commands (like /remember) execute their own behavior when given an`,
+    `argument — use /help <command> for their details.`,
+  ],
 };
+
+// /exit is a registered alias of /quit and shares its help text.
+const HELP_ALIASES = { exit: 'quit' };
 
 /**
  * Render the full help text for one command.
@@ -396,7 +482,8 @@ export const HELP_TEXT = {
  */
 export function renderHelp(name) {
   const key = String(name || '').replace(/^\//, '').toLowerCase();
-  return HELP_TEXT[key] ? HELP_TEXT[key].slice() : null;
+  const resolved = HELP_ALIASES[key] || key;
+  return HELP_TEXT[resolved] ? HELP_TEXT[resolved].slice() : null;
 }
 
 /**

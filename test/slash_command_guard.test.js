@@ -2,7 +2,7 @@
 //
 // Root cause being pinned here: `dispatchSlash` used to treat ANY line whose
 // first character is `/` as a command attempt, so user lines like
-// `/Users/zhangchenxi/Workspace/hk2/xxxx.md已更新，你需要…` (an absolute path
+// `/path/to/project/xxxx.md已更新，你需要…` (an absolute path
 // glued to prose) were swallowed by the "Unknown command" branch and never
 // reached the agent. The guard is shape-based and example-agnostic — these
 // tests pin the input FAMILIES, not just the one reported example.
@@ -25,7 +25,7 @@ import { MultiLineCollector } from '../lib/agent/multiline.js';
 
 test('paths and glued text starting with / are NOT commands', () => {
   // The reported family: absolute path + glued CJK prose.
-  assert.equal(looksLikeSlashCommand('/Users/zhangchenxi/Workspace/hk2/xxxx.md已更新，你需要重新分析'), false);
+  assert.equal(looksLikeSlashCommand('/path/to/project/xxxx.md已更新，你需要重新分析'), false);
   // Bare absolute paths of every flavor.
   assert.equal(looksLikeSlashCommand('/usr/local/bin/node'), false);
   assert.equal(looksLikeSlashCommand('/tmp/x.txt'), false);
@@ -59,7 +59,7 @@ test('dispatchSlash lets path/text lines through (returns false, no swallow)', a
   const prints = [];
   const ctx = { print: (t) => prints.push(t) };
   const lines = [
-    '/Users/zhangchenxi/Workspace/hk2/xxxx.md已更新，你需要重新分析',
+    '/path/to/project/xxxx.md已更新，你需要重新分析',
     '/tmp/report.md 已更新，请查看',
     '/etc/hosts是怎么配置的',
     '//registry.example.com 挂了',
@@ -99,7 +99,7 @@ test('mid-task capture treats path-like lines as instructions, commands still ex
   const s = { agentTurnActive: true };
   // A path+prose line arriving mid-turn must now be CAPTURED (previously it
   // fell into the legacy post-turn queue because of the raw startsWith check).
-  assert.equal(captureMidTaskInput(s, '/Users/zhangchenxi/Workspace/hk2/notes.md已更新，继续'), true);
+  assert.equal(captureMidTaskInput(s, '/path/to/project/notes.md已更新，继续'), true);
   assert.equal(s.userInputQueue.length, 1);
   // Real commands stay excluded (legacy post-turn behavior).
   assert.equal(captureMidTaskInput(s, '/model list'), false);
@@ -149,6 +149,6 @@ test('suggestCommand: prefix and edit-distance matching', () => {
   assert.equal(suggestCommand('mdoel', names), '/model'); // transposition
   assert.equal(suggestCommand('zzzzzz', names), null);    // nothing close
   assert.equal(isPlausibleCommandName('mdoel'), true);
-  assert.equal(isPlausibleCommandName('Users/zhangchenxi'), false);
+  assert.equal(isPlausibleCommandName('path/to/project'), false);
   assert.equal(isPlausibleCommandName('foo已更新'), false);
 });

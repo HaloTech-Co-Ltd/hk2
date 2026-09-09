@@ -102,7 +102,7 @@ test('stateless tool: identical signature AND identical result x3 → still abor
   });
   await assert.rejects(
     () => runLoop({ llm, messages: [{ role: 'user', content: 'go' }], tools }),
-    /agent stuck: 3 identical tool-call rounds with identical results/,
+    /agent stuck: 3 repeated identical tool-call rounds after the initial occurrence/,
   );
 });
 
@@ -121,7 +121,7 @@ test('stateful tool: identical signature AND identical RESULT x3 (no state chang
   });
   await assert.rejects(
     () => runLoop({ llm, messages: [{ role: 'user', content: 'go' }], tools }),
-    /agent stuck: 3 identical tool-call rounds with identical results/,
+    /agent stuck: 3 repeated identical tool-call rounds after the initial occurrence/,
   );
 });
 
@@ -153,7 +153,7 @@ test('error results participate in the fingerprint: same error x3 → aborts', a
   });
   await assert.rejects(
     () => runLoop({ llm, messages: [{ role: 'user', content: 'go' }], tools }),
-    /agent stuck: 3 identical tool-call rounds with identical results/,
+    /agent stuck: 3 repeated identical tool-call rounds after the initial occurrence/,
   );
 });
 
