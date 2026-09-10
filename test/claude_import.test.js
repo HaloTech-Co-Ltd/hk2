@@ -12,6 +12,7 @@ import assert from 'node:assert';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { autoImportClaudeModel, claudeSettingsPath } from '../src/claude_import.js';
 import { loadModels, MODELS_PATH } from '../lib/config/home.js';
 import { HK2_HOME } from './_claude_import_setup.js';
@@ -25,6 +26,55 @@ async function reset({ modelsJson = null, claudeEnv = null } = {}) {
   if (claudeEnv !== null) {
     await fs.mkdir(path.join(claudeHome, '.claude'), { recursive: true });
     await fs.writeFile(claudeSettingsPath(claudeHome), JSON.stringify({ env: claudeEnv }));
+  }
+}
+
+function runModelWriter(mutation) {
+  const script = `
+    import { withModels } from ${JSON.stringify(new URL('../lib/config/home.js', import.meta.url).href)};
+    await withModels((data) => { ${mutation} });
+  `;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, HK2_HOME },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.stderr.on('data', chunk => { output += chunk; });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0) resolve();
+      else reject(new Error(`model writer failed (${code}): ${output}`));
+    });
+  });
+}
+
+async function pauseImporterAfterInitialSnapshot(claudeEnv, concurrentMutation) {
+  await reset({ claudeEnv });
+  const originalReadFile = fs.readFile;
+  let reachedSettingsRead;
+  let resumeSettingsRead;
+  const settingsRead = new Promise(resolve => { reachedSettingsRead = resolve; });
+  const resume = new Promise(resolve => { resumeSettingsRead = resolve; });
+  const settingsPath = claudeSettingsPath(claudeHome);
+  fs.readFile = async (file, ...args) => {
+    const content = await originalReadFile(file, ...args);
+    if (String(file) === settingsPath) {
+      reachedSettingsRead();
+      await resume;
+    }
+    return content;
+  };
+  try {
+    const importPromise = autoImportClaudeModel({ homeDir: claudeHome });
+    await settingsRead;
+    await runModelWriter(concurrentMutation);
+    resumeSettingsRead();
+    return await importPromise;
+  } finally {
+    resumeSettingsRead();
+    fs.readFile = originalReadFile;
   }
 }
 
@@ -118,6 +168,42 @@ test('provider-exists: a user-configured claude provider is never overwritten', 
   assert.equal(saved.providers.claude.api, 'openai');
   assert.equal(saved.providers.claude.apiKey, 'keep');
   assert.equal(saved.providers.claude.baseUrl, 'https://keep');
+});
+
+test('auto-import preserves a concurrently added provider while setting its default', async () => {
+  const result = await pauseImporterAfterInitialSnapshot({
+    ANTHROPIC_AUTH_TOKEN: 'new', ANTHROPIC_BASE_URL: 'https://new',
+  }, `data.providers.concurrent = { api: 'openai', apiKey: 'keep', models: [] };`);
+  assert.equal(result.imported, true);
+  const saved = await loadModels();
+  assert.equal(saved.providers.concurrent.apiKey, 'keep');
+  assert.equal(saved.providers.claude.apiKey, 'new');
+  assert.equal(saved.default, result.ref);
+});
+
+test('auto-import rechecks a concurrently added claude provider under the lock', async () => {
+  const result = await pauseImporterAfterInitialSnapshot({
+    ANTHROPIC_AUTH_TOKEN: 'new', ANTHROPIC_BASE_URL: 'https://new',
+  }, `data.providers.claude = { api: 'openai', apiKey: 'winner', baseUrl: 'https://winner', models: [] };`);
+  assert.equal(result.imported, false);
+  assert.equal(result.reason, 'provider-exists');
+  const saved = await loadModels();
+  assert.equal(saved.providers.claude.apiKey, 'winner');
+  assert.equal(saved.default, null);
+});
+
+test('auto-import preserves a concurrently configured default', async () => {
+  const result = await pauseImporterAfterInitialSnapshot({
+    ANTHROPIC_AUTH_TOKEN: 'new', ANTHROPIC_BASE_URL: 'https://new',
+  }, `
+    data.providers.concurrent = { api: 'openai', apiKey: 'keep', models: [{ id: 'winner' }] };
+    data.default = 'concurrent/winner';
+  `);
+  assert.equal(result.imported, false);
+  assert.equal(result.reason, 'already-configured');
+  const saved = await loadModels();
+  assert.equal(saved.default, 'concurrent/winner');
+  assert.equal(saved.providers.claude, undefined);
 });
 
 
