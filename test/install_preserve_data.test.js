@@ -67,10 +67,12 @@ async function runInstall(src, env, args = []) {
       HOME: env.HOME,
       HK2_INSTALL_DIR: env.HK2_INSTALL_DIR,
       HK2_PREFIX: env.HK2_PREFIX,
-      // Keep only system essentials so `npm` is not found (the script would
-      // otherwise run a real npm install inside the sandbox); --no-npm-install
-      // above is the deterministic belt, this is the suspenders.
-      PATH: '/bin:/usr/bin',
+      // Keep system essentials and the directory containing the Node binary.
+      // setup-node installs Node outside /usr/bin on GitHub-hosted runners,
+      // while local installations commonly expose it through /usr/bin.
+      // --no-npm-install above keeps the sandbox deterministic even when npm
+      // lives alongside Node.
+      PATH: `${path.dirname(process.execPath)}:/bin:/usr/bin`,
     },
     stdio: 'pipe',
   });
