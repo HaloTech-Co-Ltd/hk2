@@ -151,10 +151,12 @@ proposals cannot be recovered; run `ast_edit` again for a fresh proposal. In
 error results, `rolledBack` counts files that entered the restoration attempt,
 not confirmed restoration successes.
 
-**Known limitation**: `ast_edit`'s directory expansion walks at most 2000
-candidate files per root and does not report the truncation in its result —
-a proposal over a very large tree may silently cover only the first 2000
-walked files. Narrow `paths` when targeting big trees.
+**Directory and preview bounds**: a directory path that expands beyond 2000
+candidate files makes `ast_edit` fail without staging a partial proposal;
+narrow `paths` and retry. Diff generation runs a full-file, line-based LCS for
+each changed file and allows at most 4,000,000 line-pair cells. Because that
+budget depends on the whole before/after file lengths, narrowing the matched
+replacement does not reduce it; exclude the file or use another edit tool.
 
 ## Plan tools
 
@@ -299,15 +301,16 @@ re-syncs the index.
 | Token | Meaning |
 |---|---|
 | `$$$IDENT` | Multi-wildcard capture — matches any text (multi-line, non-greedy). `IDENT` is captured into `meta.IDENT` for substitution. |
+| `$$$` | Anonymous multi-wildcard. In `ast_edit`, each occurrence can be substituted into `out` in the same left-to-right occurrence order. |
 | `$IDENT` | Single identifier capture — matches `[A-Za-z_][A-Za-z0-9_]*`. |
-| `$_` | Anonymous single-token wildcard (no capture). |
+| `$_` | Anonymous single-token wildcard. In `ast_edit`, anonymous wildcards are substituted by occurrence order. |
 | other | Literal text, regex-escaped. |
 
 Examples:
 
 - `ast_grep("console.log($$$)")` — any console.log call
 - `ast_grep("function $NAME($$$)", path="src")` — captures function names
-- `ast_edit({ops:[{pat:"console.log($$$ARGS)", out:"logger.info($$$ARGS)"}], paths:["src"]})` — codemod every console.log → logger.info, args preserved (named captures round-trip; anonymous `$$$` does not)
+- `ast_edit({ops:[{pat:"console.log($$$)", out:"logger.info($$$)"}], paths:["src"]})` — codemod every console.log → logger.info, with the anonymous argument capture preserved
 
 ## Stale-anchor protection (`tag`)
 
@@ -332,10 +335,11 @@ The protection has one numbered flow:
    entered the restoration attempt, not confirmed successes.
 
 **Known limitation**: `ast_edit` uses regex approximation rather than AST-exact
-matching; directory expansion walks at most 2000 candidate files per root and
-currently does not report truncation. `SOURCE_EXT_RE` includes `.pdf` and
-`.docx`, so wide `ast_grep`/`ast_edit` operations can try to process document
-or binary content as UTF-8 text. Use explicit text-source paths or globs.
+matching. Directory expansion fails closed when it exceeds 2000 candidate
+files; it does not stage the first 2000 as a partial proposal. `SOURCE_EXT_RE`
+includes `.pdf` and `.docx`, so wide `ast_grep`/`ast_edit` operations can try
+to process document or binary content as UTF-8 text. Use explicit text-source
+paths or globs.
 
 ## Deferred capabilities
 

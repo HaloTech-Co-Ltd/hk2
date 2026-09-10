@@ -126,10 +126,10 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 均不可恢复；请重新运行 `ast_edit`。错误结果中的 `rolledBack` 是进入恢复尝试的
 文件数量，不是确认恢复成功的数量。
 
-**已知限制**：`ast_edit` 使用正则近似而不是精确 AST 匹配；每个根的目录展开最多
-2000 个候选文件，当前结果不报告截断。`SOURCE_EXT_RE` 还包含 `.pdf` 与 `.docx`，
-对较大目录执行 `ast_grep` / `ast_edit` 可能把文档或二进制内容当作 UTF-8 文本处理；重写
-请使用明确的文本源码路径或 glob。
+**目录与预览上限**：目录路径展开超过 2000 个候选文件时，`ast_edit` 会失败，
+不会暂存局部 proposal；请缩小 `paths` 后重试。每个变更文件的 diff 使用全文件、
+按行 LCS 生成，最多允许 4,000,000 个行对单元。预算取决于变更前后整个文件的
+行数，因此缩小匹配的替换片段不能降低预算；请排除该文件或改用其他编辑工具。
 ## 规划工具
 
 ### `plan`
@@ -248,15 +248,16 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 | 记号 | 含义 |
 |---|---|
 | `$$$IDENT` | 多通配符捕获——匹配任意文本（多行、非贪婪）。`IDENT` 被捕获到 `meta.IDENT` 以便替换。 |
+| `$$$` | 匿名多通配符。`ast_edit` 可按各捕获在模式中从左到右的出现顺序将其替换进 `out`。 |
 | `$IDENT` | 单标识符捕获——匹配 `[A-Za-z_][A-Za-z0-9_]*`。 |
-| `$_` | 匿名单 token 通配符（不捕获）。 |
+| `$_` | 匿名单 token 通配符；`ast_edit` 同样按出现顺序替换匿名捕获。 |
 | 其他 | 字面文本，按正则转义。 |
 
 示例：
 
 - `ast_grep("console.log($$$)")`——任意 console.log 调用
 - `ast_grep("function $NAME($$$)", path="src")`——捕获函数名
-- `ast_edit({ops:[{pat:"console.log($$$ARGS)", out:"logger.info($$$ARGS)"}], paths:["src"]})`——把所有 console.log 批量改为 logger.info，参数保留（具名捕获可往返；匿名 `$$$` 不可）
+- `ast_edit({ops:[{pat:"console.log($$$)", out:"logger.info($$$)"}], paths:["src"]})`——把所有 console.log 批量改为 logger.info，并保留匿名捕获的参数
 
 ## 陈旧锚点保护（`tag`）
 
@@ -275,6 +276,11 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
    运行 `/kb update` 后重新 `read` 或调用 `kb_outline` 获取新 tag；省略 tag 会跳过
    这层额外保护。失败恢复是尽力而为、非事务性的，`rolledBack` 统计进入恢复尝试
    的文件数，不是已确认恢复成功数。
+
+**已知限制**：`ast_edit` 使用正则近似而不是精确 AST 匹配。目录展开超过 2000 个
+候选文件时会关闭失败，不会把前 2000 个文件暂存为局部 proposal。
+`SOURCE_EXT_RE` 还包含 `.pdf` 与 `.docx`，因此大范围 `ast_grep` / `ast_edit`
+可能把文档或二进制内容当作 UTF-8 文本处理；请使用明确的文本源码路径或 glob。
 
 ## 暂缓的能力
 
