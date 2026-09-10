@@ -62,7 +62,9 @@ export async function updateKb() {
   console.error(`[update-kb] source: ${meta.sourcePath}`);
   console.error(`[update-kb] sourceRoot: ${meta.sourceRoot || '(none)'}`);
 
-  // Legacy-KB upgrade check: fix stale layout signals losslessly before the
+  // Legacy-KB upgrade check: back up knowledge entries first, then migrate
+  // (best-effort — disk/permission/process failures can still abort; not a
+  // zero-risk guarantee) before the
   // incremental re-index (same flow as the interactive /kb update command).
   let full = false;
   try {

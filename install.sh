@@ -1,12 +1,13 @@
 #!/bin/sh
 # install.sh — install hk2 as a global command.
 #
-# Usage:
+# Usage (must be run from inside the repo — the script copies the local
+# source tree, so piping a lone script into sh cannot work):
 #   ./install.sh                     # install to /usr/local/bin/hk2 (default)
 #   ./install.sh --prefix=$HOME/.local
 #
 # Behavior:
-#   - Clones/copies the project to $HK2_INSTALL_DIR (default: ~/.hk2)
+#   - Copies the current local source checkout to $HK2_INSTALL_DIR (default: ~/.hk2)
 #     If the script is run from inside the repo, it uses the current dir.
 #   - USER DATA IS PRESERVED across reinstalls according to
 #     config/install-data-items.txt. The upgrade uses recoverable sibling
@@ -49,7 +50,7 @@ fi
 
 if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/bin/hk2" ]; then
   echo "install.sh: cannot locate the hk2 source tree." >&2
-  echo "Run this script from inside the hk2 repo, or set HK2_INSTALL_DIR to a clone path." >&2
+  echo "Run install.sh from a complete hk2 checkout containing bin/hk2. HK2_INSTALL_DIR selects the destination; it does not provide the source tree." >&2
   exit 1
 fi
 

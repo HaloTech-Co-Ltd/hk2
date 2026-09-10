@@ -9,12 +9,24 @@
  * fallback object, assessRequest returns { clear: true }) — which used to make
  * the phase look SUCCESSFUL with no warning at all.
  *
- * This module turns that silent degradation into an explicit policy driven by
- * the HK2_ENABLE_PHASEMODEL_FALLBACK env var (default 1):
+ * This module turns that silent degradation into an explicit policy, with
+ * ONE policy per phase family:
  *
- *   1 (default): print a warning, then re-run the phase on the current
- *                session (main) model so the phase still completes.
- *   0          : print a warning and SKIP the phase entirely (result null).
+ *   - runPhaseWithFallback() — for the turn-pipeline phases rewrite-query /
+ *     request-assess. Driven by the HK2_ENABLE_PHASEMODEL_FALLBACK env var
+ *     (default 1):
+ *
+ *       1 (default): print a warning, then re-run the phase on the current
+ *                    session (main) model so the phase still completes.
+ *       0          : print a warning and SKIP the phase entirely (result null).
+ *
+ *   - runPhaseWithSkipOnUnreachable() — for the REVIEW phases (the automatic
+ *     plan-review / code-review). It NEVER re-runs a review on the session
+ *     model: an unreachable reviewer is skipped with warnings instead.
+ *     Review is therefore NOT governed by HK2_ENABLE_PHASEMODEL_FALLBACK —
+ *     a dedicated review model must never be silently substituted. (The
+ *     MANUAL `/review code` command resolves its model separately in
+ *     src/slash/review.js.)
  *
  * Detection signal: the phase functions (lib/retrieval/rewrite_query.js) set
  * `error` on their returned object when the underlying LLM call failed at the

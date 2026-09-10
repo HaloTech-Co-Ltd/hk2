@@ -246,7 +246,7 @@ test('classifyRead distinguishes kb-assisted / targeted / cold', () => {
   const kbPaths = new Set(['lib/agent/kb_stats.js']);
   assert.equal(classifyRead('lib/agent/kb_stats.js', kbPaths, null), 'targeted');
   assert.equal(classifyRead('lib/agent/kb_stats.js', kbPaths, { kbOutline: true }), 'kb-assisted');
-  assert.equal(classifyRead('/Users/me/Workspace/hk2/lib/agent/kb_stats.js', kbPaths, null), 'targeted'); // suffix match
+  assert.equal(classifyRead('/path/to/project/lib/agent/kb_stats.js', kbPaths, null), 'targeted'); // suffix match
   assert.equal(classifyRead('src/unrelated.ts', kbPaths, null), 'cold');
   assert.equal(classifyRead('notes/README', kbPaths, null), null); // non-source
   assert.equal(classifyRead(null, kbPaths, null), null);

@@ -8,9 +8,9 @@
  *   2. Model resolution priority: --model flag > project code-review phase
  *      config > current session model (credentials-checked, like
  *      test/phase_model.test.js).
- *   3. Context isolation: the messages sent to the review LLM contain ONLY
- *      the original request + claimed result + changed files + diff - none
- *      of the conversation's intermediate context.
+ *   3. Context isolation: the messages sent to the review LLM contain the
+ *      original request, queued additions, claimed result, changed files and
+ *      diff - none of the conversation's intermediate process context.
  *   4. Result rendering (ok / issues) and the skip-on-unreachable policy
  *      (no fallback to the session model for review phases).
  *
@@ -204,6 +204,22 @@ test('/review code uses the session model when no override and no flag', async (
   assert.ok(prints.some((s) => s.includes('no issues found')), 'expected ok verdict line');
 });
 
+test('/review code warns and uses the session model for a stale phase ref', async () => {
+  await seedModels();
+  const p = await makeProject('stalephase');
+  await setCurrentProject(p.id);
+  await setPhaseModelRef(p.id, 'code-review', 'missing-provider/missing-model');
+  const { session, ctx, prints } = await makeCtx(p);
+  const fake = recordingLlm('{"ok": true, "issues": []}');
+  session.llm = fake;
+
+  await dispatchSlash('/review code', ctx);
+  assert.equal(fake.calls.length, 1, 'stale phase ref must fall back to the session model');
+  assert.ok(prints.some((s) => /could not resolve.*using the session model/i.test(s)),
+    `expected stale-ref warning, got: ${JSON.stringify(prints)}`);
+  assert.ok(prints.some((s) => s.includes('no issues found')), 'session fallback should complete the review');
+});
+
 test('/review code prefers the project code-review phase model over the session model', async () => {
   await seedModels();
   const p = await makeProject('phasecfg');
@@ -294,7 +310,7 @@ test('/review code --model wins over the phase config', async () => {
 // 3. Context isolation: only request + result reach the reviewer
 // ---------------------------------------------------------------------------
 
-test('/review code sends ONLY the request and result, never the conversation process', async () => {
+test('/review code sends request and result without the conversation process', async () => {
   await seedModels();
   const p = await makeProject('isolated');
   await setCurrentProject(p.id);
