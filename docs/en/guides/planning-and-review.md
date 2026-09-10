@@ -102,6 +102,17 @@ Two forms exist, with distinct model-resolution paths:
   deterministic transcript scanning. `/review plan` is reserved and not
   implemented yet.
 
+Both paths collect tracked changes against `HEAD` (staged and unstaged) and
+eligible untracked files. Before Git is asked for file bodies, every path must
+pass the effective read-permission check, including its resolved symlink
+target. A rename or copy is included only when both old and new paths are
+readable; otherwise the whole entry is omitted. Denied path names are also
+removed from `changedFiles`, and the review input contains only a generic
+omission marker. Untracked bodies are limited to the first 50 allowed files
+and 16,000 characters per file before the review prompt's overall truncation.
+This collection is best-effort: Git errors, unreadable files, and non-repository
+project paths can yield an empty diff.
+
 ### UNKNOWN verdicts
 
 Only the machine-readable verdict JSON is parsed; it is never shown raw. A
