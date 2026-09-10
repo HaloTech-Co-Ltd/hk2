@@ -49,6 +49,18 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
   `history.jsonl`、`welcome-seen`、`settings/`、`kb/`、`sessions/` 与
   `logs/`。仓库内的清单文件是权威列表。
 
+保留机制只处理所选 `HK2_INSTALL_DIR` 中已存在、名称匹配的顶层条目；安装器
+不会搜索另行设置的 `HK2_HOME` 或 `HK2_KB_DIR`。反过来，位于安装目标之外的
+数据也不会因刷新该目标而被触碰。源码树先复制到唯一的同级 stage；已有清单
+数据移入 `.hk2-preserve`，旧安装移入 `.hk2-old`。只有新启动器验证成功且清单
+记录的每项都已存在后，恢复目录才会删除。后续运行发现中断的 preserve 事务时，
+会先尝试恢复已记录条目，再开始下一次升级。这是文件系统层面的尽力恢复，不是
+跨目录原子事务；重要数据仍应保留外部备份。
+
+`npm install` 执行失败只会打印警告并继续使用正则解析回退；如果启动器验证
+成功，这条警告不会使安装器保留旧安装备份。stage、目录替换、数据恢复或启动器
+验证失败时，会在适用情况下留下同级恢复状态，供以后运行继续处理。
+
 启用旧的破坏性擦除行为必须同时传入 `--preserve-data=off` 与
 `--confirm-data-loss`。
 
@@ -62,7 +74,7 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 | `--prefix=<path>` | `hk2` 符号链接的安装前缀（默认 `/usr/local`；也可通过 `HK2_PREFIX` 环境变量设置） |
 | `--install-dir=<path>` | 自包含源码副本的位置（默认 `~/.hk2`；也可通过 `HK2_INSTALL_DIR` 设置） |
 | `--no-npm-install` | 跳过 `npm install`；没有原生绑定时，仅有正则回退的语言能产生代码符号 |
-| `--preserve-data=off` | 旧行为：重装时**不**保留用户数据——安装目录被擦除 |
+| `--preserve-data=off` | 旧行为：重装时不保留安装目标中的清单数据；必须同时传确认参数 |
 | `--confirm-data-loss` | `--preserve-data=off` 所需的确认参数；单独使用不会删除数据 |
 
 `--prefix=value` 与 `--prefix value` 两种形式均可，`--install-dir` 同理。

@@ -57,6 +57,24 @@ for an external backup of important data:
   `history.jsonl`, `welcome-seen`, `settings/`, `kb/`, `sessions/`, and
   `logs/`. The checked-in manifest is the authoritative list.
 
+Preservation applies only to matching top-level entries already inside the
+chosen `HK2_INSTALL_DIR`; the installer does not search a separate custom
+`HK2_HOME` or `HK2_KB_DIR`. Conversely, data stored outside the install target
+is not touched by refreshing that target. The source tree is first copied to a
+unique sibling stage. Existing listed data moves to `.hk2-preserve`, the old
+installation moves to `.hk2-old`, and those recovery directories are removed
+only after the new launcher has been verified and every manifest-recorded item
+is present. A later run detects an interrupted preserve transaction and tries
+to restore its recorded items before starting the next upgrade. This recovery
+is filesystem best-effort rather than an atomic multi-directory transaction;
+retain an external backup.
+
+Failure to run `npm install` prints a warning and continues with regex parser
+fallbacks; if the launcher verification succeeds, that warning does not keep
+the old installation backup. Failures in staging, tree replacement, data
+restoration, or launcher verification leave the sibling recovery state for a
+later run where applicable.
+
 The destructive legacy wipe requires both `--preserve-data=off` and
 `--confirm-data-loss`.
 
@@ -71,7 +89,7 @@ of the config home.
 | `--prefix=<path>` | Install prefix for the `hk2` symlink (default `/usr/local`; also settable via the `HK2_PREFIX` env var) |
 | `--install-dir=<path>` | Location of the self-contained source copy (default `~/.hk2`; also settable via `HK2_INSTALL_DIR`) |
 | `--no-npm-install` | Skip `npm install`; without native bindings, only languages with regex fallbacks produce code symbols |
-| `--preserve-data=off` | Legacy behavior: do **not** preserve user data on reinstall — the install dir is wiped |
+| `--preserve-data=off` | Legacy behavior: do **not** preserve manifest-listed data in the install target during reinstall; requires the confirmation flag |
 | `--confirm-data-loss` | Required confirmation for `--preserve-data=off`; has no destructive effect by itself |
 
 Both `--prefix=value` and `--prefix value` forms are accepted; the same goes
