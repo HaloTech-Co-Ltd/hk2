@@ -1295,7 +1295,6 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // pre-execution pass, so we always transition straight into execution.)
   ui.phase('waiting for model');
 
-  let assistantText = '';
   // Per-LLM-call renderers (markdown + reasoning) live inside ui.stream;
   // initialize the pair here (mirroring the original eager construction) —
   // every onTurnStart resets them fresh.
@@ -1341,8 +1340,6 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // answer text begins, then finalize the reasoning stream.
       ui.stream.flushReasoning();
       ui.stream.delta(text);
-      // Raw text still accumulates into assistantText for the transcript.
-      assistantText += text;
       if (session.phase !== 'streaming') ui.phaseOnly('streaming');
       else ui.statusRefresh();
     },
@@ -1401,6 +1398,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // then tool_calls with NO body text. The card render (incl. spinner
       // finalization) lives in the ui.
       ui.toolStart(call, args);
+    },
+    onAssistantMessage: async (message, round) => {
+      try { await session.transcript?.logAssistantMessage(message, round); }
+      catch { /* transcript persistence is best-effort; never fail the turn */ }
     },
     onToolCallEnd: (call, result) => {
       ui.phaseOnly('waiting for model');
@@ -1529,7 +1530,6 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         // the client-level 'retry' event), and the per-loop token accounting
         // must restart so the status bar reflects the compacted reality.
         ui.stream.reset();
-        assistantText = '';
         session.tokens.loopIn = 0;
         session.tokens.loopOut = 0;
         session.tokens.loopPeakIn = 0;
@@ -1598,8 +1598,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       });
     }
 
-    session.lastAnswer = assistantText;
-    await session.transcript?.logAssistant(assistantText);
+    session.lastAnswer = result.lastText;
     await session.transcript?.logTurn(result.turns, result.toolCalls);
 
     // The ANSWER is done — reset the phase BEFORE the end-of-turn prompts:
@@ -1666,7 +1665,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     if (envFlag('HK2_ENABLE_CODEREVIEW', 0) && session.llm && planCompleted) {
       await runCodeReview(session, ctx, ui, {
         planText: session.lastPlanText || '',
-        assistantText,
+        assistantText: result.lastText,
         resolvePhaseLlm,
         signal: abortCtrl.signal,
       });

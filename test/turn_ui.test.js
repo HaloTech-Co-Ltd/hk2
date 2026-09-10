@@ -128,6 +128,35 @@ test('runTurn: phase order, stream lifecycle, answer capture, idle exit', async 
   }
 });
 
+test('runTurn stores and reviews only the final non-tool assistant round', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '0';
+  process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+  let call = 0;
+  const llm = {
+    async *stream() {
+      call++;
+      if (call === 1) {
+        yield { type: 'delta', text: 'intermediate tool-round text' };
+        yield { type: 'tool_call', id: 'read-1', name: 'read', arguments: '{"path":"missing.txt"}' };
+      } else {
+        yield { type: 'delta', text: 'pure final answer' };
+      }
+    },
+  };
+  try {
+    const session = mkSession(llm);
+    const ctx = buildCtx(session);
+    await runTurn('inspect something', session, ctx, fakeUi());
+    assert.equal(session.lastAnswer, 'pure final answer');
+    const conversation = await ctx.getConversation();
+    assert.equal(conversation.answerText, 'pure final answer');
+    assert.equal(conversation.answerText.includes('intermediate tool-round text'), false);
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+  }
+});
+
 /* ----- failure path --------------------------------------------------- */
 
 test('runTurn: provider error -> ui.failed, phase=error, capture disarmed', async () => {

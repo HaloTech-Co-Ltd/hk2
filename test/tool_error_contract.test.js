@@ -186,3 +186,51 @@ test('runLoop stamps executed calls with their round index', async () => {
   });
   assert.deepEqual(seen, [1, 2]);
 });
+
+test('complete assistant rounds replay exactly with their original content', async () => {
+  const script = [
+    [
+      { type: 'delta', text: "I'll inspect config" },
+      { type: 'tool_call', id: 'read-1', name: 'read', arguments: '{"path":"config"}' },
+    ],
+    [
+      { type: 'delta', text: 'The port is 5432; checking it' },
+      { type: 'tool_call', id: 'bash-2', name: 'bash', arguments: '{"command":"check"}' },
+    ],
+    [{ type: 'delta', text: 'Done' }],
+  ];
+  let round = 0;
+  const llm = {
+    async *stream() {
+      for (const event of script[round++]) yield event;
+    },
+  };
+  const tools = [
+    tool('read', () => ({ value: 'config' })),
+    tool('bash', () => ({ value: 'checked' })),
+  ];
+  const original = [{ role: 'user', content: 'inspect' }];
+  const transcriptEvents = [{ type: 'user', text: 'inspect' }];
+  const result = await runLoop({
+    llm,
+    messages: original,
+    tools,
+    callbacks: {
+      onAssistantMessage: (message, loopRound) => transcriptEvents.push({
+        type: 'assistant_message', round: loopRound,
+        content: message.content, tool_calls: message.tool_calls || [],
+      }),
+      onToolCallEnd: (call, toolResult) => transcriptEvents.push({
+        type: 'tool_call', id: call.id, name: call.name, arguments: call.arguments,
+        result: toolResult.ok ? toolResult.result : { error: toolResult.error },
+        ok: toolResult.ok, round: call.round,
+      }),
+    },
+  });
+
+  const replayed = replayTranscript(transcriptEvents.map(event => JSON.stringify(event)).join('\n')).messages;
+  assert.deepEqual(replayed, original);
+  assert.equal(replayed[1].content, "I'll inspect config");
+  assert.equal(replayed[3].content, 'The port is 5432; checking it');
+  assert.equal(result.lastText, 'Done');
+});
