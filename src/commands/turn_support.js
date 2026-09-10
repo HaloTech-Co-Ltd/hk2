@@ -51,6 +51,7 @@ import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { getPhaseModelRef } from '../../lib/config/home.js';
 import { runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
 import { reviewCode, buildCodeReviewContent, createVerdictFilter } from '../../lib/agent/code_review.js';
+import { PermissionService } from '../../lib/config/setting.js';
 import * as style from '../../lib/agent/style.js';
 import { fmtTok } from './status_format.js';
 import { confirmThreeWay, extractTaskRequirement, buildResumeContext } from './session_ctx.js';
@@ -149,38 +150,66 @@ export async function collectWorkingTreeDiff(sourcePath) {
   const empty = { diffText: '', changedFiles: [] };
   if (!sourcePath) return empty;
   try {
-    // NOTE: `-C <path>` is a GLOBAL git option and MUST come BEFORE the
-    // subcommand. `git status --porcelain -C <path>` fails with
-    // "unknown switch `C'" (exit 129), which silently emptied changedFiles
-    // and skipped untracked-file collection entirely.
-    const [diffRes, statusRes, untrackedRes] = await Promise.all([
-      execFileAsync('git', ['-C', sourcePath, 'diff', 'HEAD', '--unified=3']),
-      execFileAsync('git', ['-C', sourcePath, 'status', '--porcelain']),
-      execFileAsync('git', ['-C', sourcePath, 'ls-files', '--others', '--exclude-standard']),
+    // NOTE: `-C <path>` is a global git option and must precede the subcommand.
+    // Enumerate path metadata first. Never ask git for file bodies until the
+    // paths have passed the same lexical + realpath permission checks as read.
+    // `-z` also avoids ambiguous parsing and C-quoted filenames.
+    const [trackedRes, untrackedRes] = await Promise.all([
+      execFileAsync('git', ['-C', sourcePath, 'diff', 'HEAD', '--find-renames', '--find-copies', '--name-status', '-z']),
+      execFileAsync('git', ['-C', sourcePath, 'ls-files', '--others', '--exclude-standard', '-z']),
     ]);
-    if (!diffRes.ok && !statusRes.ok) return empty;
+    if (!trackedRes.ok && !untrackedRes.ok) return empty;
 
-    // Porcelain lines are "XY <path>" (2 status cols + 1 space). Renames are
-    // "R  old -> new": keep the destination. Paths with special chars are
-    // C-quoted by git: strip the surrounding quotes.
-    const changedFiles = statusRes.ok
-      ? statusRes.out.split('\n').map((l) => {
-          let f = l.slice(3).trim();
-          if (f.startsWith('"') && f.endsWith('"')) f = f.slice(1, -1);
-          const arrow = f.indexOf(' -> ');
-          if (arrow >= 0) f = f.slice(arrow + 4);
-          return f;
-        }).filter((f) => f.trim())
-      : [];
+    const splitPaths = (value) => value.split('\0').filter(Boolean);
+    const parseTracked = (value) => {
+      const fields = splitPaths(value);
+      const entries = [];
+      for (let i = 0; i < fields.length;) {
+        const status = fields[i++];
+        const pathCount = /^[RC]/.test(status) ? 2 : 1;
+        const paths = fields.slice(i, i + pathCount);
+        i += pathCount;
+        if (paths.length === pathCount) entries.push({ paths, display: paths[paths.length - 1] });
+      }
+      return entries;
+    };
+    const trackedEntries = trackedRes.ok ? parseTracked(trackedRes.out) : [];
+    const trackedFiles = trackedEntries.flatMap(entry => entry.paths);
+    const untrackedFiles = untrackedRes.ok ? splitPaths(untrackedRes.out) : [];
+    const candidates = [...new Set([...trackedFiles, ...untrackedFiles])];
+    const permissionService = new PermissionService({ projectRoot: sourcePath });
+    const allowed = new Set();
+    await Promise.all(candidates.map(async (file) => {
+      try {
+        const result = await permissionService.checkReal(path.resolve(sourcePath, file), 'r');
+        if (result.ok) allowed.add(file);
+      } catch { /* permission uncertainty fails closed */ }
+    }));
 
-    let diffText = diffRes.ok ? diffRes.out : '';
+    // A rename/copy is readable only when both its old and new paths are
+    // readable; otherwise its diff could disclose the denied side's body.
+    const allowedTrackedEntries = trackedEntries.filter(entry => entry.paths.every(file => allowed.has(file)));
+    const allowedTracked = [...new Set(allowedTrackedEntries.flatMap(entry => entry.paths))];
+    const allowedUntracked = untrackedFiles.filter(file => allowed.has(file));
+    const changedFiles = [...new Set([
+      ...allowedTrackedEntries.map(entry => entry.display),
+      ...allowedUntracked,
+    ])];
+    const omittedCount = trackedEntries.length - allowedTrackedEntries.length
+      + untrackedFiles.length - allowedUntracked.length;
+    let diffText = '';
+    if (allowedTracked.length > 0) {
+      const diffRes = await execFileAsync(
+        'git', ['-C', sourcePath, 'diff', 'HEAD', '--find-renames', '--find-copies', '--unified=3', '--', ...allowedTracked],
+      );
+      if (diffRes.ok) diffText = diffRes.out;
+    }
 
     // Include new (untracked) files, which `git diff HEAD` does not cover.
-    if (untrackedRes.ok && untrackedRes.out.trim()) {
-      const newFiles = untrackedRes.out.split('\n').map((f) => f.trim()).filter(Boolean);
-      for (const f of newFiles.slice(0, 50)) {
+    if (untrackedFiles.length > 0) {
+      for (const f of allowedUntracked.slice(0, 50)) {
         try {
-          const abs = path.join(sourcePath, f);
+          const abs = path.resolve(sourcePath, f);
           const stat = await fs.stat(abs);
           if (!stat.isFile()) continue;
           // Cap each new file's body so a single huge generated file can't blow
@@ -191,6 +220,10 @@ export async function collectWorkingTreeDiff(sourcePath) {
           diffText += `\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n` + content;
         } catch { /* skip unreadable / binary files */ }
       }
+    }
+
+    if (omittedCount > 0) {
+      diffText += `${diffText && !diffText.endsWith('\n') ? '\n' : ''}[changes omitted by setting.json permissions]\n`;
     }
 
     return { diffText, changedFiles };
