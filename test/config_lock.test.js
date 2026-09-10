@@ -149,3 +149,46 @@ test('lock file removed after the critical section', async () => {
   await assert.rejects(() => fsp.stat(target + '.lock'));
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('a fresh incomplete lock is not reclaimed as stale', async () => {
+  const { withLock } = await import('../lib/util/lockfile.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hk2-lock-initializing-'));
+  const target = path.join(tmp, 'f.json');
+  const lockPath = `${target}.lock`;
+  await fsp.writeFile(lockPath, '');
+  await assert.rejects(
+    () => withLock(target, async () => assert.fail('must not enter'), { timeoutMs: 25, staleMs: 30_000 }),
+    /lock timeout/,
+  );
+  assert.equal(await fsp.readFile(lockPath, 'utf8'), '', 'waiter must preserve the initializing lock');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('a waiter that times out never deletes the current owner lock', async () => {
+  const { withLock } = await import('../lib/util/lockfile.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hk2-lock-timeout-owner-'));
+  const target = path.join(tmp, 'f.json');
+  const lockPath = `${target}.lock`;
+  const owner = { pid: process.pid, ts: Date.now(), token: 'other-owner' };
+  await fsp.writeFile(lockPath, JSON.stringify(owner));
+  await assert.rejects(
+    () => withLock(target, async () => assert.fail('must not enter'), { timeoutMs: 25 }),
+    /lock timeout/,
+  );
+  assert.deepEqual(JSON.parse(await fsp.readFile(lockPath, 'utf8')), owner);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('release does not unlink a lock path replaced by another token', async () => {
+  const { withLock } = await import('../lib/util/lockfile.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hk2-lock-token-owner-'));
+  const target = path.join(tmp, 'f.json');
+  const lockPath = `${target}.lock`;
+  const replacement = { pid: process.pid, ts: Date.now(), token: 'replacement-owner' };
+  await withLock(target, async () => {
+    await fsp.unlink(lockPath);
+    await fsp.writeFile(lockPath, JSON.stringify(replacement));
+  });
+  assert.deepEqual(JSON.parse(await fsp.readFile(lockPath, 'utf8')), replacement);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
