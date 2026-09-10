@@ -1,0 +1,11 @@
+# Persistent top-level entries under HK2_HOME. install.sh reads this manifest.
+models.json
+projects.json
+theme.json
+setting.json
+history.jsonl
+welcome-seen
+settings
+kb
+sessions
+logs

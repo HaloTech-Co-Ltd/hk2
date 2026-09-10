@@ -51,7 +51,9 @@ async function fakeSourceTree(parent) {
     'bin/hk2': '#!/bin/sh\necho fake-hk2\n',
     'package.json': JSON.stringify({ name: 'hk2', version: 'test' }),
     'lib/config/home.js': 'export const HK2_HOME = "~/.hk2";\n',
+    'config/install-data-items.txt': await fs.readFile(path.join(REPO_ROOT, 'config/install-data-items.txt'), 'utf8'),
   });
+  await fs.chmod(path.join(src, 'bin/hk2'), 0o755);
   await fs.copyFile(INSTALL_SH, path.join(src, 'install.sh'));
   return src;
 }
@@ -61,6 +63,7 @@ async function runInstall(src, env, args = []) {
     cwd: src,
     env: {
       ...process.env,
+      ...env,
       HOME: env.HOME,
       HK2_INSTALL_DIR: env.HK2_INSTALL_DIR,
       HK2_PREFIX: env.HK2_PREFIX,
@@ -79,6 +82,10 @@ async function seedUserData(root) {
     'models.json': JSON.stringify({ providers: {}, default: null, marker: 'user-models' }),
     'projects.json': JSON.stringify({ projects: [], current: null, marker: 'user-projects' }),
     'theme.json': JSON.stringify({ theme: 'dark', marker: 'user-theme' }),
+    'setting.json': JSON.stringify({ permissions: [{ path: '/secret', deny: 'rwx' }] }),
+    'history.jsonl': '{"ts":"x","text":"important command"}\n',
+    'welcome-seen': '1\n',
+    'settings/proj/setting.json': JSON.stringify({ permissions: [{ path: 'private', deny: 'r' }] }),
     'kb/proj/holy/supreme.md': '# Supreme\n',
     'sessions/proj/s1.jsonl': '{"type":"user"}\n',
     'logs/hk2.log': 'log line\n',
@@ -104,6 +111,10 @@ test('reinstall preserves all user-data items in the default install dir', async
   assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'models.json'), 'utf8')).marker, 'user-models');
   assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'projects.json'), 'utf8')).marker, 'user-projects');
   assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'theme.json'), 'utf8')).marker, 'user-theme');
+  assert.ok((await fs.readFile(path.join(installDir, 'setting.json'), 'utf8')).includes('/secret'));
+  assert.ok((await fs.readFile(path.join(installDir, 'history.jsonl'), 'utf8')).includes('important command'));
+  assert.equal(await fs.readFile(path.join(installDir, 'welcome-seen'), 'utf8'), '1\n');
+  assert.ok((await fs.readFile(path.join(installDir, 'settings/proj/setting.json'), 'utf8')).includes('private'));
   assert.equal(await fs.readFile(path.join(installDir, 'kb/proj/holy/supreme.md'), 'utf8'), '# Supreme\n');
   assert.ok((await fs.readFile(path.join(installDir, 'sessions/proj/s1.jsonl'), 'utf8')).includes('"type":"user"'));
   assert.ok((await fs.readFile(path.join(installDir, 'logs/hk2.log'), 'utf8')).length > 0);
@@ -147,12 +158,76 @@ test('--preserve-data=off keeps the explicit wipe behavior', async () => {
   await seedUserData(installDir);
 
   // Legacy behavior, explicitly opted out.
-  await runInstall(src, { HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix }, ['--preserve-data=off']);
+  await runInstall(src, { HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix }, ['--preserve-data=off', '--confirm-data-loss']);
 
   await assert.rejects(() => fs.stat(path.join(installDir, 'models.json')));
   await assert.rejects(() => fs.stat(path.join(installDir, 'kb')));
   // Code tree is still installed.
   assert.ok(await fs.stat(path.join(installDir, 'bin/hk2')).then((s) => s.isFile()).catch(() => false));
+  await fs.rm(tmp, { recursive: true, force: true });
+});
+
+test('--preserve-data=off requires an explicit data-loss confirmation', async () => {
+  const tmp = await mkdtemp('hk2-install-confirm-');
+  const home = path.join(tmp, 'home');
+  const src = await fakeSourceTree(tmp);
+  await fs.mkdir(home, { recursive: true });
+  await assert.rejects(() => runInstall(src, {
+    HOME: home, HK2_INSTALL_DIR: path.join(home, '.hk2'), HK2_PREFIX: path.join(tmp, 'prefix'),
+  }, ['--preserve-data=off']));
+  await fs.rm(tmp, { recursive: true, force: true });
+});
+
+test('an existing preserve directory is recovered instead of deleted', async () => {
+  const tmp = await mkdtemp('hk2-install-existing-preserve-');
+  const home = path.join(tmp, 'home');
+  const prefix = path.join(tmp, 'prefix');
+  const src = await fakeSourceTree(tmp);
+  const installDir = path.join(home, '.hk2');
+  await writeTree(`${installDir}.hk2-preserve`, {
+    'models.json': '{"marker":"critical"}\n',
+    'kb/demo/data': 'knowledge\n',
+  });
+  await runInstall(src, { HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix });
+  assert.ok((await fs.readFile(path.join(installDir, 'models.json'), 'utf8')).includes('critical'));
+  assert.equal(await fs.readFile(path.join(installDir, 'kb/demo/data'), 'utf8'), 'knowledge\n');
+  await fs.rm(tmp, { recursive: true, force: true });
+});
+
+for (const failAt of ['after-stage-copy', 'after-data-move', 'after-old-tree-move', 'after-new-tree-move', 'during-data-restore']) {
+  test(`interrupted install at ${failAt} recovers all persistent data on retry`, async () => {
+    const tmp = await mkdtemp('hk2-install-interrupt-');
+    const home = path.join(tmp, 'home');
+    const prefix = path.join(tmp, 'prefix');
+    const src = await fakeSourceTree(tmp);
+    const installDir = path.join(home, '.hk2');
+    await runInstall(src, { HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix });
+    await seedUserData(installDir);
+    await assert.rejects(() => runInstall(src, {
+      HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix,
+      HK2_INSTALL_TEST_FAIL_AT: failAt,
+    }));
+    await runInstall(src, { HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix });
+    assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'models.json'), 'utf8')).marker, 'user-models');
+    assert.ok((await fs.readFile(path.join(installDir, 'setting.json'), 'utf8')).includes('/secret'));
+    assert.ok((await fs.readFile(path.join(installDir, 'history.jsonl'), 'utf8')).includes('important command'));
+    assert.equal(await fs.readFile(path.join(installDir, 'kb/proj/holy/supreme.md'), 'utf8'), '# Supreme\n');
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+}
+
+test('dangerous install directories are rejected before copying', async () => {
+  const tmp = await mkdtemp('hk2-install-danger-');
+  const home = path.join(tmp, 'home');
+  const src = await fakeSourceTree(tmp);
+  await fs.mkdir(home, { recursive: true });
+  const base = { HOME: home, HK2_PREFIX: path.join(tmp, 'prefix') };
+  await assert.rejects(() => runInstall(src, {
+    ...base, HK2_INSTALL_DIR: path.join(home, '.hk2'),
+  }, ['--install-dir=']), 'must reject an explicitly empty target');
+  for (const target of ['/', home, path.join(src, 'nested'), tmp]) {
+    await assert.rejects(() => runInstall(src, { ...base, HK2_INSTALL_DIR: target }), `must reject ${JSON.stringify(target)}`);
+  }
   await fs.rm(tmp, { recursive: true, force: true });
 });
 

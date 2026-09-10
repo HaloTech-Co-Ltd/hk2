@@ -46,10 +46,11 @@ Creates a self-contained copy of the source tree at `~/.hk2`, symlinks `hk2` int
 and runs `npm install` to build Tree-sitter native bindings.
 
 > `~/.hk2` serves two roles: it is the **config / data home** (`HK2_HOME` -
-> `models.json`, `projects.json`, `kb/`, `sessions/`, `logs/`) *and* the default
+> `models.json`, `projects.json`, permission settings, history, `kb/`, `sessions/`, `logs/`) *and* the default
 > **install dir** for the source copy. Reinstalls PRESERVE user data: the
 > installer moves the data items aside, refreshes the code tree, then moves
-> them back (pass `--preserve-data=off` for the legacy wipe). Prefer `npm link`
+> them back (destructive replacement requires both `--preserve-data=off` and
+> `--confirm-data-loss`). Prefer `npm link`
 > if you already have a checkout, or set `HK2_INSTALL_DIR` to a separate path.
 
 ```bash
@@ -64,7 +65,7 @@ Custom prefix or install location (prefix also settable via the `HK2_PREFIX` env
 ./install.sh --prefix /usr/local          # same as default
 HK2_INSTALL_DIR=~/.hk2-src ./install.sh   # keep the source copy out of the config home
 ./install.sh --no-npm-install             # skip Tree-sitter (regex fallback)
-./install.sh --preserve-data=off          # legacy wipe: do NOT preserve user data on reinstall
+./install.sh --preserve-data=off --confirm-data-loss  # destructive reinstall
 ```
 
 Optional PDF / Word parsing:
