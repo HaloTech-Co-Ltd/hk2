@@ -42,25 +42,23 @@ can pass `--prefix="$HOME/.local"`), and runs `npm install --omit=optional`
 to build the Tree-sitter native bindings. The script itself never clones
 anything — run it from a full checkout.
 
-### Reinstalls preserve user data — with a fixed list
+### Reinstalls preserve user data — with a manifest
 
 `~/.hk2` serves two roles: it is the **config / data home** (`HK2_HOME`)
 *and* the default **install dir** for the source copy. On a reinstall the
-installer moves a **fixed list** of data items aside, refreshes the code
-tree, then moves them back (user data wins over any same-named item shipped
-by the new tree). Preservation applies to a normally completed reinstall
-and is not a transactional backup — if the process dies between the move-aside and the restore, the next run deletes the leftover preserve copy,
-so keep an external backup of important data before upgrading:
+installer stages the data items declared in `config/install-data-items.txt`,
+refreshes the code tree, then restores them (user data wins over any
+same-named item shipped by the new tree). The installer keeps recoverable
+sibling staging and backup directories and resumes an interrupted upgrade on
+the next run. This protects the upgrade process, but it is not a substitute
+for an external backup of important data:
 
-- **Preserved**: `models.json`, `projects.json`, `theme.json`, `kb/`,
-  `sessions/`, `logs/`
-- **NOT preserved**: `setting.json` (the global permission baseline),
-  `settings/` (per-project permission overrides), and `history.jsonl`
-  (input history) — with the default layout these are **deleted** when the
-  install dir is refreshed. Back them up before reinstalling, or keep the
-  source copy out of the config home with `HK2_INSTALL_DIR`.
+- **Preserved**: `models.json`, `projects.json`, `theme.json`, `setting.json`,
+  `history.jsonl`, `welcome-seen`, `settings/`, `kb/`, `sessions/`, and
+  `logs/`. The checked-in manifest is the authoritative list.
 
-Pass `--preserve-data=off` for the legacy wipe behavior (nothing preserved).
+The destructive legacy wipe requires both `--preserve-data=off` and
+`--confirm-data-loss`.
 
 If you already have a checkout and actively develop on hk2, prefer
 `npm link` (Option B), or set `HK2_INSTALL_DIR` to keep the source copy out
@@ -74,6 +72,7 @@ of the config home.
 | `--install-dir=<path>` | Location of the self-contained source copy (default `~/.hk2`; also settable via `HK2_INSTALL_DIR`) |
 | `--no-npm-install` | Skip `npm install`; without native bindings, only languages with regex fallbacks produce code symbols |
 | `--preserve-data=off` | Legacy behavior: do **not** preserve user data on reinstall — the install dir is wiped |
+| `--confirm-data-loss` | Required confirmation for `--preserve-data=off`; has no destructive effect by itself |
 
 Both `--prefix=value` and `--prefix value` forms are accepted; the same goes
 for `--install-dir`.
@@ -83,7 +82,7 @@ for `--install-dir`.
 ./install.sh --prefix /usr/local          # same as default
 HK2_INSTALL_DIR="$HOME/.hk2-src" ./install.sh   # keep the source copy out of the config home
 ./install.sh --no-npm-install             # skip Tree-sitter (regex fallback)
-./install.sh --preserve-data=off          # legacy wipe: do NOT preserve user data on reinstall
+./install.sh --preserve-data=off --confirm-data-loss  # destructive reinstall
 ```
 
 ### Optional PDF / Word parsing

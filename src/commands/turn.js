@@ -1300,15 +1300,12 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // pre-execution pass, so we always transition straight into execution.)
   ui.phase('waiting for model');
 
-  let assistantText = '';
-  let assistantAttemptStart = 0;
   // Per-LLM-call renderers (markdown + reasoning) live inside ui.stream;
   // initialize the pair here (mirroring the original eager construction) —
   // every onTurnStart resets them fresh.
   ui.stream.reset();
   const callbacks = {
     onTurnStart: (_turnIdx) => {
-      assistantAttemptStart = assistantText.length;
       // Each LLM stream call inside the agent loop starts a new "turn".
       // Commit the previous call's per-call maxima to the cumulative session
       // total, then reset callIn/callOut. loopIn/loopOut are NOT touched
@@ -1348,8 +1345,6 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // answer text begins, then finalize the reasoning stream.
       ui.stream.flushReasoning();
       ui.stream.delta(text);
-      // Raw text still accumulates into assistantText for the transcript.
-      assistantText += text;
       if (session.phase !== 'streaming') ui.phaseOnly('streaming');
       else ui.statusRefresh();
     },
@@ -1409,6 +1404,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // finalization) lives in the ui.
       ui.toolStart(call, args);
     },
+    onAssistantMessage: async (message, round) => {
+      try { await session.transcript?.logAssistantMessage(message, round); }
+      catch { /* transcript persistence is best-effort; never fail the turn */ }
+    },
     onToolCallEnd: (call, result) => {
       ui.phaseOnly('waiting for model');
       session.toolCallCount++;
@@ -1459,9 +1458,6 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     // partial output; the ui drops the orphaned partial render and tells the
     // user why the stream visibly restarts.
     onRetry: (evt) => {
-      // A retry restarts the current LLM call. Keep prior completed rounds,
-      // but remove text emitted by the failed attempt from answer-bearing state.
-      assistantText = assistantText.slice(0, assistantAttemptStart);
       ui.retryNotice(evt);
     },
   };
@@ -1540,7 +1536,6 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         // the client-level 'retry' event), and the per-loop token accounting
         // must restart so the status bar reflects the compacted reality.
         ui.stream.reset();
-        assistantText = '';
         session.tokens.loopIn = 0;
         session.tokens.loopOut = 0;
         session.tokens.loopPeakIn = 0;
@@ -1609,8 +1604,13 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       });
     }
 
-    session.lastAnswer = assistantText;
-    await session.transcript?.logAssistant(assistantText);
+    session.lastAnswer = result.lastText;
+    // Older/custom transcript implementations may only expose the aggregate
+    // final-answer hook. The built-in transcript uses onAssistantMessage above
+    // to preserve every round in its original order, so do not duplicate it.
+    if (!session.transcript?.logAssistantMessage) {
+      await session.transcript?.logAssistant?.(result.lastText);
+    }
     await session.transcript?.logTurn(result.turns, result.toolCalls);
 
     // The ANSWER is done — reset the phase BEFORE the end-of-turn prompts:
@@ -1674,7 +1674,7 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     if (envFlag('HK2_ENABLE_CODEREVIEW', 0) && session.llm && planCompleted) {
       await runCodeReview(session, ctx, ui, {
         planText: session.lastPlanText || '',
-        assistantText,
+        assistantText: result.lastText,
         resolvePhaseLlm,
         signal: abortCtrl.signal,
       });

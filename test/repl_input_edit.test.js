@@ -9,13 +9,12 @@
  *
  * Two root causes locked down here:
  *
- * 1. Node's readline inserts chars received between the 200~/201~ markers
- * at END of the edit line regardless of the cursor, and PasteHandler's
- * paste-end handler used to force `rl.cursor = rl.line.length` on top.
- * Terminals that wrap IME commits as bracketed pastes (Windows Terminal
- * with a CJK IME, several SSH clients) therefore sent every committed
- * Chinese character to end-of-line during mid-line edits. Fixed in
- * lib/agent/paste.js via a paste-start snapshot repair.
+ * 1. Node's readline bracketed-paste behavior varies by version: some
+ * versions append between-marker chars at EOL, while others splice them at
+ * the cursor. PasteHandler must repair the former without overriding the
+ * latter's correct cursor. Terminals that wrap IME commits as bracketed
+ * pastes (Windows Terminal with a CJK IME, several SSH clients) expose this
+ * during mid-line edits. Fixed via a paste-start snapshot and shape check.
  *
  * 2. Node's emitKeypressEvents replays every character of a multi-char
  * data chunk — exactly what an IME commit looks like: 继续开始R1 with the

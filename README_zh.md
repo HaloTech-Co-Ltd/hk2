@@ -55,8 +55,8 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ```
 
 在 `~/.hk2` 安装一份自包含副本，并将 `hk2` 符号链接加入 PATH；重装时保留
-模型、项目、主题、知识库、会话与日志（权限文件和输入历史**不在**保留清单
-——见[固定清单](docs/zh-CN/getting-started/installation.md#重装时保留用户数据按固定清单)）。
+`config/install-data-items.txt` 声明的用户数据项。升级意外中断后可恢复；若要
+主动丢弃数据，必须同时传入 `--preserve-data=off` 与 `--confirm-data-loss`。
 自定义安装路径、重装选项与开发安装方式详见
 [安装](docs/zh-CN/getting-started/installation.md)。
 

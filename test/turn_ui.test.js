@@ -129,6 +129,35 @@ test('runTurn: phase order, stream lifecycle, answer capture, idle exit', async 
   }
 });
 
+test('runTurn stores and reviews only the final non-tool assistant round', async () => {
+  process.env.HK2_ENABLE_QUERYREWRITE = '0';
+  process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
+  let call = 0;
+  const llm = {
+    async *stream() {
+      call++;
+      if (call === 1) {
+        yield { type: 'delta', text: 'intermediate tool-round text' };
+        yield { type: 'tool_call', id: 'read-1', name: 'read', arguments: '{"path":"missing.txt"}' };
+      } else {
+        yield { type: 'delta', text: 'pure final answer' };
+      }
+    },
+  };
+  try {
+    const session = mkSession(llm);
+    const ctx = buildCtx(session);
+    await runTurn('inspect something', session, ctx, fakeUi());
+    assert.equal(session.lastAnswer, 'pure final answer');
+    const conversation = await ctx.getConversation();
+    assert.equal(conversation.answerText, 'pure final answer');
+    assert.equal(conversation.answerText.includes('intermediate tool-round text'), false);
+  } finally {
+    delete process.env.HK2_ENABLE_QUERYREWRITE;
+    delete process.env.HK2_ENABLE_REQUEST_ASSESS;
+  }
+});
+
 /* ----- failure path --------------------------------------------------- */
 
 test('runTurn: provider error -> ui.failed, phase=error, capture disarmed', async () => {
@@ -184,7 +213,7 @@ test('runTurn: retry rolls back only the current attempt in answer and transcrip
   }
 });
 
-test('runTurn: retry rollback preserves text from an earlier tool round', async () => {
+test('runTurn: retry rollback keeps only the final non-tool round', async () => {
   process.env.HK2_ENABLE_QUERYREWRITE = '0';
   process.env.HK2_ENABLE_REQUEST_ASSESS = '0';
   try {
@@ -213,9 +242,10 @@ test('runTurn: retry rollback preserves text from an earlier tool round', async 
     };
     const ui = fakeUi();
     await runTurn('retry after a tool round', session, buildCtx(session), ui);
-    assert.equal(session.lastAnswer, 'PREFIX-FINAL', JSON.stringify(ui.events));
-    assert.deepEqual(assistantEvents, ['PREFIX-FINAL']);
+    assert.equal(session.lastAnswer, 'FINAL', JSON.stringify(ui.events));
+    assert.deepEqual(assistantEvents, ['FINAL']);
     assert.ok(!assistantEvents[0].includes('BROKEN-'));
+    assert.ok(!assistantEvents[0].includes('PREFIX-'));
   } finally {
     delete process.env.HK2_ENABLE_QUERYREWRITE;
     delete process.env.HK2_ENABLE_REQUEST_ASSESS;

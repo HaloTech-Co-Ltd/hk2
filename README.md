@@ -65,9 +65,10 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ```
 
 Installs a self-contained copy at `~/.hk2`, symlinks `hk2` into your PATH,
-and preserves models, projects, theme, KBs, sessions, and logs across
-reinstalls (permission files and input history are not preserved — see the
-[fixed list](docs/en/getting-started/installation.md#reinstalls-preserve-user-data--with-a-fixed-list)).
+and preserves the user-data entries declared in
+`config/install-data-items.txt` across reinstalls. Interrupted upgrades are
+recoverable; intentionally discarding data requires both
+`--preserve-data=off` and `--confirm-data-loss`.
 For custom paths, reinstall options, and development installs, see
 [Installation](docs/en/getting-started/installation.md).
 

@@ -472,10 +472,25 @@ async function gitInitWithChange(repoPath) {
   await fs.writeFile(path.join(repoPath, 'new-feature.js'), 'export const x = 1;\n');
 }
 
+async function collectAsProject(repoPath) {
+  const previousSource = process.env.HK2_PROJECT_SOURCE;
+  const previousId = process.env.HK2_PROJECT_ID;
+  process.env.HK2_PROJECT_SOURCE = repoPath;
+  delete process.env.HK2_PROJECT_ID;
+  try {
+    return await collectWorkingTreeDiff(repoPath);
+  } finally {
+    if (previousSource === undefined) delete process.env.HK2_PROJECT_SOURCE;
+    else process.env.HK2_PROJECT_SOURCE = previousSource;
+    if (previousId === undefined) delete process.env.HK2_PROJECT_ID;
+    else process.env.HK2_PROJECT_ID = previousId;
+  }
+}
+
 test('collectWorkingTreeDiff returns modified tracked file and changed file list', async () => {
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-crev-git-'));
   await gitInitWithChange(repo);
-  const { diffText, changedFiles } = await collectWorkingTreeDiff(repo);
+  const { diffText, changedFiles } = await collectAsProject(repo);
   assert.ok(changedFiles.includes('existing.js'), `tracked mod in changedFiles: ${JSON.stringify(changedFiles)}`);
   assert.ok(diffText.includes('b();'), 'tracked diff body present');
 });
@@ -483,13 +498,75 @@ test('collectWorkingTreeDiff returns modified tracked file and changed file list
 test('collectWorkingTreeDiff captures untracked new-file content (regression: was dropped)', async () => {
   const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-crev-git-'));
   await gitInitWithChange(repo);
-  const { diffText, changedFiles } = await collectWorkingTreeDiff(repo);
+  const { diffText, changedFiles } = await collectAsProject(repo);
   // The untracked file's content MUST appear in the review diff.
   assert.ok(
     diffText.includes('export const x = 1;'),
     `untracked file content included: diff was ${diffText.slice(0, 120)}...`,
   );
   assert.ok(changedFiles.includes('new-feature.js'), `untracked file listed in changedFiles: ${JSON.stringify(changedFiles)}`);
+});
+
+test('collectWorkingTreeDiff filters denied tracked, untracked, and symlinked content', async () => {
+  const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-crev-permissions-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'hk2-crev-outside-'));
+  const project = await registerProject({ name: `review-permissions-${++__seq}`, sourcePath: repo });
+  const previousSource = process.env.HK2_PROJECT_SOURCE;
+  const previousId = process.env.HK2_PROJECT_ID;
+  try {
+    await fs.mkdir(path.join(repo, 'secrets', 'public'), { recursive: true });
+    await fs.writeFile(path.join(repo, 'app.js'), 'const value = "before";\n');
+    await fs.writeFile(path.join(repo, 'secrets', 'config.txt'), 'TRACKED_BEFORE\n');
+    await fs.writeFile(path.join(repo, 'secrets', 'rename-source.txt'), 'RENAMED_SECRET_SENTINEL\n');
+    await fs.writeFile(path.join(repo, 'secrets', 'public', 'safe.txt'), 'SAFE_BEFORE\n');
+    await execFileP('git', ['-C', repo, 'init', '-q']);
+    await execFileP('git', ['-C', repo, 'config', 'user.email', 't@t']);
+    await execFileP('git', ['-C', repo, 'config', 'user.name', 't']);
+    await execFileP('git', ['-C', repo, 'add', '.']);
+    await execFileP('git', ['-C', repo, 'commit', '-qm', 'init']);
+
+    await fs.writeFile(path.join(repo, 'app.js'), 'const value = "ALLOWED_SENTINEL";\n');
+    await fs.writeFile(path.join(repo, 'secrets', 'config.txt'), 'TRACKED_SECRET_SENTINEL\n');
+    await fs.rename(path.join(repo, 'secrets', 'rename-source.txt'), path.join(repo, 'visible-rename.txt'));
+    await execFileP('git', ['-C', repo, 'add', '-A', '--', 'secrets/rename-source.txt', 'visible-rename.txt']);
+    await fs.writeFile(path.join(repo, 'secrets', 'untracked.txt'), 'UNTRACKED_SECRET_SENTINEL\n');
+    await fs.writeFile(path.join(repo, 'secrets', 'public', 'safe.txt'), 'SAFE_ALLOWED_SENTINEL\n');
+    await fs.writeFile(path.join(outside, 'external.txt'), 'SYMLINK_SECRET_SENTINEL\n');
+    await fs.symlink(path.join(outside, 'external.txt'), path.join(repo, 'external-link.txt'));
+
+    const settingsDir = path.join(process.env.HK2_HOME, 'settings', project.id);
+    await fs.mkdir(settingsDir, { recursive: true });
+    await fs.writeFile(path.join(settingsDir, 'setting.json'), JSON.stringify({
+      permissions: [
+        { path: 'secrets', deny: 'rwx' },
+        { path: 'secrets/public', allow: 'r' },
+      ],
+    }));
+    process.env.HK2_PROJECT_SOURCE = repo;
+    process.env.HK2_PROJECT_ID = project.id;
+
+    const result = await collectWorkingTreeDiff(repo);
+    assert.ok(result.diffText.includes('ALLOWED_SENTINEL'));
+    assert.ok(result.diffText.includes('SAFE_ALLOWED_SENTINEL'), 'more-specific allow matches read semantics');
+    assert.ok(result.diffText.includes('[changes omitted by setting.json permissions]'));
+    for (const sentinel of ['TRACKED_SECRET_SENTINEL', 'UNTRACKED_SECRET_SENTINEL', 'SYMLINK_SECRET_SENTINEL', 'RENAMED_SECRET_SENTINEL']) {
+      assert.equal(result.diffText.includes(sentinel), false, `${sentinel} must not reach review input`);
+    }
+    assert.equal(result.diffText.includes('rename-source.txt'), false, 'denied filenames must not reach review input');
+    assert.equal(result.diffText.includes('visible-rename.txt'), false, 'a rename with one denied side is omitted entirely');
+    assert.deepEqual(result.changedFiles.sort(), ['app.js', 'secrets/public/safe.txt']);
+
+    const prompt = buildCodeReviewContent(result);
+    assert.ok(prompt.includes('[changes omitted by setting.json permissions]'));
+    assert.equal(prompt.includes('SECRET_SENTINEL'), false);
+  } finally {
+    if (previousSource === undefined) delete process.env.HK2_PROJECT_SOURCE;
+    else process.env.HK2_PROJECT_SOURCE = previousSource;
+    if (previousId === undefined) delete process.env.HK2_PROJECT_ID;
+    else process.env.HK2_PROJECT_ID = previousId;
+    await fs.rm(repo, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
 });
 
 test('collectWorkingTreeDiff degrades gracefully outside a git repo', async () => {

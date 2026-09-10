@@ -36,22 +36,21 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 可传 `--prefix="$HOME/.local"`），并运行 `npm install --omit=optional`
 构建 Tree-sitter 原生绑定。脚本本身不会执行 clone；请在完整检出中运行。
 
-### 重装时保留用户数据——按固定清单
+### 重装时保留用户数据——按清单文件
 
 `~/.hk2` 同时承担两个角色：它既是**配置 / 数据主目录**（`HK2_HOME`），也是
-源码副本的默认**安装目录**。重装时，安装器会将**固定清单**中的数据项
-暂存起来，刷新代码树后再放回（用户数据优先于新版本树中的同名条目）。这项保留机制仅适用于正常完成的重装，不是事务性备份——若进程在移出与恢复之间
-异常退出，下次运行时会删除遗留的 preserve 副本；升级前请对重要数据保留
+源码副本的默认**安装目录**。重装时，安装器会暂存
+`config/install-data-items.txt` 声明的数据项，刷新代码树后再放回（用户数据
+优先于新版本树中的同名条目）。安装器使用可恢复的同级暂存与备份目录；升级
+意外中断后，下次运行会继续恢复。这能保护升级过程，但不能代替重要数据的
 外部备份：
 
-- **保留**：`models.json`、`projects.json`、`theme.json`、`kb/`、
-  `sessions/`、`logs/`
-- **不保留**：`setting.json`（全局权限基线）、`settings/`（项目级权限
-  覆盖）与 `history.jsonl`（输入历史）——默认布局下，安装目录刷新时它们
-  会被**删除**。重装前请先备份，或用 `HK2_INSTALL_DIR` 把源码副本放在
-  配置主目录之外。
+- **保留**：`models.json`、`projects.json`、`theme.json`、`setting.json`、
+  `history.jsonl`、`welcome-seen`、`settings/`、`kb/`、`sessions/` 与
+  `logs/`。仓库内的清单文件是权威列表。
 
-传入 `--preserve-data=off` 可恢复旧的擦除行为（不保留任何数据）。
+启用旧的破坏性擦除行为必须同时传入 `--preserve-data=off` 与
+`--confirm-data-loss`。
 
 如果你已有检出并正在开发 hk2 本身，建议改用方式 B（`npm link`），或通过
 `HK2_INSTALL_DIR` 把源码副本放到配置主目录之外。
@@ -64,6 +63,7 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 | `--install-dir=<path>` | 自包含源码副本的位置（默认 `~/.hk2`；也可通过 `HK2_INSTALL_DIR` 设置） |
 | `--no-npm-install` | 跳过 `npm install`；没有原生绑定时，仅有正则回退的语言能产生代码符号 |
 | `--preserve-data=off` | 旧行为：重装时**不**保留用户数据——安装目录被擦除 |
+| `--confirm-data-loss` | `--preserve-data=off` 所需的确认参数；单独使用不会删除数据 |
 
 `--prefix=value` 与 `--prefix value` 两种形式均可，`--install-dir` 同理。
 
@@ -72,7 +72,7 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 ./install.sh --prefix /usr/local          # 等同于默认值
 HK2_INSTALL_DIR="$HOME/.hk2-src" ./install.sh   # 将源码副本置于配置主目录之外
 ./install.sh --no-npm-install             # 跳过 Tree-sitter（正则回退）
-./install.sh --preserve-data=off          # 旧版擦除：重装时不保留用户数据
+./install.sh --preserve-data=off --confirm-data-loss  # 破坏性重装
 ```
 
 ### 可选的 PDF / Word 解析
