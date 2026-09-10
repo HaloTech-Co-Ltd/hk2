@@ -192,3 +192,38 @@ test('release does not unlink a lock path replaced by another token', async () =
   assert.deepEqual(JSON.parse(await fsp.readFile(lockPath, 'utf8')), replacement);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('an abandoned stale-recovery gate is reclaimed on the next lock attempt', async () => {
+  const { withLock } = await import('../lib/util/lockfile.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hk2-lock-reap-recovery-'));
+  const target = path.join(tmp, 'f.json');
+  const reapPath = `${target}.lock.reap`;
+  await fsp.mkdir(reapPath);
+  await fsp.writeFile(path.join(reapPath, 'owner.json'), JSON.stringify({
+    pid: 999999,
+    ts: Date.now() - 60_000,
+    token: 'dead-reaper',
+    processStart: 'dead',
+  }));
+  await withLock(target, async () => 'recovered', { timeoutMs: 500, staleMs: 1 });
+  await assert.rejects(() => fsp.stat(reapPath));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('a live but reused pid does not keep an orphaned lock forever', async () => {
+  const { withLock } = await import('../lib/util/lockfile.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hk2-lock-pid-reuse-'));
+  const target = path.join(tmp, 'f.json');
+  const lockPath = `${target}.lock`;
+  await fsp.writeFile(lockPath, JSON.stringify({
+    pid: process.pid,
+    ts: Date.now(),
+    token: 'previous-process-with-reused-pid',
+    processStart: 'not-the-current-process-start',
+  }));
+  let entered = false;
+  await withLock(target, async () => { entered = true; }, { timeoutMs: 500, staleMs: 30_000 });
+  assert.equal(entered, true);
+  await assert.rejects(() => fsp.stat(lockPath));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
