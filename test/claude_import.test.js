@@ -50,6 +50,55 @@ function runModelWriter(mutation) {
   });
 }
 
+function startHoldingModelWriter(mutation) {
+  const script = `
+    import { withModels } from ${JSON.stringify(new URL('../lib/config/home.js', import.meta.url).href)};
+    await withModels(async (data) => {
+      ${mutation}
+      console.log('lock-held');
+      await new Promise(resolve => process.stdin.once('data', resolve));
+    });
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, HK2_HOME },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let output = '';
+  let readyResolve;
+  let readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  child.stdout.on('data', chunk => {
+    output += chunk;
+    if (output.includes('lock-held')) readyResolve();
+  });
+  child.stderr.on('data', chunk => { output += chunk; });
+  const done = new Promise((resolve, reject) => {
+    child.on('error', error => { readyReject(error); reject(error); });
+    child.on('close', code => {
+      if (code === 0) resolve();
+      else {
+        const error = new Error(`holding model writer failed (${code}): ${output}`);
+        readyReject(error);
+        reject(error);
+      }
+    });
+  });
+  let released = false;
+  return {
+    ready,
+    done,
+    release: () => {
+      if (!released) {
+        released = true;
+        child.stdin.end('release\n');
+      }
+    },
+  };
+}
+
 async function pauseImporterAfterInitialSnapshot(claudeEnv, concurrentMutation) {
   await reset({ claudeEnv });
   const originalReadFile = fs.readFile;
@@ -204,6 +253,70 @@ test('auto-import preserves a concurrently configured default', async () => {
   const saved = await loadModels();
   assert.equal(saved.default, 'concurrent/winner');
   assert.equal(saved.providers.claude, undefined);
+});
+
+test('auto-import waits while another process holds the models lock', async () => {
+  await reset({ claudeEnv: {
+    ANTHROPIC_AUTH_TOKEN: 'new', ANTHROPIC_BASE_URL: 'https://new',
+  }});
+  const holder = startHoldingModelWriter(`
+    data.providers.concurrent = { api: 'openai', apiKey: 'winner', models: [{ id: 'winner' }] };
+    data.default = 'concurrent/winner';
+  `);
+  await holder.ready;
+  let settled = false;
+  const importing = autoImportClaudeModel({ homeDir: claudeHome }).finally(() => { settled = true; });
+  try {
+    // Give the importer several event-loop turns to read settings and reach
+    // withModels. It must remain pending until the child releases the real lock.
+    await new Promise(resolve => setTimeout(resolve, 75));
+    assert.equal(settled, false, 'importer entered its final update while another process held the lock');
+    holder.release();
+    const result = await importing;
+    await holder.done;
+    assert.equal(result.imported, false);
+    assert.equal(result.reason, 'already-configured');
+    const saved = await loadModels();
+    assert.equal(saved.default, 'concurrent/winner');
+    assert.equal(saved.providers.claude, undefined);
+  } finally {
+    holder.release();
+    await holder.done.catch(() => {});
+  }
+});
+
+test('two importers released from the same stale snapshot produce one winner', async () => {
+  await reset({ claudeEnv: {
+    ANTHROPIC_AUTH_TOKEN: 'new', ANTHROPIC_BASE_URL: 'https://new',
+  }});
+  const originalReadFile = fs.readFile;
+  const settingsPath = claudeSettingsPath(claudeHome);
+  let settingsReads = 0;
+  let releaseBoth;
+  const barrier = new Promise(resolve => { releaseBoth = resolve; });
+  fs.readFile = async (file, ...args) => {
+    const content = await originalReadFile(file, ...args);
+    if (String(file) === settingsPath) {
+      settingsReads++;
+      if (settingsReads === 2) releaseBoth();
+      await barrier;
+    }
+    return content;
+  };
+  try {
+    const results = await Promise.all([
+      autoImportClaudeModel({ homeDir: claudeHome }),
+      autoImportClaudeModel({ homeDir: claudeHome }),
+    ]);
+    assert.equal(results.filter(result => result.imported).length, 1);
+    assert.equal(results.filter(result => result.reason === 'already-configured').length, 1);
+    const saved = await loadModels();
+    assert.equal(saved.default, 'claude/claude-sonnet-4-6');
+    assert.equal(Object.keys(saved.providers).filter(name => name === 'claude').length, 1);
+  } finally {
+    releaseBoth();
+    fs.readFile = originalReadFile;
+  }
 });
 
 
