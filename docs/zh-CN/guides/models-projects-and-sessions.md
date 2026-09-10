@@ -205,6 +205,13 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 会话以 JSONL 记录存储在
 `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。
 
+新会话记录会在同一循环回合的工具结果之前，持久化每个完整 assistant 消息。
+恢复时因此能重建原始 assistant/tool 顺序，包括工具调用前输出的 assistant 正文。
+失败的重试 attempt 与中断的 partial stream 不会作为完整 assistant 消息保存。
+`session.lastAnswer` 与代码审查使用最后一个不含工具调用的 assistant 回合；之前
+工具轮次的正文仍属于对话历史，不会拼接进最终答案。旧的扁平会话记录仍会尽力
+恢复，但无法总是重建连续工具轮次原本的边界。
+
 ```text
 /session info
 /session list --limit=5

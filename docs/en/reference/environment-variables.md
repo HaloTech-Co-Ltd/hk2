@@ -51,10 +51,12 @@ its own parsing rule.
 ### Retry-visible text boundary
 
 Each retry restarts only the current LLM call. The failed attempt's body deltas,
-reasoning buffer, and not-yet-executed tool calls are discarded, while text from
-earlier successful tool rounds is retained. Transcript, `session.lastAnswer`,
-and Code Review input use the cleaned assistant text. Usage accounting may
-retain attempt-specific peaks; it is not specified as final-attempt-only or
+reasoning buffer, and not-yet-executed tool calls are discarded. Earlier
+successful tool rounds remain as separate assistant/tool messages in the
+transcript and replayed conversation. `session.lastAnswer` and Code Review use
+only the cleaned final assistant round that returned without tool calls; they
+do not concatenate text from earlier tool rounds. Usage accounting may retain
+attempt-specific peaks; it is not specified as final-attempt-only or
 billed-total accounting.
 
 ## Request pipeline (assessment, rewrite, fast lane)

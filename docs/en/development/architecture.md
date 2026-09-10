@@ -193,7 +193,9 @@ flowchart TB
 5. Agent loop (`loop.js`): stream reply, execute tool calls (`tools.js` /
    `mcp.js`), repeat; plan confirmations and `plan_step` surface through
    UI callbacks; mid-task input is injected at round boundaries.
-6. Final answer → usage stats → transcript append.
+6. Each completed agent-loop round appends its full assistant message before
+   that round's tool results. The final round supplies `session.lastAnswer`;
+   usage and turn-end metadata are then appended.
 7. End of turn (`turn_support.js`) uses a common outer gate and separate flows:
    a qualifying bash source-search gate controls both the update offer/automatic
    update block and fallback knowledge extraction; handled and cooldown checks
@@ -239,10 +241,15 @@ intermediate implementation turns are deliberately excluded. The completed-task
 `lastCompletedTask` snapshot is process-memory only; it is not persisted and
 resume falls back to a deterministic transcript scan.
 
-A normal completion appends the complete assistant reply and metadata. An
-interrupted streamed partial remains visible but is not a complete transcript
-turn; dangling tool calls are cleaned and interrupted task state is saved in
-`taskstate.json` for resume.
+A normal completion records every complete assistant round before its tool
+results, so replay preserves assistant/tool ordering and the body text that
+preceded a tool call. The final assistant round is separately used as the
+answer and Code Review summary. A retry discards the failed attempt's partial
+buffers before any assistant message is recorded. An interrupted streamed
+partial remains visible but is not a complete transcript round; dangling tool
+calls are cleaned and interrupted task state is saved in `taskstate.json` for
+resume. Legacy transcripts that contain only flat `assistant` / `tool_call`
+events are replayed through a best-effort compatibility path.
 
 ## Persisted state
 

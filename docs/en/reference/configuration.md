@@ -140,7 +140,8 @@ Field notes:
 - `includeGlobs` / `excludeGlobs` — the glob sets used by `/kb init`;
   defaults cover common source and document extensions.
 - `extraRoots` — named extra roots registered with
-  `--extra=<name>:<rel>,...`; walked in addition to the main root. Each
+  `/project init --extra=<name>:<rel>,...`; walked in addition to the main root.
+  The direct `--mode=project-init` CLI does not parse this option. Each
   element has the shape `{ "name": "...", "relRoot": "..." }`.
 - `defaultModel` — per-project default model override written by
   `/model set-default current <ref>`; `--clear` removes it.
@@ -219,19 +220,45 @@ deleted, or are excluded. Use another id for hand-authored document knowledge.
   transcript scan. Tier-2 continuation upgrade is controlled by
   `HK2_ENABLE_CONTINUATION_UPGRADE` and
   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE`.
-- **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. A normally
-  completed turn records the user message, tool calls, the complete assistant
-  reply, and metadata (`assess`, `rewrite`, `graph`, `codeReview`,
+- **Transcripts** — `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`. Each
+  successfully completed tool round records its complete assistant message
+  before the associated tool results, preserving call/result order; the final
+  non-tool answer is a separate message. The turn also records metadata (`assess`, `rewrite`, `graph`, `codeReview`,
   `learned_knowledge`, usage stats). On interruption, streamed partial assistant
   text remains on screen but is not recorded as a complete assistant turn;
   dangling tool calls are cleaned and interrupted-task state is stored separately
   in `taskstate.json`. `--resume` replays the transcript and task state.
+  `session.lastAnswer` and Code Review input use only the final non-tool answer,
+  while legacy flat records can only be replayed with their original fidelity.
 - **Session facts** — `~/.hk2/sessions/<projectId>/<sessionId>.facts.json`
   holds the compaction-immune facts recorded via `/remember` / the
   `remember` tool (max 100 per session). `/remember --project` additionally
   appends to the project-level Eden entry `env-facts`, which lives in the
   normal KB layout and is searchable across sessions.
 - **Logs** — `~/.hk2/logs/`.
+
+## Concurrent registry writes
+
+The normal model/project mutation helpers use per-registry advisory lockfiles
+(`models.json.lock` and `projects.json.lock`) around a fresh read-modify-write.
+They serialize callers in the same process and coordinate cooperating hk2
+processes. Lock metadata includes the PID, process-start identity where Linux
+`/proc` provides it, and a random ownership token. Release removes a lock only
+when that token still matches; dead owners, reused PIDs, and abandoned stale
+recovery gates can be reclaimed.
+
+This is scoped protection for mutations that use `withModels()` or
+`withProjects()`; it is not a transaction across both registries, KB files, or
+manual edits. The lock is advisory, and filesystems that cannot provide the
+required exclusive-create/link semantics degrade to an unlocked
+last-writer-wins update. Acquisition otherwise retries for up to 10 seconds by
+default and then fails. Atomic JSON replacement prevents torn target files but
+does not broaden the lock into a multi-file transaction.
+
+Claude Code first-run import performs an unlocked early no-op check for speed,
+then re-reads and rechecks both the current default and the `claude` provider
+inside the `models.json` lock before writing. A concurrent user configuration
+therefore wins over the importer.
 
 ## Permission config
 

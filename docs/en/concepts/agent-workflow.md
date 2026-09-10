@@ -171,8 +171,10 @@ tools. Guardrails:
 
 An LLM retry restarts only the current LLM call. The failed attempt's body
 deltas, reasoning buffer, and not-yet-executed tool calls are discarded; text
-from earlier successfully completed tool rounds remains. The transcript,
-`session.lastAnswer`, and Code Review input use the cleaned assistant text.
+from earlier successfully completed tool rounds remains as separate assistant
+messages in the transcript and replay context. `session.lastAnswer` and Code
+Review input use only the final, non-tool assistant answer; they do not
+concatenate those earlier round messages.
 Usage accounting may still retain attempt-specific peaks, so it is not
 documented as final-attempt-only or billed-total accounting.
 

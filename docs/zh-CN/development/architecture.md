@@ -177,7 +177,8 @@ flowchart TB
 5. 智能体循环（`loop.js`）：流式回复、执行工具调用（`tools.js` /
    `mcp.js`），重复这一过程；计划确认与 `plan_step` 通过 UI 回调呈现；任务中输入在
    轮次边界注入。
-6. 最终回答 → 用量统计 → 会话记录追加。
+6. 智能体循环的每个完整回合先追加完整 assistant 消息，再追加该回合的工具
+   结果；最后一个回合提供 `session.lastAnswer`，随后追加用量与回合结束元数据。
 7. 轮末（`turn_support.js`）使用共同外层门与独立流程：符合条件的 bash 源码搜索
    门同时控制 KB 更新询问 / 自动更新块与回退知识抽取；handled 与 cooldown 是
   其中嵌套的学习子门。检测到的冲突独立控制 Holy-over-Eden 同步；正常返回、配置
@@ -213,9 +214,12 @@ bash 源码搜索”是 KB 刷新分支与回退知识抽取共用的外层门�
 工具调用、推理过程和中间实现回合会被刻意排除。完成任务的 `lastCompletedTask`
 快照只存在进程内存，不会持久化；恢复时会回退到确定性的 transcript 扫描。
 
-正常完成会追加完整 assistant 回复与元数据。中断时已流式显示的 partial 文本仍在终端，
-但不作为完整 transcript 回合写入；dangling tool call 会清理，中断任务状态保存到
-`taskstate.json` 供恢复。
+正常完成会在工具结果前记录每个完整 assistant 回合，因此恢复时能保留
+assistant/tool 顺序以及工具调用前的正文；最后一个 assistant 回合另作最终答案与
+代码审查摘要。重试会在记录 assistant 消息前丢弃失败 attempt 的 partial buffer。
+中断时已流式显示的 partial 文本仍在终端，但不作为完整 transcript 回合写入；
+dangling tool call 会清理，中断任务状态保存到 `taskstate.json` 供恢复。只有扁平
+`assistant` / `tool_call` 事件的旧会话记录通过尽力而为的兼容路径恢复。
 
 ## 持久化状态
 

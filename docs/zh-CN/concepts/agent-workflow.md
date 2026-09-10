@@ -134,8 +134,9 @@ flowchart TD
 ### LLM 重试边界
 
 LLM 重试只重启当前 LLM 调用。失败 attempt 的正文 delta、推理缓冲区与尚未
-执行的工具调用会被丢弃；此前已经成功完成的工具轮次文本会保留。会话记录、
-`session.lastAnswer` 与代码审查输入使用清理后的 assistant 文本。用量统计仍
+执行的工具调用会被丢弃；此前已经成功完成的工具轮次文本会作为独立 assistant
+消息保留在会话记录和重放上下文中。`session.lastAnswer` 与代码审查输入只使用
+最终、不含工具调用的 assistant 答案，不会拼接此前的轮次消息。用量统计仍
 可能保留不同 attempt 的峰值，因此不宣称它只统计最终 attempt 或完整计费总量。
 
 完整工具注册表见[智能体工具](../reference/agent-tools.md)。

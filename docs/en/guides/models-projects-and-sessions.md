@@ -231,6 +231,16 @@ differ from `current`, and multiple processes can use different pins concurrentl
 Sessions are stored as JSONL transcripts at
 `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`.
 
+New transcripts persist each complete assistant message before the tool
+results from that same loop round. Resuming therefore reconstructs the
+original assistant/tool ordering, including assistant text emitted before a
+tool call. Failed retry attempts and interrupted partial streams are not
+stored as complete assistant messages. The final non-tool assistant round is
+the answer used by `session.lastAnswer` and Code Review; earlier tool-round
+text remains conversation history rather than being concatenated into it.
+Older flat transcripts are still replayed best-effort, but they cannot always
+recover the original boundary between consecutive tool rounds.
+
 ```text
 /session info
 /session list --limit=5

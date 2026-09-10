@@ -127,8 +127,9 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
   树）。
 - `includeGlobs` / `excludeGlobs`——`/kb init` 使用的 glob 集合；默认值
   覆盖常见源码与文档扩展名。
-- `extraRoots`——通过 `--extra=<名称>:<相对路径>,...` 注册的命名额外根目录；
-  在主根之外一并遍历。每个元素的格式为 `{ "name": "...", "relRoot": "..." }`。
+- `extraRoots`——通过 `/project init --extra=<名称>:<相对路径>,...` 注册的命名
+  额外根目录；直接 CLI 的 `--mode=project-init` 不解析此参数。额外根会在主根之外
+  一并遍历，每个元素的格式为 `{ "name": "...", "relRoot": "..." }`。
 - `defaultModel`——`/model set-default current <ref>` 写入的项目级默认模型
   覆盖；`--clear` 移除。
 - `updatedAt`——项目写入时维护的最后修改时间戳。
@@ -199,17 +200,37 @@ $HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
   恢复的会话会回退到确定性的 transcript 扫描。tier-2 continuation upgrade 由
   `HK2_ENABLE_CONTINUATION_UPGRADE` 与
   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` 控制。
-- **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。正常完成的回合
-  记录用户消息、工具调用、完整 assistant 回复与元数据（`assess`、`rewrite`、
+- **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。每个成功完成的
+  工具轮次会先记录完整 assistant 消息，再记录关联的工具结果，以保留调用/结果
+  顺序；最终的不含工具调用答案是独立消息。回合还会记录元数据（`assess`、`rewrite`、
   `graph`、`codeReview`、`learned_knowledge`、用量统计）。中断时，已流式显示的
   partial assistant 文本留在屏幕上，不作为完整 assistant 回合写入；悬空的 tool
   call 会清理，中断任务状态单独写入 `taskstate.json`。`--resume` 重放 transcript
-  并恢复 task state。
+  并恢复 task state。`session.lastAnswer` 与代码审查输入只使用最终的不含工具调用
+  答案；旧版扁平记录只能按其原有精度重放。
 - **会话事实**——`~/.hk2/sessions/<projectId>/<sessionId>.facts.json` 存放
   经 `/remember` / `remember` 工具记录的、免受压缩影响的事实（每会话上限
   100 条）。`/remember --project` 还会追加到项目级 Eden 条目 `env-facts`
   ——它位于常规知识库布局中，可跨会话检索。
 - **日志**——`~/.hk2/logs/`。
+
+## 注册表并发写入
+
+常规模型 / 项目变更辅助函数会在重新读取、修改、写回期间使用对应注册表的
+advisory lockfile（`models.json.lock` 与 `projects.json.lock`）。它们会串行化同一
+进程的调用，并协调配合该协议的多个 hk2 进程。锁元数据包含 PID、Linux
+`/proc` 可用时的进程启动标识，以及随机所有权 token。释放时只有 token 仍匹配
+才删除锁；进程死亡、PID 复用与遗留的陈旧恢复门都可以回收。
+
+这层保护只覆盖使用 `withModels()` 或 `withProjects()` 的变更；它不是横跨两个
+注册表、知识库文件或手工编辑的事务。锁属于 advisory 机制；无法提供所需独占
+创建 / 链接语义的文件系统会降级为不加锁的 last-writer-wins 更新。其他情况下
+默认最多重试获取锁 10 秒，随后失败。原子 JSON 替换能避免目标文件处于半写状态，
+但不会把这层锁扩展成多文件事务。
+
+Claude Code 首启导入会先做一次不加锁的快速 no-op 检查；真正写入前会在
+`models.json` 锁内重新读取，并再次检查当前默认模型与 `claude` provider。因此，
+并发发生的用户配置会优先于导入器。
 
 ## 权限配置
 

@@ -49,8 +49,10 @@ stream).
   IME commits are inserted at the current cursor position, including after a
   mid-line deletion or cursor move; they are not appended or reordered at the
   end of the line.
-- **Multi-line input** — paste multi-line text directly (submitted as one
-  message), or end a line with `\` to continue manually.
+- **Multi-line input** — a multi-line paste is held as one pending draft; press
+  Enter at the empty prompt to submit the whole block as one message. Typing
+  replacement text instead discards that pending draft. You can also end a
+  line with `\` to continue manually.
 
 ## TUI keys
 
