@@ -35,11 +35,11 @@ flowchart LR
    空间。
 3. **符号提取**——每种源码解析路径都会返回统一结构的 `Symbol[]`：名称、种类
    （函数 / 方法 / 类 / 接口 / 结构体 / 字段）和行范围；签名以及 `qualName`、
-   parent、继承、imports、`docString` 等丰富字段，只有在适用且 extractor 提供
+   parent、继承、imports、`docString` 等丰富字段，只有在适用且提取器提供
    时才会出现。文档解析走独立的 document-entry / document-graph 路径，不是普通
-   Symbol parse。
+   符号解析。
 4. **索引构建**——BM25 倒排索引（`lib/index/bm25.js`，分词器在
-   `lib/index/text_tokenizer.js`，含中英混查词典）、旧版调用图、知识图谱
+   `lib/index/text_tokenizer.js`，包含支持中英混合查询的中英词典）、旧版调用图、知识图谱
    （`lib/graph/builder.js`）与文件 / 符号注册表写入
    `$HK2_KB_DIR/<projectId>/`，默认是 `$HK2_HOME/kb/<projectId>/`。
 5. **摘要**——`/kb init` 结束时，**在已配置模型且未传 `--skip-summary` 的
@@ -92,8 +92,8 @@ $HK2_KB_DIR/<projectId>/graph/  # 默认：$HK2_HOME/kb/<projectId>/
 
 - `kb_callchain`——对调用图做有界 BFS（前向、后向、双向）
 - `kb_class`——类 / 接口 / 结构体查询，含成员与实现
-- `kb_refs`——谁调用了 / 导入了 / 继承了某符号
-- `kb_implements`——查找图谱记录的实现某接口的直接类（一跳）
+- `kb_refs`——某符号的调用方 / 导入方 / 继承方
+- `kb_implements`——查找直接实现某接口的类（一跳）
 
 REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 
@@ -108,16 +108,16 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
 
 `/kb search <query>` 将用户查询原样传给 `codeSearch()`，输出名称、种类、文件、
 行号、分数与签名；它不读取 `HK2_ENABLE_QUERYREWRITE`，不改写查询，也不附加
-±15 行切片。Agent `kb_search` 工具内部的改写独立于轮次开始时的
+±15 行切片。Agent `kb_search` 工具内部的改写独立于回合开始时的
 `HK2_ENABLE_QUERYREWRITE`；`with_slice=false` 可关闭源码切片。知识条目由
 `kb_search_knowledge` 使用独立的扁平化 token 重叠算法：扫描 `rt.allKnowledge()`，将 id、
 标题、简介和关键词拼接为一个 haystack。每个由空白分隔的 token 最多贡献 1 分，权重相同，
 没有标题/关键词额外权重；重复 token 可以重复贡献，得分相同时保留输入顺序；`top_k` 为假值
 （包括 0）时默认返回 5 条，其余数值钳制到 1–20，且不会过滤带
-`supersededBy` 的 Eden 条目。这条扁平化搜索路径不会给标题或关键词命中额外权重；轮次开始时的
-`matchPrinciples()` 是另一条按 head/intro 加权的路径：Holy 与 active Eden
+`supersededBy` 的 Eden 条目。这条扁平化搜索路径不会给标题或关键词命中额外权重；回合开始时的
+`matchPrinciples()` 是另一条按 head/intro 加权的路径：Holy 与活跃 Eden
 分开匹配，topic/标题/关键词等 head 字段是主信号，简介最多取 2000 字符并按 0.3
-加权，只返回前 2 条；`buildRequestGraph()` 会排除已退休 Eden 并抑制 Holy 冲突。
+加权，只返回前 2 条；`buildRequestGraph()` 会排除已退役 Eden 并抑制 Holy 冲突。
 
 ## 按请求注入上下文
 
@@ -137,7 +137,7 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
    最高准则章节**之后**，因此项目法则始终优先于检索到的知识。
 
 镜像真实文件的知识库内容遵循读取源文件时的 `r` 权限——被拒绝读取的源文件
-不会出现在摘要、切片或注入上下文中，而纯元数据保持可见（见
+不会出现在代码片段、切片或注入上下文中，而纯元数据保持可见（见
 [安全与权限](../guides/security-and-permissions.md)）。
 
 ## 增量更新、检查点与恢复
@@ -146,10 +146,10 @@ REPL 侧的等价命令是 `/kb neighbors`（1 跳）及上述工具。
   进行增量解析，重建符号 / 索引 / 图谱派生结构与 `doc_index.json`，并同步解析器管理的
   `doc:<relpath>` Eden 条目（删除或排除的文档对应的过期条目也会移除）。它还会
   自动检测旧版知识库布局：先把知识条目备份到 `backup/pre-upgrade-<ts>/`；若该
-  安全备份失败，迁移会中止而不会升级；然后才按当前迁移代码处理（解析器版本
+  安全备份失败，迁移会中止而不会升级；随后应用迁移（解析器版本
   变化会触发全量重建）。
 - **检查点**——`/kb init` 每处理 N 个文件保存一次检查点
-  （`--checkpoint-interval=N`，默认 `HK2_KB_CHECKPOINT_INTERVAL=100`）。中断
+  （`--checkpoint-interval=N`，默认 `HK2_KB_CHECKPOINT_INTERVAL=100`）。
   中断后重新运行时，会从*最近一次*已保存的检查点恢复：其中记录的文件被跳过，而该
   检查点之后、下次保存之前完成的工作会被重做。`--no-checkpoint` 禁用
   检查点，`--no-resume` 从头开始。

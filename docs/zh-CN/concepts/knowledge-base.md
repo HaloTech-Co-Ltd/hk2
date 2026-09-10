@@ -3,11 +3,11 @@
 [English](../../en/concepts/knowledge-base.md) | 简体中文
 
 本页介绍 hk2 的项目级知识库：三空间模型（Holy / Eden / Index）、每个空间
-存放什么、条目如何更新，以及优先级高于一切的项目最高准则（Project
-Supreme Code）。
+存放什么、条目如何更新，以及优先级高于一切的受保护条目——项目最高准则
+（Project Supreme Code）。
 
-每个项目在 `/project init` 注册、`/kb init` 构建后拥有独立的知识库，以
-项目 UUID 隔离在 `$HK2_KB_DIR/<projectId>/` 下（默认
+每个项目在 `/project init` 注册、`/kb init` 构建后拥有独立的知识库，按
+项目 UUID 隔离，位于 `$HK2_KB_DIR/<projectId>/`（默认
 `$HK2_HOME/kb/<projectId>/`；可通过 `HK2_KB_DIR` 指定其他根目录）。项目之间互不共享；移除项目
 注册会保留其知识库目录，直到你显式删除。
 
@@ -15,9 +15,9 @@ Supreme Code）。
 
 | 空间 | 内容 | 当前更新行为 |
 |---|---|---|
-| **Holy**（稳定知识空间） | 稳定的设计知识（架构、算法、关键模式）。由人工撰写或从权威来源导入。 | 智能体/自动提案始终需要批准（即使设置了自动开关）；显式用户命令按各自语义处理（见下方写入路径表）。 |
+| **Holy**（稳定知识空间） | 稳定的设计知识（架构、算法、关键模式）。由人工撰写或从权威来源导入。 | 智能体提议与自动写入始终需要批准（即使设置了自动开关）；显式用户命令按各自语义处理（见下方写入路径表）。 |
 | **Eden**（演进知识空间） | 频繁更新的知识（函数目录、命令列表、观察到的模式、模块摘要、**解析的文档**、**自动生成的摘要**）。 | 智能体知识捕获遵循 `HK2_ENABLE_AUTO_LEARN`；解析器管理的 `doc:<relpath>` 条目还会被 `/kb init` 与 `/kb update` 同步（见下文）。 |
-| **Index**（索引空间） | 代码索引（基于符号的 BM25）、知识图谱（调用 / 导入 / 继承关系），以及 Holy/Eden 条目的各空间索引。 | 显式 `/kb init` / `/kb update` 立即执行；轮末自动更新受 `HK2_ENABLE_AUTOUPDATEKB` 控制。 |
+| **Index**（索引空间） | 代码索引（基于符号的 BM25）、知识图谱（调用 / 导入 / 继承关系），以及 Holy/Eden 条目的各空间索引。 | 显式 `/kb init` / `/kb update` 立即执行；回合末自动更新受 `HK2_ENABLE_AUTOUPDATEKB` 控制。 |
 
 这种划分关乎**信任与变更频率**，而非存储位置：Holy 存放只应随人工决策
 而变化的内容；Eden 存放天然频繁变化的内容；Index 是随时可从源码重建的
@@ -31,8 +31,8 @@ Supreme Code）。
 | `/kb init` / `/kb update` | 显式命令——不经自动学习 / 自动更新确认流程 |
 | `kb_save_knowledge` → Holy | 始终需要交互确认；无确认回调时拒绝 |
 | `kb_save_knowledge` → Eden | `HK2_ENABLE_AUTO_LEARN=1` 时自动写入，否则确认 |
-| 轮末知识提案 | 仅当轮末流程触发时产生；按目标空间策略确认 |
-| `/kb knowledge learn --space=holy`（DOC 模式） | 每轮抽取前提示一次；合并/覆盖已有 Holy 条目逐条确认，通过确认后新建的条目直接写入 |
+| 回合末知识提案 | 仅当回合末流程触发时产生；按目标空间策略确认 |
+| `/kb knowledge learn --space=holy`（DOC 模式） | 每次运行在抽取前提示一次；合并/覆盖已有 Holy 条目逐条确认，通过确认后新建的条目直接写入 |
 | `/kb transform`、导入 → Holy、`del` / `empty` / `/kb drop` | 各自保留破坏性确认提示 |
 
 ## 每个空间存放什么
@@ -41,7 +41,7 @@ Supreme Code）。
   `/kb knowledge add --space=holy`、`/kb knowledge import`，或用
   `/kb transform` 把 Eden 条目提升上来。
 - **Eden Space**——LLM 撰写的摘要（`/kb init`、`/kb knowledge learn`）、
-  轮末自动捕获的知识（`[kb learn]`）、解析的文档（`doc:<relpath>` 条目），
+  回合末自动捕获的知识（`[kb learn]`）、解析的文档（`doc:<relpath>` 条目），
   以及手动添加的快速变化事实。
 - **Index Space**——BM25 倒排索引、分片符号表、文件注册表、代码知识图谱，
   以及 Holy/Eden 的各空间关键词索引。纯派生数据；`/kb update` 增量刷新，
@@ -51,12 +51,12 @@ Supreme Code）。
 
 1. **创建**——条目进入 Holy 或 Eden 的方式：手动 `/kb knowledge add`、
    深度研读（`/kb knowledge learn`）、导入（`/kb knowledge import`）、
-   轮末 `[kb learn]` 捕获，或 `/kb init` 的自动摘要。`/kb knowledge add
+   回合末 `[kb learn]` 捕获，或 `/kb init` 的自动摘要。`/kb knowledge add
    --space=holy` 这类直接用户命令本身就是显式意图，立即写入；y/N 确认
    针对的是*智能体提议*路径（`kb_save_knowledge`、`[kb learn]`、导入
    Holy、housekeep 合并与冲突裁决）。
 2. **使用**——智能体通过 `kb_knowledge` / `kb_search_knowledge` 检索条目，
-   相关条目会作为按请求上下文注入。
+   相关条目会按请求注入为上下文。
 3. **写入校验**——默认（`HK2_KB_LEARN_VALIDATE=1`）对*学习*路径提出的
    条目与现有条目比对：重复跳过、相近条目原地合并、冲突裁决——与 Holy
    冲突必须由用户裁决。设 `HK2_KB_LEARN_VALIDATE=0` 时改走旧式启发式
@@ -80,8 +80,8 @@ Supreme Code）。
   约束——安全策略、代码规范、合规要求等——其优先级高于智能体的一般偏好
   与任何其他知识库条目。
 - **注入（模型层）**：条目非空时，每次请求把规则渲染进系统提示词的
-  `# Project Supreme Code (MUST OBEY — never violate)` 章节，位于**所有**
-  其他注入上下文*之前*，指示智能体拒绝违规操作、引用规则编号并提出合规
+  `# Project Supreme Code (MUST OBEY — never violate)` 章节，位于 KB
+  知识图谱上下文*之前*，指示智能体拒绝违规操作、引用规则编号并提出合规
   替代方案。遵从是高优先级的模型指令，不是形式化验证的执行保证。空条目
   不注入任何内容。
 - **保护（硬限制）**：通过受支持的知识变更路径，条目本身不能被删除、重命名、
@@ -117,7 +117,7 @@ Supreme Code）。
 
 | 条目 id | 内容 |
 |---|---|
-| `project-overview` | 600–900 字的连贯文字摘要：项目用途、高层架构、关键模块、显著模式。 |
+| `project-overview` | 600–900 词的连贯文字摘要：项目用途、高层架构、关键模块、显著模式。 |
 | `architecture-diagram` | 模块 / 层级关系的 Mermaid 流程图，附带简短图例。 |
 | `architecture-decisions` | 基于检测到的技术推断出的 4–8 条 ADR 风格条目，每条附带具体的修改建议。 |
 
@@ -140,25 +140,25 @@ id——仅在非 `--dry-run`、无 `--base-dir`、无 `--no-survey` 时生成�
 
 `doc:<relpath>` 是索引器为解析文档管理的 Eden 条目 id。磁盘文件名会经过安全化处理，
 但条目 id 保留 `doc:` 前缀。`/kb init` 与 `/kb update` 可以覆盖同一文档的
-parser-owned 条目；删除或排除文档时可以删除对应条目。不要手工创建 `doc:*` id：
+解析器管理的条目；删除或排除文档时可以删除对应条目。不要手工创建 `doc:*` id：
 同名手工条目可能被后续索引覆盖。手动添加的文档知识应使用其他 id。
 
 ## 自动学习与自动更新的边界
 
 两个环境变量决定智能体无需询问即可写入哪些内容：
 
-- `HK2_ENABLE_AUTO_LEARN=1`——轮末知识捕获静默写入 Eden。**Holy 始终提示
+- `HK2_ENABLE_AUTO_LEARN=1`——回合末知识捕获静默写入 Eden。**Holy 始终提示
   y/N**，无论此标志如何（该确认针对智能体提议的知识捕获；`/kb knowledge add
   --space=holy` 这类直接命令是用户自己的显式意图）。
-- `HK2_ENABLE_AUTOUPDATEKB=1`——当某轮智能体回退到用 `bash` 搜索源文件时，
-  轮末静默执行一次增量 `/kb update`。它刷新派生的符号索引与图谱，并同步
+- `HK2_ENABLE_AUTOUPDATEKB=1`——当某回合智能体回退到用 `bash` 搜索源文件时，
+  回合末静默执行一次增量 `/kb update`。它刷新派生的符号索引与图谱，并同步
   解析器管理的 `doc:<relpath>` Eden 条目（为新增/变化文档写入或覆盖条目、
-  移除已删除或被排除文档的 parser-owned 条目）；不会触碰手工撰写的 Holy
+  移除已删除或被排除文档的解析器管理的条目）；不会触碰手工撰写的 Holy
   或普通 Eden 条目。
 
 两者默认为 `0`（关闭）。见[环境变量](../reference/environment-variables.md)。
 
-### status 自愈写入
+### `/kb status` 自愈
 
 `/kb status` 通常只读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧 KB，
 它会先尽力创建空的永久条目；失败会被忽略且不单独报告，这个兼容路径可能有写盘

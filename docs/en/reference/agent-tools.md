@@ -105,7 +105,8 @@ Writes: no.
 Textual regex search by default (set `literal=true` for literal matching); matching lines with file:line, truncated at 100
 matches (long lines to 240 chars), covering up to 2000 files per call. The
 internal walker skips `.git` and `node_modules` but does **not** evaluate
-the repository's `.gitignore`. Writes: no.
+the repository's `.gitignore`; prefer KB search for semantic concepts.
+Writes: no.
 
 ## Structural tools
 
@@ -217,7 +218,7 @@ filtered channels (metadata stays visible — see
 |---|---|
 | `kb_knowledge` | Look up a knowledge entry by id — searches Holy and Eden, returns the full entry (title, intro, keyFiles, keySymbols, keywords, space) |
 | `kb_search_knowledge` | Search both knowledge spaces by natural-language query; each whitespace token occurrence contributes at most one equal-weight point across one combined id/title/intro/keywords haystack, duplicate tokens can contribute again, ties preserve `allKnowledge()` order, and superseded Eden entries are not filtered. Falsy `top_k` values including 0 default to 5; other numeric values are bounded to 1–20 |
-| `kb_save_knowledge` | Persist a knowledge entry to Holy (requires user approval) or Eden (auto-learn eligible); the KB runtime is hot-reloaded immediately. Caveat: an identical `kb_knowledge`/`kb_search_knowledge` call already cached earlier in the same `runLoop` may keep returning the stale cached result until a cache-busting call or a new loop. Saving via this tool marks the turn's knowledge capture as handled |
+| `kb_save_knowledge` | Persist a knowledge entry to Holy (requires user approval) or Eden (auto-learn eligible); the KB runtime is hot-reloaded immediately but does not clear the `runLoop` read-only cache: an identical `kb_knowledge`/`kb_search_knowledge` call already cached earlier in the same `runLoop` may keep returning the stale cached result until a cache-busting call or a new loop; failed results are not cached. Saving via this tool marks the turn's knowledge capture as handled |
 
 ## Session tools
 
@@ -266,8 +267,11 @@ skipped with a warning. See
 
 Every code-discovery path favours the KB index over fresh parsing:
 
-- `kb_outline`, `kb_symbol`, and the graph tools read from the loaded
-  in-memory index. `kb_search` also ranks via BM25 from the index, but by
+- `kb_outline`, `kb_symbol`, and the graph tools mostly read from the loaded
+  in-memory index with no re-parsing; `kb_outline` does not read source
+  content, though permission/path metadata filtering may touch the
+  filesystem, and direct outline queries are not subject to `SOURCE_EXT_RE`.
+  `kb_search` also ranks via BM25 from the index, but by
   default loads a ±15-line source slice for the top 3 results **from the
   filesystem** (skipped for files over 512 KiB, bounded by read
   permissions; disable with `with_slice=false`).

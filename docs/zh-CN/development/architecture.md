@@ -23,11 +23,11 @@ flowchart TB
         SI --> PROJECT[src/slash/project.js]
         SI --> KB[src/slash/kb.js]
         SI --> SESSION[src/slash/session.js]
-        GUARD[lib/slash_command.js<br/>共享命令形状守卫]
+        GUARD[lib/slash_command.js<br/>共享命令格式守卫]
     end
-    subgraph Turn[回合管线]
+    subgraph Turn[回合处理流程]
         TURN[src/commands/turn.js<br/>runTurn]
-        TSUP[src/commands/turn_support.js<br/>压缩、kb update 询问、审查]
+        TSUP[src/commands/turn_support.js<br/>压缩、kb 更新询问、审查]
         SESSCTX[src/commands/session_ctx.js<br/>恢复、快速通道、排队]
         PHASEFB[src/phase_fallback.js]
     end
@@ -131,7 +131,7 @@ flowchart TB
   构建、智能体循环与轮末序列。`turn_support.js`（压缩、kb 更新询问、知识
   捕获、审查）与 `session_ctx.js`（恢复、快速通道检测、任务中排队）承载
   这些支撑流程；`phase_fallback.js` 实现阶段模型回退策略。
-- **智能体核心**——`lib/agent/loop.js` 运行带缓存与卡死检测的 LLM/工具
+- **智能体核心**——`lib/agent/loop.js` 以缓存与卡死检测机制运行 LLM/工具
   轮次；`tools.js` 是工具注册表与知识库优先守卫；`system_prompt.js` 构建
   提示词（非空的最高准则先于知识库上下文）；`graph.js` 组装按请求知识
   图谱；`plan.js`/`plan_review.js`/`code_review.js` 实现规划与审查；
@@ -154,10 +154,10 @@ flowchart TB
   `traverse.js` 响应图谱查询。`src/commands/status_format.js` 是状态栏与
   计划进度面板共用的格式模块，供两个前端使用。
 - **存储 / 配置**——`lib/store/*` 持久化知识库（holy/eden 条目、图谱、
-  索引、最高准则）；`lib/config/home.js` 拥有 `HK2_HOME`、`models.json`、
+  索引、最高准则）；`lib/config/home.js` 负责 `HK2_HOME`、`models.json`、
   `projects.json`；`lib/config/setting.js` 加载并解析文件系统权限规则。
 - **LLM 适配器**——`lib/llm/client.js` 把模型配置解析为一次调用；
-  `openai_adapter.js` / `anthropic_adapter.js` 分别适配两种线上协议（含模型类型
+  `openai_adapter.js` / `anthropic_adapter.js` 分别实现两种传输协议（含模型类型
   特性映射）；`retries.js` / `timeout.js` / `sse.js` 实现重试、超时与流式
   解析。
 
@@ -165,13 +165,13 @@ flowchart TB
 
 1. 前端读入一行 → 判断是否为斜杠命令：是则分发，否则进入 `runTurn`（`src/commands/turn.js`）。
 2. 门禁（模型、项目、知识库）→ 自动压缩检查 → 后续快速通道（快速通道
-   轮次完全跳过第 3–4 步）。
+   轮次完全跳过第 3 步的管线）。
 3. 查询改写（`rewrite_query.js`）→ 知识库检索（`graph.js` 基于
    `code_search.js` + `kb_runtime.js`）→ 启用推理的清晰度评估（可选菜单
-   → 第二次改写 / 检索）→ 可能的 tier-2 continuation upgrade。tier-1
+   → 第二次改写 / 检索）→ 可能的 tier-2 续接升级。tier-1
    确定性快速通道会跳过这条管线；tier-2 复用评估结果且必须存在可供后续输入引用的先前会话上下文，只在对应状态存在时恢复和注入。
-   每个阶段都是有条件的：改写与评估可经环境变量关闭，评估仅在具备提示能力的
-   前端下运行。
+   每个阶段都是有条件的：改写与评估可经环境变量关闭，仅在前端支持向用户弹出
+   提示时才运行评估。
 4. 系统提示词构建（`system_prompt.js`）：身份 → 知识库优先策略 → 工具 →
    项目信息 → 最高准则 → 权限沙箱 → 知识库上下文。
 5. 智能体循环（`loop.js`）：流式回复、执行工具调用（`tools.js` /
@@ -180,13 +180,13 @@ flowchart TB
 6. 智能体循环的每个完整回合先追加完整 assistant 消息，再追加该回合的工具
    结果；最后一个回合提供 `session.lastAnswer`，随后追加用量与回合结束元数据。
 7. 轮末（`turn_support.js`）使用共同外层门与独立流程：符合条件的 bash 源码搜索
-   门同时控制 KB 更新询问 / 自动更新块与回退知识抽取；handled 与 cooldown 是
+   门同时控制 kb 更新询问 / 自动更新逻辑与回退知识抽取；handled 与 cooldown 是
   其中嵌套的学习子门。检测到的冲突独立控制 Holy-over-Eden 同步；正常返回、配置
    与本轮确认 / 开始时继续的计划状态独立控制可选代码审查。
 
 ## 数据流：`/kb init`
 
-1. 解析当前项目 → 其 globs 与根。
+1. 解析当前项目 → 该项目的 glob 规则与根目录。
 2. 遍历文件（`walker.js` + `gitignore.js`）；逐个解析（`ast.js` →
    Tree-sitter 或正则；文档走 `doc_parser.js`）。
 3. 构建 BM25 索引（`bm25.js`）、图谱（`graph/builder.js`）、文件注册表与
@@ -197,28 +197,28 @@ flowchart TB
    内容时才写入。LLM 调用失败或为空会跳过该条目并继续后续调用，而存储写入
    错误可能中止剩余摘要生成。
 
-### 轮末门控与 transcript 边界
+### 轮末门控与会话记录边界
 
 轮末流程不是无条件的 `update → learn → conflict sync → review` 串行链。“符合条件的
 bash 源码搜索”是 KB 刷新分支与回退知识抽取共用的外层门；更新分支根据配置询问或
 自动刷新，handled 与 cooldown 是该分支内部嵌套的学习门。Holy-over-Eden 冲突
-同步是独立流程，依赖检测到的冲突。代码审查也独立运行：需要开关与正常 agent 返回，
-本轮确认计划或开始时正在继续计划即可满足条件，正常 finalization 还可能在审查前清理
-遗留面板。
+同步是独立流程，依赖检测到的冲突。代码审查也独立运行：需要开启相应配置且智能体
+正常返回，本轮确认计划或开始时正在继续计划即可满足条件，正常收尾（finalization）
+还可能在审查前清理遗留面板。
 
 命令格式的共享事实源是 `lib/slash_command.js`。分发器、任务中输入捕获与多行粘贴
 收集器都使用其 `^/[A-Za-z][A-Za-z0-9_-]*$` 单段规则，因此绝对路径和与路径相连的正文
 仍会作为普通智能体输入，而不会被尝试解析为斜杠命令。
 
-手动 `/review code` 接收原始任务需求、运行期间排队的扩展需求指令以及完成结果；
+手动 `/review code` 接收原始任务需求、任务期间排队、用以扩展原任务的补充输入以及完成结果；
 工具调用、推理过程和中间实现回合会被刻意排除。完成任务的 `lastCompletedTask`
-快照只存在进程内存，不会持久化；恢复时会回退到确定性的 transcript 扫描。
+快照只存在进程内存，不会持久化；恢复时会回退到确定性的会话记录扫描。
 
 正常完成会在工具结果前记录每个完整 assistant 回合，因此恢复时能保留
 assistant/tool 顺序以及工具调用前的正文；最后一个 assistant 回合另作最终答案与
-代码审查摘要。重试会在记录 assistant 消息前丢弃失败 attempt 的 partial buffer。
-中断时已流式显示的 partial 文本仍在终端，但不作为完整 transcript 回合写入；
-dangling tool call 会清理，中断任务状态保存到 `taskstate.json` 供恢复。只有扁平
+代码审查摘要。重试会在记录 assistant 消息前丢弃失败尝试的部分缓冲。
+中断时已流出的部分文本仍在终端，但不作为完整的会话记录回合写入；
+悬空的工具调用会被清理，中断任务状态保存到 `taskstate.json` 供恢复。只有扁平
 `assistant` / `tool_call` 事件的旧会话记录通过尽力而为的兼容路径恢复。
 
 ## 持久化状态
@@ -235,13 +235,13 @@ hk2 的大部分配置与会话状态都在 `HK2_HOME`（默认 `~/.hk2`）下�
 ```text
 hk2/
 ├── bin/hk2                    # 可执行入口
-├── install.sh                 # 安装器
+├── install.sh                 # 安装脚本
 ├── src/
 │   ├── cli.js                 # 参数解析 + 分发
 │   ├── version.js             # 取自 package.json 的版本号
 │   ├── phase_fallback.js      # 阶段模型回退策略
-│   ├── progress.js            # 加载动画 / 进度管道
-│   ├── commands/              # REPL + 回合管线（interactive、turn、serve、build_kb 等）
+│   ├── progress.js            # 加载动画 / 进度显示的底层支撑
+│   ├── commands/              # REPL + 回合处理流程（interactive、turn、serve、build_kb 等）
 │   ├── slash/                 # 斜杠命令层（index、help、model、project、kb、session、review、theme、completions）
 │   └── tui/                   # TUI 前端（index、input_box、keys、chrome、modal、history、completion 等）
 ├── lib/

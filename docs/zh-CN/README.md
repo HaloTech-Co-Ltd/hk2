@@ -2,13 +2,13 @@
 
 [English](../en/README.md) | 简体中文
 
-欢迎阅读 hk2 文档。hk2 是一款知识库（KB）驱动、面向编码场景的智能体，结合项目知识与会话上下文辅助开发。
-每个项目都有独立的知识库，用于组织代码符号、代码知识图谱与积累的知识条目。
-智能体可在后续任务中检索并复用这些知识，让已有的项目经验持续服务于开发。
+欢迎阅读 hk2 文档。hk2 是一款知识库（KB）驱动、面向编码场景的智能体，用于辅助开发。
+每个项目都有独立的知识库，用于组织代码符号、代码知识图谱与经整理的知识条目。
+智能体可在后续任务中检索并复用这些知识，并结合会话上下文，让已有的项目经验持续服务于开发。
 
 初次接触 hk2？建议先阅读[安装](getting-started/installation.md)与[快速开始](getting-started/quick-start.md)，然后通过[核心概念](#核心概念)理解三空间知识库模型。
 
-## 快速开始
+## 入门
 
 - [安装](getting-started/installation.md)——环境要求、`install.sh`、`npm link`、卸载、PDF/Word 可选依赖
 - [快速开始](getting-started/quick-start.md)——配置模型、构建知识库并提出第一个问题
@@ -17,7 +17,7 @@
 
 - [知识库](concepts/knowledge-base.md)——三空间模型：Holy、Eden、Index；项目最高准则
 - [知识图谱与检索](concepts/knowledge-graph-and-retrieval.md)——Tree-sitter 解析、BM25、调用/导入/继承图谱、按请求注入上下文
-- [智能体工作流](concepts/agent-workflow.md)——按下回车后到得到回答会发生什么
+- [智能体工作流](concepts/agent-workflow.md)——从按下回车到得到最终回答之间会发生什么
 
 ## 使用指南
 
@@ -30,7 +30,7 @@
 
 ## 参考资料
 
-- [斜杠命令](reference/slash-commands.md)——全部斜杠命令，并与 `src/slash/help.js` 核对
+- [斜杠命令](reference/slash-commands.md)——全部斜杠命令，条目已与 `src/slash/help.js` 逐一核对
 - [智能体工具](reference/agent-tools.md)——智能体可在回合中调用的工具注册表
 - [配置](reference/configuration.md)——`HK2_HOME` 目录结构、`models.json`、`projects.json`、知识库布局
 - [环境变量](reference/environment-variables.md)——完整清单，默认值经代码核验

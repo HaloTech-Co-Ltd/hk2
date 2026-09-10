@@ -2,7 +2,7 @@
 
 [English](../../en/guides/knowledge-workflows.md) | 简体中文
 
-本指南介绍日常知识库任务的完成方法：构建、更新、检查、深度研读、导入导出、
+本指南介绍如何完成日常知识库任务：构建、更新、检查、深度研读、导入导出、
 维护与清理。它聚焦于*如何完成这些任务*——完整参数参考在
 [斜杠命令](../reference/slash-commands.md)，底层模型在
 [知识库](../concepts/knowledge-base.md)。
@@ -18,7 +18,7 @@
 /kb status                                # 各空间统计
 ```
 
-- `/kb init` **始终重建整个索引**，加不加 `--full` 都一样。
+- 在当前实现中，`/kb init` **始终执行全量重建**，加不加 `--full` 都一样。
   日常增量更新请用 `/kb update`。被中断的构建从检查点恢复。
 - `/kb update` 增量重新解析发生变化的源码文件，重建派生符号 / 索引 / 图谱结构与
   `doc_index.json`，并同步 parser-owned `doc:<relpath>` Eden 条目（成功解析的新增 /
@@ -60,8 +60,8 @@
 
 - **代码模式（CODE mode）**——不带 `--file`，或 `--base-dir` 指向*已索引*
   的路径（包括单个已索引文件）。三阶段研读已索引源码：**可选的**阶段 0 会写入三个项目级概览
-  条目（`api-docs`、`code-walkthrough`、`usage-examples`）——只有在非
-  `--dry-run`、无 `--base-dir`、无 `--no-survey` 时运行（`--base-dir`
+  条目（`api-docs`、`code-walkthrough`、`usage-examples`）——仅当未指定
+  `--dry-run`、`--base-dir` 和 `--no-survey` 时才运行（`--base-dir`
   限定已索引路径并跳过全项目概览；`--dry-run` 与 `--no-survey` 同样跳过）；
   阶段 1 规划主题批次；阶段 2 对每个执行子批次发起一次提取（输出无法解析时
   再关闭推理重试一次），每次可产生零个或多个候选知识条目。每个候选条目分别
@@ -98,15 +98,15 @@
 常用参数：`--dry-run`、`--no-survey`、`--base-dir=DIR`、`--file=PATH`、
 `--space=eden|holy`（文档模式默认 `eden`；代码模式始终写 Eden）、
 `--per-batch-chars=N`（每批次 LLM 上下文预算，默认 100000）、
-`--model=<provider>/<model-id>`、`--plan-timeout-ms=N`，以及传入每个 LLM
-提示词末尾追加的自由格式指令。
+`--model=<provider>/<model-id>`、`--plan-timeout-ms=N`，以及会追加到每个 LLM
+提示词末尾的自由格式指令。
 
 ### 大型项目与回退
 
 索引文件超过 **300 个**时，阶段 1 规划器从文件级切换为**目录级规划**——
 LLM 只分组目录（规划图大幅缩小），每个目录项再被确定性展开为具体文件，
 切分为 ≤30 文件的批次。若 LLM 计划仍不可用（推理模型可能把全部预算耗在
-思考阶段），命令会先关闭推理后重试一次。在代码模式中，计划通过该模式的解析 / 展开
+思考阶段），命令会禁用推理重试一次。在代码模式中，计划通过该模式的解析 / 展开
 检查后会按原结果执行，不会自动补回遗漏文件；只有计划不可用或被丢弃时，才回退到
 保证覆盖所选范围内全部索引文件的确定性目录分组。文档模式始终核对成功读取、解析且非空的研读
 分片，并为规划遗漏项补单文件批次。文件访问、解析、模型、权限、磁盘错误或
@@ -124,8 +124,8 @@ LLM 只分组目录（规划图大幅缩小），每个目录项再被确定性�
 /kb knowledge import /tmp/kb-dump.json adaptive --overwrite
 ```
 
-- `add` 默认写入 **holy**；`--intro-file` 从文件读取正文；可选 `--id`、
-  `--key-files`、`--key-symbols`、`--keywords` 为条目标注便于后续检索。
+- `add` 默认写入 **holy**；`--intro-file` 从文件读取正文；可选参数 `--id`、
+  `--key-files`、`--key-symbols`、`--keywords` 用于为条目添加标注，便于后续检索。
 - `export <eden|holy|all> <path>` 导出带每条 `space` 标签的版本 2 JSON
   文件。
 - `import <path> [eden|holy|adaptive] [--overwrite]`——`adaptive` 按条目

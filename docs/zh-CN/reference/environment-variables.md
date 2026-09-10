@@ -4,11 +4,11 @@
 
 这是 hk2 专有环境变量的完整清单，由全代码范围的 `process.env` 搜索重新生成——
 而非照搬旧文档。默认值来自解析代码。新增或修改变量时，请重新执行搜索并
-同步更新两种语言的本页。hk2 遵从的标准终端变量在文末单独列出。
+同步更新中英文两个版本。hk2 遵从的标准终端变量在文末单独列出。
 
-约定：`HK2_ENABLE_*` 功能开关经 `envFlag()` 解析——`1`、`yes`、`true`、`on`（不区分大小写）为开；其余任何值（含 `0`/`no`/`false`/`off`/未识别字符串）为关。另外，`HK2_NO_COLOR`、`HK2_ASCII` 与 `NO_COLOR` 按非空值判断：任意非空值（即使为 `0`）都会激活相应覆盖行为（关闭颜色或强制 ASCII）；空字符串无效果，未设置则使用默认值。数值类各不相同——LLM 超时 / 重试 / 并行度
-变量把未设置 / 空 / 非法 / 负数视为"使用默认值"（超时类显式 `0` 表示
-"不设超时"，重试类表示"仅尝试一次"）；`HK2_AUTOCOMPACT_PCTUSED` 这类
+约定：`HK2_ENABLE_*` 功能开关经 `envFlag()` 解析——`1`、`yes`、`true`、`on`（不区分大小写）为开；其余任何值（含 `0`/`no`/`false`/`off`/未识别字符串）为关。另外，`HK2_NO_COLOR`、`HK2_ASCII` 与 `NO_COLOR` 按非空值判断：任意非空值（即使为 `0`）都会激活相应覆盖行为（关闭颜色或强制 ASCII）；空字符串无效果，未设置则使用默认值。数值类变量的解析规则各不相同——LLM 超时 / 重试 / 并行度
+变量把未设置 / 空 / 非法 / 负数视为“使用默认值”（超时类显式 `0` 表示
+“不设超时”，重试类表示“仅尝试一次”）；`HK2_AUTOCOMPACT_PCTUSED` 这类
 阈值变量则按各自范围钳制。每个条目都写明自己的解析规则。
 
 ## 路径与安装
@@ -27,13 +27,13 @@
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_UI` | 交互前端：`tui` 或 `repl` | `repl` | `--tui` / `--repl` 旗标优先 |
-| `HK2_TUI_STREAM` | TUI 输出到的流：`stdout` 切换默认值 | `stderr` | TTY 能力检测跟随该流 |
-| `HK2_WELCOME` | TUI 欢迎卡级别：`full` / `compact` / `auto` | `auto` | `auto`：首次启动完整；回访用户 / 少于 30 行的终端使用紧凑模式。完整模式需 ≥88 列；更窄时自动降级 |
+| `HK2_UI` | 交互前端：`tui` 或 `repl` | `repl` | `--tui` / `--repl` 参数优先 |
+| `HK2_TUI_STREAM` | TUI 绘制输出所用的流；设为 `stdout` 即翻转默认值 | `stderr` | TTY 能力检测跟随该流 |
+| `HK2_WELCOME` | TUI 欢迎卡级别：`full` / `compact` / `auto` | `auto` | `auto`：首次启动显示完整版；再次使用的用户或屏幕少于 30 行时显示紧凑版。完整模式需 ≥88 列；更窄时自动降级 |
 | `HK2_REPL_HINTS` | `0` 禁用 REPL 的实时斜杠补全提示 | 开 | 恢复为无提示的普通提示符 |
 | `HK2_HIDE_THINKING` | `1`（默认）：`✎ thinking` 窗口最多渲染 9 行，TUI 思考过程折叠为 `Thought for Ns`；`0`：完整流式显示 | `1` | |
-| `HK2_NO_COLOR` | 设为**任意非空值**即禁用 ANSI 颜色——`HK2_NO_COLOR=0` 依然禁用（字符串 "0" 非空）；空值或未设置仅移除该覆盖，其他颜色规则仍会生效。标准 `NO_COLOR` 同样按非空值语义遵从 | 未设置 |
-| `HK2_ASCII` | 设为**任意非空值**即强制使用 ASCII 字符渲染表格线、加载动画和图标（`0` 依然启用——字符串 "0" 非空；空值或未设置会取消覆盖） | 未设置 | 适用于非 UTF-8 终端 |
+| `HK2_NO_COLOR` | 设为**任意非空值**即禁用 ANSI 颜色——`HK2_NO_COLOR=0` 依然禁用（字符串 “0” 非空）；空值或未设置仅移除该覆盖，其他颜色规则仍会生效。标准 `NO_COLOR` 同样按非空值语义遵从 | 未设置 |
+| `HK2_ASCII` | 设为**任意非空值**即强制使用 ASCII 字符渲染制表符/边框线、加载动画和图标（`0` 依然启用——字符串 “0” 非空；空值或未设置会取消覆盖） | 未设置 | 适用于非 UTF-8 终端 |
 
 ## LLM 请求、超时与重试
 
@@ -50,35 +50,35 @@
 工具调用会被丢弃。此前成功的工具轮次以独立 assistant/tool 消息保留在会话记录
 和恢复后的对话中。`session.lastAnswer` 与代码审查只使用清理后的、未携带工具
 调用而结束循环的最后一个 assistant 回合，不会拼接之前工具轮次的文本。用量
-统计仍可能保留不同 attempt 的峰值；这里不规定为只统计最终 attempt 或完整
-计费总量。
+统计仍可能保留不同 attempt 的峰值；其统计口径未明确规定为“仅计最终一次
+尝试”或“按计费总量统计”。
 
 ## 请求处理流程（评估、改写、快速通道）
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_ENABLE_QUERYREWRITE` | `1`：BM25 检索前先用 LLM 将有实质内容的查询改写为英文函数名和关键词（轮次开始；fast-lane 后续输入跳过整个预处理流程）。`kb_search` 工具仅在有可用 LLM 且未传 `skip_rewrite=true` 时才内联改写 | `1` | 是评估与快速通道的前提 |
-| `HK2_ENABLE_REQUEST_ASSESS` | `1`（且改写开启）：在第一次查询改写**和**知识库检索之后，LLM 判断请求是否清晰——让评估模型能够看到已检索到的项目上下文；不清晰的请求弹出编号澄清菜单，选定答案驱动第二次改写 + 检索。结合会话摘要判断以免误判后续输入；仅交互式 TTY；每轮调用次数受限；尽力而为。调用始终使用 `enableReasoning:true`，但提供商不一定返回独立 reasoning 流。判定字段记入会话记录的 `assess` 元数据 | `1` | 超时使用 `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` |
-| `HK2_ASSESS_MIN_CONFIDENCE` | 置信度阈值（0.0–1.0），低于该值的"不清晰"结论按清晰处理 | `0.8` | 误触发菜单的代价高于让主智能体内联追问 |
+| `HK2_ENABLE_QUERYREWRITE` | `1`：BM25 检索前先用 LLM 将有实质内容的查询改写为英文函数名和关键词（轮次开始；快速通道后续输入跳过整个预处理流程）。`kb_search` 工具仅在有可用 LLM 且未传 `skip_rewrite=true` 时才内联改写 | `1` | 是评估与快速通道的前提 |
+| `HK2_ENABLE_REQUEST_ASSESS` | `1`（且改写开启）：在第一次查询改写**和**知识库检索之后，LLM 判断请求是否清晰——让评估模型能够看到已检索到的项目上下文；不清晰的请求弹出编号澄清菜单，选定答案驱动第二次改写 + 检索。结合会话摘要判断以免误判后续输入；仅交互式 TTY；仅一轮且有上限；尽力而为。调用始终使用 `enableReasoning:true`，但提供商不一定返回独立 reasoning 流。判定字段记入会话记录的 `assess` 元数据 | `1` | 超时使用 `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` |
+| `HK2_ASSESS_MIN_CONFIDENCE` | 置信度阈值（0.0–1.0），低于该值的“不清晰”结论按清晰处理 | `0.8` | 误触发菜单的代价高于让主智能体内联追问 |
 | `HK2_ENABLE_FOLLOWUP_FASTLANE` | `1`（且改写开启）：确定为会话性后续输入的内容（继续指令、纯确认词、刚显示菜单时用于选择的纯数字、有活跃计划时的推进指令）跳过整个预处理流程，直接进入智能体循环 | `1` | 设 `0` 恢复完整处理流程以便 A/B 对比 |
-| `HK2_ENABLE_CONTINUATION_UPGRADE` | 仅为未被 tier 1 识别的输入启用 tier-2 continuation upgrade。使用 `envFlag()`（仅 `1`/`yes`/`true`/`on` 生效）；依赖请求评估实际运行，因此关闭 / 跳过评估或查询改写时不会升级 | `1` | assessor 的 followup 结论还必须达到置信度阈值并找到可供后续输入引用的先前会话上下文 |
+| `HK2_ENABLE_CONTINUATION_UPGRADE` | 仅为未被 tier 1 识别的输入启用 tier-2 continuation upgrade。使用 `envFlag()`（仅 `1`/`yes`/`true`/`on` 生效）；依赖请求评估实际运行，因此关闭 / 跳过评估或查询改写时不会升级 | `1` | assessor 的 followup 结论还必须达到置信度阈值并找到可被后续输入指代的先前对象（活跃 plan、`lastTask` 或此前对话） |
 | `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` | tier-2 continuation upgrade 的最小评估置信度；使用 `parseFloat()` 并钳制到 `0–1` | `0.6` | 非数字回退到 `0.6`；没有活跃 plan、`lastTask` 或会话上下文时不会升级 |
-| `HK2_ENABLE_PHASEMODEL_FALLBACK` | `rewrite-query` 或 `request-assess` 阶段模型已成功解析、但实际调用失败时：`1` 告警并用会话模型重跑；`0` 告警并跳过。审查阶段始终跳过（绝不替换审查者）。失效的模型引用若解析为 `null`，则不发出警告，直接使用会话模型；解析异常则告警并使用会话模型 | `1` | |
+| `HK2_ENABLE_PHASEMODEL_FALLBACK` | `rewrite-query` 或 `request-assess` 阶段模型已成功解析、但实际调用失败时：`1` 警告并用会话模型重跑；`0` 警告并跳过。审查阶段始终跳过（绝不替换审查者）。失效的模型引用若解析为 `null`，则不发出警告，直接使用会话模型；解析异常则警告并使用会话模型 | `1` | |
 
 ## 计划审查与代码审查
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_ENABLE_PLANREVIEW` | `1`：用户确认计划后、执行开始前，LLM 复审定稿计划（需求清单、逐点覆盖、顺序、可行性、风险）；问题逐一确认；无法解析判定 = UNKNOWN。仅交互式 TTY；尽力而为 | `0` | |
+| `HK2_ENABLE_PLANREVIEW` | `1`：用户确认计划后、执行开始前，LLM 对该计划进行复审（需求清单、逐点覆盖、顺序、可行性、风险）；问题逐一确认；无法解析判定 = UNKNOWN。仅交互式 TTY；尽力而为 | `0` | |
 | `HK2_ENABLE_CODEREVIEW` | `1`：本轮确认了计划或开始时正在继续计划，且智能体正常返回时，收尾可能清除面板并触发对 diff、变更文件与最终摘要的代码审查；普通的计划中提问也可能触发。问题逐条列出；无法解析的结论 = UNKNOWN。仅交互式 TTY；尽力而为 | `0` | |
 
 ## 知识库构建与学习
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `HK2_KB_CHECKPOINT_INTERVAL` | 检查点间隔输入。交互式 `/kb init` 会对 `parseInt(value, 10)` 按 `|| 100` 处理；直接 indexer 调用则把解析值原样传入，因此不同入口的执行频率不同。详见下方详细表格。 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
+| `HK2_KB_CHECKPOINT_INTERVAL` | 检查点间隔输入。交互式 `/kb init` 对 `parseInt(value, 10)` 的结果套用 `|| 100`；直接 indexer 调用则把解析值原样传入，因此不同入口的执行频率不同。详见下方详细表格。 | `100` | 单次运行可用 `--checkpoint-interval=N` / `--no-checkpoint` |
 | `HK2_INDEX_PARALLEL` | 知识库解析池并行度。只有严格的正整数字符串（`1`、`4`、`+8`）生效；未设置、空串、`0`、负数、非法值、小数（`1.5`）和科学计数法（`1e3`）走自动：`availableParallelism()`，再 `cpus().length`，最后 4 | `自动（availableParallelism() → cpus().length → 4）` | |
-| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒）。按 `parseInt(value) \|\| 300000` 解析：`0` 与非法值都会回到默认值（与 LLM 超时不同，这**不是** "0 = 禁用" 变量） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
+| `HK2_PLAN_TIMEOUT_MS` | `/kb knowledge learn` 阶段 1 规划超时（毫秒）。按 `parseInt(value) \|\| 300000` 解析：`0` 与非法值都会回到默认值（与 LLM 超时不同，这**不是** “0 = 禁用” 变量） | `300000` | 单次运行可用 `--plan-timeout-ms=N` |
 | `HK2_ENABLE_AUTOUPDATEKB` | `1`：当某轮智能体回退到 bash 搜索源文件时，轮末静默执行增量 `/kb update`。该更新重建派生索引，**并同步解析器管理的 `doc:<relpath>` Eden 条目**（见 `/kb update`） | `0` | 否则提示 y/N |
 | `HK2_ENABLE_AUTO_LEARN` | `1`：轮末抽取的知识条目静默写入 Eden。Holy 无论此标志如何始终提示 y/N | `0` | |
 | `HK2_KB_LEARN_COOLDOWN_MIN` | 正数分钟：若本会话任务的知识捕获已在该窗口内处理过（智能体保存、已回答的提案或模型跳过），则跳过轮末 `[kb learn]` 询问。锚点经 `--resume` 恢复。智能体本轮通过 `kb_save_knowledge` 保存时始终跳过询问 | `0`（关闭） | |
@@ -99,7 +99,7 @@
 | 交互式禁用 | `--no-checkpoint` | 禁用 |
 | 直接 `buildIndex()` 环境变量 | `0`、负数或非法 | 原样传入；几乎每处理一个文件就保存一次 |
 
-交互式 `/kb init` 对 `parseInt(value, 10)` 按 `|| 100` 处理；直接 indexer 调用不套用。
+交互式 `/kb init` 对 `parseInt(value, 10)` 的结果套用 `|| 100`；直接 indexer 调用不套用。
 直接调用没有等价的环境变量禁用值；禁用请使用 `/kb init --no-checkpoint`。
 
 ## 压缩
@@ -125,8 +125,8 @@
 
 | 变量 | 用途 | 默认值 | 说明 |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | 进程环境变量：模型注册表文件首次创建时种子化 `anthropic` 提供商（之后的启动不再扫描） | - | Claude Code 导入读取的是 `~/.claude/settings.json` 中的同名字段——另一条来源（见下文） |
-| `OPENAI_API_KEY` | 进程环境变量：模型注册表文件首次创建时种子化 `openai` 提供商 | - | |
+| `ANTHROPIC_API_KEY` | 进程环境变量：模型注册表文件首次创建时预置（初始化）一个 `anthropic` 提供商（之后的启动不再扫描） | - | Claude Code 导入读取的是 `~/.claude/settings.json` 中的同名字段——另一条来源（见下文） |
+| `OPENAI_API_KEY` | 进程环境变量：模型注册表文件首次创建时预置（初始化）一个 `openai` 提供商 | - | |
 
 ## 遵从的标准终端环境变量
 

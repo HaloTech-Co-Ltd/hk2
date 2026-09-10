@@ -27,7 +27,7 @@
 | [`/review`](#review) | 手动审查已完成的任务 |
 | [`/theme`](#theme) | 自定义工具卡片颜色 |
 | [`/clear`](#clear) | 清空内存中的对话上下文 |
-| [`/compact`](#compact) | 摘要压缩之前的对话 |
+| [`/compact`](#compact) | 将之前的对话压缩为摘要 |
 | [`/help`](#help) | 显示帮助 |
 | [`/quit` / `/exit`](#quit--exit) | 退出（同 Ctrl+D） |
 
@@ -56,8 +56,8 @@
 | `--api=openai\|anthropic` | 提供商 API 方言（提供商级） |
 | `--base-url=URL` | API 端点 base URL（提供商级） |
 | `--api-key=KEY` | API 密钥（提供商级） |
-| `--name=NAME` | 发送给 API 的线上模型代码 |
-| `--id=NEW_ID` | （仅 `set`）重命名模型 id / 引用键——不影响线上代码 |
+| `--name=NAME` | 实际发送给 API 的模型代码（wire 名） |
+| `--id=NEW_ID` | （仅 `set`）重命名模型 id / 引用键——不影响实际发送的模型代码 |
 | `--reasoning=on\|off` | 开启 / 关闭推理 |
 | `--context-window=N` | 上下文窗口大小（token 数） |
 | `--max-tokens=N` | 最大输出 token 数 |
@@ -114,13 +114,14 @@
 ## `/kb`
 
 用法：`/kb <子命令> [参数]`——当前会话项目知识库的生命周期与查询。命令使用当前
-会话绑定的项目；仅在没有会话绑定时使用共享 `projects.json.current` 指针。
+会话绑定的项目：`--project`/`--project-id` 的固定（pin）仅对当前会话生效；未
+固定时使用共享的 `projects.json.current` 指针。
 
 | 子命令 | 作用 |
 |---|---|
-| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（加不加 `--full` 都一样；增量请用 `/kb update`），支持检查点和恢复；仅在已配置模型且未传 `--skip-summary` 时尝试生成摘要，每个非空成功结果独立写入。LLM 调用失败或返回空结果时跳过该条目并继续后续调用；存储写入错误可能中止剩余摘要。空值 `--checkpoint-interval=` 回退到环境变量/默认值处理，禁用请用 `--no-checkpoint` |
+| `init [--full] [--checkpoint-interval=N] [--no-checkpoint] [--no-resume] [--skip-summary]` | 构建知识库——当前实现**始终全量重索引**（加不加 `--full` 都一样；增量请用 `/kb update`），支持检查点和恢复；仅在已配置模型且未传 `--skip-summary` 时尝试生成摘要，每个非空成功结果独立写入。LLM 调用失败或返回空结果时跳过该条目并继续后续调用；存储写入错误可能中止剩余摘要。`--checkpoint-interval=` 空值回退到环境变量/默认值；`0`、负数及非空非法值不会禁用检查点，要禁用请用 `--no-checkpoint` |
 | `update` | 增量更新（sha256 差异）——重建派生的符号索引与图谱，并**同步解析器管理的 `doc:<relpath>` Eden 条目**（新增/变化文档写入或覆盖，已删除或被排除文档的解析器管理条目被移除，Eden 知识索引可能重建）；旧版知识库先备份到 `backup/pre-upgrade-<ts>/` 再迁移；解析器版本变化触发全量重建 |
-| `status` | 各空间统计；通常读取并展示统计。旧 KB 缺少 Supreme Code 时会先尽力创建空的永久条目；失败会被忽略且不单独报告 |
+| `status` | 各空间统计；通常读取并展示统计。旧版知识库缺少最高准则（Supreme Code）时会先尽力创建空的永久条目；失败会被忽略且不单独报告 |
 | `search <查询> [--top-k=N]` | 直接 BM25 + 重排序的符号搜索（默认 top-k=20；不做 LLM 改写、不附加源码切片） |
 | `symbol <名称>` | 按精确名称查找符号 |
 | `neighbors <symbol_id>` | 调用图邻居（符号 id 形如 `<fileId>:<line>`） |
@@ -129,9 +130,9 @@
 | `transform <id> <from> <to>` | 在 holy/eden 之间移动条目（需确认） |
 | `drop` | 删除整个知识库（需确认） |
 
-### status 自愈写入
+### `/kb status` 自愈
 
-`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧知识库，它会先尽力创建空的永久条目；失败会被忽略且不单独报告，因此这个特殊情况可能有写盘副作用。首次加载 `KBRuntime` 也会尝试同样的缺失条目自愈。
+`/kb status` 通常读取并展示统计。对缺少永久 `hk2-supreme-code` 条目的旧版知识库，它会先尽力创建空的永久条目；失败会被忽略且不单独报告，因此这个特殊情况可能有写盘副作用。首次加载 `KBRuntime` 也会尝试同样的缺失条目自愈。
 
 ## `/kb knowledge`
 
@@ -197,20 +198,20 @@
 | `info [<sessionId>]` | 会话信息——无 id 显示当前会话；有 id 显示已存会话的统计（支持唯一前缀匹配） |
 | `list [--limit=N]` | 当前项目的最近会话（默认 20） |
 | `new` | 开始新会话（全新记录） |
-| `resume [<sessionId>]` | 恢复之前的会话（完整还原上下文）；无 id 时恢复项目最近一次之前的会话 |
+| `resume [<sessionId>]` | 恢复之前的会话（完整还原上下文）；无 id 时恢复项目的上一条会话 |
 | `compact` | 手动压缩对话（同 `/compact`） |
 
 `/session new` 保留当前项目与模型选择，开始新的会话记录，并清除当前进程的
-对话 / 任务 / 计划 / 审查快照及计数器。它会将旧会话记录写入磁盘，不会擅自删除
+对话 / 任务 / 计划 / 审查快照及计数器。它会将旧会话记录写入磁盘，不会盲目删除
 项目级 `taskstate.json`。`/session resume` 先准备目标会话记录，再清除旧任务状态
 并应用恢复的消息。
-当保存的 `userRequest` 存在且会话 ID 匹配时恢复任务锚点；进度面板还要求计划有
+当保存的 `userRequest` 存在且会话 ID 匹配时恢复任务锚点；计划面板还要求计划有
 未完成步骤。不会恢复进程内的 `lastCompletedTask` 快照。
 
 ## `/resume`
 
 用法：`/resume [<sessionId>]`——重新打开之前会话的记录并还原完整对话上下
-文（消息、工具调用历史、中断任务状态）。无 id：项目最近一次之前的会话。
+文（消息、工具调用历史、中断任务状态）。无 id：项目的上一条会话。
 等价于 `/session resume`——Claude Code 的惯例。
 
 ## `/remember`
@@ -220,8 +221,8 @@
 - 无参数——列出已记录的事实。
 - 带事实——持久化该条（每会话上限 100 条，每条裁剪到 500 字符；规范化
   去重）。成功持久化后，事实通过一条常驻的 `## Session facts` system 消息
-  注入后续每一轮，并实时刷新。磁盘写入是事实来源：只有存储失败才不会
-  记录该事实。缺少实时刷新 hook 不会阻止 slash 命令持久化事实，只会使
+  注入后续每一轮，并实时刷新。以磁盘写入为准：只有存储失败才会导致该
+  事实未被记录。缺少实时刷新 hook 不会阻止 slash 命令持久化事实，只会使
   当前内存中的系统消息延迟到下一轮或重新加载时刷新。
 - `--project` / `-p`——同时把事实追加到项目级 Eden 条目 `env-facts`
   （跨会话，可被 `kb_search_knowledge` 检索；上限 200 行，追加时去重）。
@@ -255,20 +256,19 @@
 原始任务请求、运行期间排队且用于扩展任务的追加指令以及完成结果（最终回答 + 变更文件 +
 工作区 diff）会发送给审查模型。工具调用、推理过程和中间实现回合会被刻意排除，
 因此无法影响审查（全新视角的回归检查）。
-审查过程实时流式展示；无法解析出判定时显式报 UNKNOWN，绝不伪装成"未发现
-问题"。`--model` 优先于阶段配置的模型
-（`/model set-phase --phase=code-review`），其次才使用会话模型。
+审查过程实时流式展示；无法解析出判定时显式报 UNKNOWN，绝不伪装成“未发现
+问题”。优先级：`--model` > 阶段配置模型（`/model set-phase --phase=code-review`）> 会话模型。
 
 ### 审查模型解析
 
 自动 plan/code 审查与手动 `/review code` 的模型解析不同：
 
-| 审查路径 | 项目阶段引用过期 | 显式缺失 `--model` | 选定模型调用失败 |
+| 审查路径 | 项目阶段引用过期 | 显式指定的 `--model` 无效 | 选定模型调用失败 |
 |---|---|---|---|
-| 自动 plan/code 审查 | 静默使用会话模型 | 不适用 | 告警并跳过 |
-| 手动 `/review code` | 告警并使用会话模型 | 终止 | 告警并跳过 |
+| 自动 plan/code 审查 | 静默使用会话模型 | 不适用 | 警告并跳过 |
+| 手动 `/review code` | 警告并使用会话模型 | 终止 | 警告并跳过 |
 
-手动显式 `--model` 绝不回退；过期阶段引用或阶段解析异常会先告警，再使用会话模型。
+手动显式 `--model` 绝不回退；过期阶段引用或阶段解析异常会先警告，再使用会话模型。
 选定的审查模型调用失败时跳过，不替换为其他模型。
 
 ## `/theme`
@@ -308,7 +308,7 @@ key（解析优先级：精确工具名 > 分组 key > `*` > 内置默认）：`
 命令（无论命令族还是扁平命令）打印完整用法、参数与示例（`/help remember`、
 `/help kb`、`/help exit`）。带子命令的命令族还支持 `/model help set`、
 `/kb knowledge help learn` 等族内帮助形式；扁平命令不支持——`/remember help`
-会记录事实 "help"，`/forget help` 会删除匹配 "help" 的事实，`/clear help`
+会记录事实 “help”，`/forget help` 会删除匹配 “help” 的事实，`/clear help`
 仍会执行清空。
 
 ## `/quit` / `/exit`

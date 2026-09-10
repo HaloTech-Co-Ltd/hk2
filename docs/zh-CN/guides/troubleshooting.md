@@ -18,15 +18,15 @@
 - **参见**：[安装](../getting-started/installation.md)、
   [CLI 与语言支持](../reference/cli-and-language-support.md)。
 
-### 安装器输出 "Warning: npm install failed"
+### 安装器输出 “Warning: npm install failed”
 
 - **原因**：`npm install --omit=optional` 中途失败（例如网络或工具链问题），
-  因此复制出的安装目录可能缺少或未完成原生依赖。
+  因此复制出来的安装目录中，原生依赖可能不完整。
 - **解决**：解决底层问题后，进入实际安装目录（默认 `~/.hk2`；若设置了
   `HK2_INSTALL_DIR` 请进入该目录）执行 `npm install`。
   向 `install.sh` 传 `--no-npm-install` 则是有意跳过该步骤。
 
-### 启动时出现 "AST dispatcher: tree-sitter not available" 警告
+### 启动时出现 “AST dispatcher: tree-sitter not available” 警告
 
 - **原因**：`tree-sitter` 包完全不可加载（未安装、使用了
   `--no-npm-install`，或原生包无法加载）。
@@ -35,7 +35,7 @@
 
 ## 模型与提供商
 
-### "No model configured" / REPL 拒绝与模型对话
+### “No model configured” / REPL 拒绝对话并提示模型未配置
 
 - **原因**：`models.json` 中没有可解析的默认模型（默认值缺失或其提供商 / 模型
   引用已过期）。
@@ -45,11 +45,11 @@
   不存在 `claude` 提供商时运行一次 `hk2 --tui`，从 Claude Code 配置导入。
 - **参见**：[模型、项目与会话](models-projects-and-sessions.md)。
 
-### 提供商报"模型代码不存在"类错误
+### 提供商报“模型代码不存在”类错误
 
 - **原因**：发送的 `name` 带有网关拒绝的修饰（如 `mymodel[1m]`）。
 - **解决**：把上下文窗口提示保留在 `id` 上，用
-  `/model set <ref> --name=<code>` 把 `name` 设为精确的线上代码。
+  `/model set <ref> --name=<code>` 把 `name` 设为实际发送时使用的精确模型代码。
 - **参见**：[模型、项目与会话](models-projects-and-sessions.md#id-与-name)。
 
 ### LLM 调用超时或提供商很慢
@@ -58,29 +58,30 @@
   推理模型仍可能超过 `/kb knowledge learn` 的 300 秒规划预算。
 - **解决**：learn 命令加 `--plan-timeout-ms=600000`，或设置
   `HK2_PLAN_TIMEOUT_MS`；用 `HK2_LLMAPI_TIMEOUT_MS` /
-  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` 全局调整（没有 per-call 或 per-model 超时覆盖时，显式 `0`
-  才对这两个 LLM 超时变量表示“不设超时”；`HK2_PLAN_TIMEOUT_MS` 的 `0` 会回到默认值）。
+  `HK2_LLMAPI_TIMEOUT_MS_SIMPLE` 全局调整（没有单次调用（per-call）或
+  每模型（per-model）超时覆盖时，显式 `0` 才对这两个 LLM 超时变量表示“不设超时”；
+  `HK2_PLAN_TIMEOUT_MS` 的 `0` 会回到默认值）。
 - **参见**：[环境变量](../reference/environment-variables.md)。
 
 ### 瞬时失败自动重试——请求会不会执行两次？
 
 - **症状**：请求以 HTTP 500/502/503/504 或途中的传输层错误失败后重试。
-- **原因**：请求*可能已经执行*的失败（请求发出后的 HTTP 5xx）默认重试
+- **原因**：对于结果不确定的失败（请求已发出后收到 HTTP 5xx，可能已执行），默认重试
   （`HK2_LLM_RETRY_UNKNOWN_POST=1`）——对交互式使用而言，整轮任务报废比
-  偶发重复请求更糟。提供商无幂等键。连接建立失败与 HTTP 408/429 属于
-  结果确定安全的失败，始终重试。
+  偶发重复请求更糟。提供商无幂等键。连接建立失败与 HTTP 408/429 的结果是确定的，
+  必然可安全重试，始终重试。
 - **解决**（若在意重复计费）：设 `HK2_LLM_RETRY_UNKNOWN_POST=0`。重试次数
   受 `HK2_LLMAPI_NUMOFRETRIES`（默认 10）约束。
 - **参见**：[环境变量](../reference/environment-variables.md)。
 
 ### 阶段模型不可达 / 引用过期
 
-- **过期 / 无法解析的 ref**：不会输出告警；`resolveModelRef` 返回 `null` 时，
+- **过期 / 无法解析的 ref**：不会输出警告；`resolveModelRef` 返回 `null` 时，
   阶段静默使用会话模型。配置中的 ref 仍保留，也不增加 fallback/skip 审计事件。
-- **解析异常**：调用方告警并使用会话模型；这不同于过期 ref 返回 `null`。
+- **解析异常**：调用方警告并使用会话模型；这不同于过期 ref 返回 `null`。
 - **已解析模型的调用失败**：`HK2_ENABLE_PHASEMODEL_FALLBACK`（默认 1）让
-  `rewrite-query` / `request-assess` 改用会话模型重跑；设为 0 则告警并跳过。
-  审查阶段（`plan-review`、`code-review`）告警并跳过，不替换审查者。这些
+  `rewrite-query` / `request-assess` 改用会话模型重跑；设为 0 则警告并跳过。
+  审查阶段（`plan-review`、`code-review`）警告并跳过，不替换审查者。这些
   fallback/skip 结果会记入会话记录。
 - **解决**：用 `/model list` 检查阶段引用，或用
   `/model set-phase --phase=<name> --clear` 清除覆盖。
@@ -94,20 +95,20 @@
   快速通道输入会跳过评估，
   不使用 tier 2。
 - **解决**：检查 `HK2_ENABLE_FOLLOWUP_FASTLANE`、
-  `HK2_ENABLE_CONTINUATION_UPGRADE` 与置信度阈值。升级复用已有的开启推理的评估
+  `HK2_ENABLE_CONTINUATION_UPGRADE` 与置信度阈值。升级会复用之前带推理的评估
   结果，不增加 LLM 调用。
 
 ### 以 `/` 开头的路径被当成命令
 
-- **原因**：只有符合 `^/[A-Za-z][A-Za-z0-9_-]*$` 的单段 ASCII 命令头才具有命令形状。
-  `/tmp/example.md` 等路径与路径粘连的正文属于普通输入；`/mdoel` 是命令形状的
-  拼写错误，可能得到建议。
-- **解决**：将路径样式内容作为普通文本输入。共享守卫覆盖分发、任务中捕获和多行
-  粘贴收集。
+- **原因**：只有首段为单个 ASCII 段且匹配 `^/[A-Za-z][A-Za-z0-9_-]*$` 的输入才会被视为命令。
+  `/tmp/example.md` 等路径与路径粘连的正文属于普通输入；`/mdoel` 这类拼写错误
+  形似命令，可能收到纠正建议。
+- **解决**：将路径样式内容作为普通文本输入。同一套守卫逻辑同时作用于命令分发、
+  任务执行中的输入捕获和多行粘贴收集。
 
 ## 项目与知识库
 
-### "KB not built for project <name>. Run /kb init before chatting."
+### “KB not built for project <name>. Run /kb init before chatting.”
 
 - **原因**：hk2 以知识库为基础；对话前必须先初始化知识库。
 - **解决**：执行 `/kb init`。若项目尚未注册：先
@@ -124,7 +125,7 @@
 ### `/kb knowledge learn` 规划似乎卡住后失败
 
 - **原因**：阶段 1 规划的 LLM 调用超过 300 秒预算，或返回了不可用的计划。
-- **解决**：hk2 会先关闭推理后重试一次。在代码模式中，接受的计划会按原结果执行，
+- **解决**：hk2 会禁用推理重试一次。在代码模式中，接受的计划会按原结果执行，
   不会自动补回遗漏文件；计划不可用或被丢弃时回退到保证覆盖所选范围内全部索引文件的确定性
   目录分组。文档模式会核对批次是否覆盖每个成功读取、解析且非空的研读分片，并为规划遗漏的文件
   补充单文件批次。其他错误仍可能终止运行或跳过内容。慢速提供商可提高预算：
@@ -140,7 +141,7 @@
 
 ## 前端
 
-### TUI 带提示回落到 REPL
+### TUI 带提示回退到 REPL
 
 - **消息**：`[tui] this terminal does not support the TUI (needs a TTY
   stdin/output and TERM != dumb) — using the line REPL.`
@@ -174,7 +175,7 @@
 - **原因**：它实际指向项目之外的位置；真实路径按同一套规则复验。
 - **解决**：为*真实*目标路径添加 `allow` 规则（两种拼写均可匹配）。
 
-### 配置规则被忽略并出现加载告警
+### 配置规则被忽略并出现加载警告
 
 - **原因**：条目非法——权限字符错误（如 `"allow": "q"`）、缺少
   `allow`/`deny`、或两者同时存在。仅丢弃该条目；其余规则继续生效。

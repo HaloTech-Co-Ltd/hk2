@@ -179,7 +179,7 @@ flowchart TB
 1. Front-end reads a line → slash? dispatch → otherwise `runTurn`
    (`src/commands/turn.js`).
 2. Gates (model, project, KB) → auto-compact check → follow-up fast lane
-   (fast-lane turns skip steps 3's pipeline entirely).
+   (fast-lane turns skip step 3's pipeline entirely).
 3. Query rewrite (`rewrite_query.js`) → KB retrieval (`graph.js` over
    `code_search.js` + `kb_runtime.js`) → reasoning-enabled clarity assessment
    (optional menu → second rewrite/retrieve pass) → possible tier-2

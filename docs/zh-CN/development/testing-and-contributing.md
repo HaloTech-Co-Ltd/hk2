@@ -8,10 +8,10 @@ CLA、DCO 或分支策略要求。
 
 ## 环境要求
 
-- 最低技术版本：Node.js >= 18。Node 18 与 20 已 EOL；请使用仍受支持的版本
+- 技术上的最低要求：Node.js >= 18。Node 18 与 20 已 EOL；请使用仍受支持的版本
   （首选 Node 24 Active LTS，Node 22 Maintenance LTS 可作兼容选择），并在
   目标平台确认 Tree-sitter 绑定——见[安装](../getting-started/installation.md)。
-- 一份仓库检出并已安装依赖：
+- 一份已安装依赖的仓库检出：
 
 ```bash
 git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
@@ -45,7 +45,7 @@ node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 - 需要真实终端的套件使用 PTY 运行器（`_pty_runner.js`）或经 `_tty_env.js`
   构造类似 TTY 的环境；这些测试在管道 / CI 环境中行为可能不同（或被跳过）——
   改动 TUI/REPL 代码时，建议在真实终端中运行完整套件。
-- 访问持久化状态的测试应在导入解析路径的模块之前，将 `HK2_HOME` 指向
+- 访问持久化状态的测试应在导入会解析 `HK2_HOME` 的模块之前，将 `HK2_HOME` 指向
   临时目录；`_learn_setup.js` 实现了这一模式。新测试应沿用，并检查子进程
   的环境；测试通过本身不能证明文件系统隔离。
 
@@ -57,7 +57,7 @@ node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 | 环境变量 | 解析代码、相关测试（如 `llm_timeout_env.test.js`），以及两种语言的[环境变量](../reference/environment-variables.md) |
 | 工具注册表 | `lib/agent/tools.js`、工具测试，以及两种语言的[智能体工具](../reference/agent-tools.md) |
 | 权限规则语义 | `lib/config/setting.js`、`test/permissions.test.js`，以及两种语言的[安全与权限](../guides/security-and-permissions.md) |
-| 配置 Schema 字段 | `lib/config/home.js`、权限相关时的 `setting.example.json`，以及两种语言的[配置](../reference/configuration.md) |
+| 配置 Schema 字段 | `lib/config/home.js`、如涉及权限还需 `setting.example.json`，以及两种语言的[配置](../reference/configuration.md) |
 | 解析器 / 语言映射 | `lib/parser/*`、`package.json`（语法依赖），以及两种语言的[CLI 与语言支持](../reference/cli-and-language-support.md) |
 | 文档 | 你所改页面的**两种语言版本**（`docs/en/` 与 `docs/zh-CN/`）——见[文档维护](documentation-maintenance.md) |
 
@@ -88,4 +88,4 @@ node --test --test-name-pattern="deny beats allow" test/permissions.test.js
 
 - [文档维护](documentation-maintenance.md)——文档检查在提交前清单中的位置
 - [架构](architecture.md)——你的改动落在哪一层
-- [安装](../getting-started/installation.md)——`npm link` 开发者安装
+- [安装](../getting-started/installation.md)——通过 `npm link` 完成开发者安装

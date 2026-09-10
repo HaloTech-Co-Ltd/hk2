@@ -49,7 +49,7 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 ### `edit`
 
 在单个文件中做精确字符串替换。接受 `{edits:[{oldText,newText}]}`
-（推荐——一次调用完成多组编辑）或 `{old_string,new_string}`（单处编辑）。多项
+（推荐——一次调用完成多组互不重叠的编辑）或 `{old_string,new_string}`（单处编辑）。多项
 编辑按数组顺序作用于持续变化的内存内容；除非设置 `replaceAll:true`，每个 `oldText` 必须在处理当时唯一，
 后续项可以匹配前序项生成的文本。后续项失败时不会写盘。可选 `tag`
 （来自先前 `read`/`kb_outline` 的 shortHash）在当前文件 hash 与所提供的
@@ -118,8 +118,8 @@ KB 索引快照 tag 不同的情况下拒绝编辑。写入：是。
 是（apply 时）。
 
 **Proposal 生命周期**：proposal 只存在于当前进程内存，进程退出或崩溃即丢失。
-10 分钟 TTL 从创建时间计算，不是滑动 TTL；`lastTouched` 只用于 LRU 排序，不会
-延长创建时间。`MAX_PROPOSALS` 为 16，但 `stage()` 在插入前才 prune；第 17 个 proposal 刚暂存后，
+10 分钟 TTL 从创建时间计算。TTL 不是基于 `lastTouched` 的滑动窗口；
+`lastTouched` 仅用于 LRU 排序。`MAX_PROPOSALS` 为 16，但 `stage()` 在插入前才 prune；第 17 个 proposal 刚暂存后，
 进程可能暂时保留 17 个，直到后续 prune 才淘汰 LRU 条目。成功 apply、
 discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒的 apply 不消费；
 非法 action 会在读取 proposal 前返回，也不消费。过期、淘汰、已消费或进程退出后
@@ -130,18 +130,19 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 不会暂存局部 proposal；请缩小 `paths` 后重试。每个变更文件的 diff 使用全文件、
 按行 LCS 生成，最多允许 4,000,000 个行对单元。预算取决于变更前后整个文件的
 行数，因此缩小匹配的替换片段不能降低预算；请排除该文件或改用其他编辑工具。
+
 ## 规划工具
 
 ### `plan`
 
-向用户提出执行计划供确认——这是分诊智能体在判断任务需要选择策略时使用的接口。
-模型可见 Schema 要求 `summary` 与 `steps`。提示词建议提供一行 `summary` 和 2–5 个有序 `steps`，每步有 `goal` 与 2–4 个
+当复杂任务值得显式的策略分解时提出执行计划。带交互确认回调时由用户逐项选择
+策略，否则自动接受推荐策略。模型可见 Schema 要求 `summary` 与 `steps`。提示词建议提供一行 `summary` 和 2–5 个有序 `steps`，每步有 `goal` 与 2–4 个
 候选 `strategies`（`name`、`description`、`recommended`），并标记恰好一个推荐项。
-内部归一化会把缺失或非字符串 `summary` 变为空字符串；只强制至少 2 个有效步骤、
-每步至少 2 个有效策略，不强制最大数量。recommended 数量异常时会归一化为第一个
-策略。交互模式呈现逐步选择并返回 `{ confirmed: true, plan: ... }`，表示
-用户通过菜单确认；没有确认回调时自动接受推荐项，返回
-`{ confirmed: true, plan: ..., autoAccepted: true }`，不代表用户确认。取消返回
+针对绕过 schema 的直连/内部调用的运行时归一化会把缺失或非字符串 `summary`
+变为空字符串，只强制至少 2 个有效步骤、每步至少 2 个有效策略，不强制最大
+数量；recommended 数量异常时会归一化为第一个策略。带确认回调时返回
+`{ confirmed: true, plan: ... }`；没有确认回调时返回
+`{ confirmed: true, plan: ..., autoAccepted: true }`。取消返回
 `{ cancelled: true, ... }`，计划数据无法通过内部校验时返回 `{ error: ... }`。写入：否。
 
 ### `plan_step`
@@ -157,13 +158,14 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 
 符号与图谱元数据大多来自已加载的内存索引，但这并不意味着完全不访问文件系统：
 `kb_search` 默认会从磁盘加载源码切片，`kb_knowledge` 也可能回退到
-磁盘知识存储（指定 `space` 时直接读盘，或 runtime 缓存未命中时）。镜像被
-与被拒绝源文件对应的内容会在受过滤通道中被抑制（元数据保持可见——见
+磁盘知识存储（指定 `space` 时直接读盘，或 runtime 缓存未命中时）。与被
+拒绝（权限拦截）源文件内容互为镜像的内容，会在受过滤的通道中被抑制（元
+数据保持可见——见
 [安全与权限](../guides/security-and-permissions.md)）。
 
 | 工具 | 用途 |
 |---|---|
-| `kb_search` | 自然语言 / 关键词符号搜索——BM25 + 名称匹配重排，返回文件路径、行范围与摘要。有 LLM 且 `skip_rewrite` 不为 true 时改写查询；前 3 个结果携带 ±15 行源码切片（`with_slice=false` 禁用）。`top_k`：包括 0 在内的假值默认使用 10 的结果预算；其余数值归一化到 5–50，但匹配不足时实际返回数可以少于 5 |
+| `kb_search` | 自然语言 / 关键词符号搜索——BM25 + 名称匹配重排，返回文件路径、行范围与代码片段。有 LLM 且 `skip_rewrite` 不为 true 时改写查询；前 3 个结果携带 ±15 行源码切片（`with_slice=false` 禁用）。`top_k`：包括 0 在内的假值默认使用 10 的结果预算；其余数值归一化到 5–50，但匹配不足时实际返回数可能低于预算 |
 | `kb_symbol` | 按精确标识符查找符号；返回全部匹配候选 |
 | `kb_outline` | 来自已加载知识库索引的文件大纲——每个符号的名称 / 种类 / 行号 / 签名 / 父类 / 子项数；不读取源码正文，但可能执行权限 / 路径元数据检查；不使用 `SOURCE_EXT_RE`，已索引文件均可查询，tag 仅在存在文件 hash 时返回 |
 | `kb_neighbors` | 某符号的旧版一跳**出向**调用图邻居（它调用了谁；无 direction 参数——要找调用者请用 `kb_callchain` 的 `direction=backward`/`both`） |
@@ -177,15 +179,15 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 | 工具 | 用途 |
 |---|---|
 | `kb_knowledge` | 按 id 查找知识条目——同时检索 Holy 与 Eden，返回完整条目（标题、简介、keyFiles、keySymbols、keywords、space） |
-| `kb_search_knowledge` | 按自然语言查询搜索两个知识空间；每个空白分隔 token 出现次数在合并的 id/标题/简介/关键词 haystack 中各最多贡献 1 个同等分值，重复 token 可重复贡献，平分按 `allKnowledge()` 顺序保留，且不筛除 superseded Eden 条目。`top_k` 为假值（包括 0）时默认 5，其余数值钳制到 1–20 |
-| `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载，但不清除 runLoop 只读缓存：同一循环内此前已成功缓存过的相同调用可能继续返回旧结果，直到缓存失效调用或进入新循环；失败结果不缓存 |
+| `kb_search_knowledge` | 按自然语言查询搜索两个知识空间；每个 token 的每次出现在合并检索域（id/标题/简介/关键词）中最多计 1 个等权分，重复 token 可重复贡献，平分按 `allKnowledge()` 顺序保留，且不筛除 superseded Eden 条目。`top_k` 为假值（包括 0）时默认 5，其余数值钳制到 1–20 |
+| `kb_save_knowledge` | 把知识条目持久化到 Holy（需用户批准）或 Eden（可自动学习）；KB runtime 立即热重载，但不清除 runLoop 只读缓存：同一循环内此前已成功缓存过的相同调用可能继续返回旧结果，直到缓存失效调用或进入新循环；失败结果不缓存；通过该工具保存即视为已完成本轮的知识捕获 |
 
 ## 会话工具
 
 ### `remember`
 
 持久化一条简短、自包含的会话事实（环境端点与地址、端口、版本、账号
-或机器名、部署约束、"总是用 X 跑测试"这类显式偏好）。结果契约是显式的：
+或机器名、部署约束、“总是用 X 跑测试”这类显式偏好）。结果契约是显式的：
 持久化回调写入成功返回 `ok:true`；缺少持久化回调，或回调返回
 `null`/`false`，返回 `ok:false`（模型会被提示改为在回答中陈述该事实）；
 回调抛出异常则返回 `error`。成功持久化后，事实通过一条紧跟主系统提示词
@@ -196,13 +198,13 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 
 边界（由模型收到的工具准则约束）：
 
-- 每次调用一条事实，表述自包含（"staging endpoint 192.0.2.10"、
-  "PostgreSQL 16.2"、"用 npm 不用 yarn"）。
-- 只要事实——绝不包括密钥本身。可复用的**代码**知识属于
+- 每次调用一条事实，表述自包含（“staging endpoint 192.0.2.10”、
+  “PostgreSQL 16.2”、“用 npm 不用 yarn”）。
+- 只记录事实——绝不包括密钥本身。可复用的**代码**知识属于
   `kb_save_knowledge`，不在此处；任务步骤与代码发现不是事实。
 - 每会话上限 100 条、每条 500 字符；写入即刷新常驻消息，同一循环中
   后续 LLM 调用立即可见。
-- 尽力而为：存储失败降级为"本轮无事实"，不会阻止后续处理。
+- 尽力而为：存储失败降级为“本轮无事实”，不会阻止后续处理。
 
 用户通过 `/remember` / `/forget` 驱动同一存储；压缩时的一次抽取也会
 *尝试*保留即将被总结掉的事实——该抽取属于尽力而为（见
@@ -212,7 +214,7 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 
 `mcp__<server>__<tool>`——通过 `/model add-mcpserver` 挂载到当前模型的
 MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智能体回合在
-内置工具之后挂载；不可达的服务器跳过并警告。见
+内置工具之后挂载；不可达的服务器会被跳过并给出警告。见
 [模型、项目与会话](../guides/models-projects-and-sessions.md#mcp-服务器)。
 
 ## 知识库优先策略
@@ -222,7 +224,7 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 - `kb_outline`、`kb_symbol` 与图谱工具主要读取已加载的内存索引，无需
   重新解析；`kb_outline` 不读取源码正文，但权限 / 路径元数据过滤可能访问
   文件系统。直接 outline 查询不受 `SOURCE_EXT_RE` 限制。`kb_search` 的排序来自索引中的 BM25，但默认会为前 3 个结果
-  从文件系统加载 ±15 行源码切片（受读取权限约束；`with_slice=false` 关闭）。
+  从文件系统加载 ±15 行源码切片（超过 512 KiB 的文件跳过；受读取权限约束；`with_slice=false` 关闭）。
 - 对代码文件调用 `read` 会前置知识库大纲，使智能体在查看内容前先了解
   结构。
 - `bash grep/find/cat` 与直接 `read` 会得到 `[kb-first policy hint]` 前置
@@ -241,7 +243,7 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 > （`.md`、`.json`、`.pdf`、`.docx`……）。它们因此可能把这类文件当作
 > UTF-8 文本读取；对包含文档/二进制文件的目录树执行目录级 `ast_edit`，
 > 理论上可能产生错误匹配与破坏性重写。目录级重写请限定在明确的文本
-> 源码集合。（两者均为正则近似，非真正 AST 边界匹配——见"暂缓的能力"。）
+> 源码集合。（两者均为正则近似，非真正 AST 边界匹配——见“暂缓的能力”。）
 
 ## 模式语法（`ast_grep` / `ast_edit`）
 
@@ -278,7 +280,8 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
    的文件数，不是已确认恢复成功数。
 
 **已知限制**：`ast_edit` 使用正则近似而不是精确 AST 匹配。目录展开超过 2000 个
-候选文件时会关闭失败，不会把前 2000 个文件暂存为局部 proposal。
+候选文件时会直接失败（fail closed，宁可不执行也不暂存部分结果），不会把前
+2000 个文件暂存为局部 proposal。
 `SOURCE_EXT_RE` 还包含 `.pdf` 与 `.docx`，因此大范围 `ast_grep` / `ast_edit`
 可能把文档或二进制内容当作 UTF-8 文本处理；请使用明确的文本源码路径或 glob。
 
@@ -288,7 +291,7 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 集成工作：
 
 - **LSP 集成**——语言服务器、JSON-RPC 协商、诊断流。知识库符号索引已覆盖
-  大多数"IDE 知道什么？"类查询；LSP 仅对实时诊断与跨文件重命名有额外
+  大多数“IDE 知道什么？”类查询；LSP 仅对实时诊断与跨文件重命名有额外
   价值。
 - **DAP 调试**——调试适配器（gdb、lldb-dap、debugpy、dlv）、断点 / 单步 /
   变量协议。范围与 LSP 相当。

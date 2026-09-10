@@ -73,12 +73,12 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
 
 - `api`——提供商级方言：`openai` 或 `anthropic`。
 - `id`——`provider/id` 中的引用键；可携带尾部上下文窗口提示如 `[1m]`。
-- `name`——实际发送到 API 请求体的线上模型代码；请设为服务商期望的精确
-  字符串。将提示后缀保留在 `id` 上，`name` 只填写服务商要求的模型名称，可避免网关报"模型代码
-  不存在"。
+- `name`——实际发送到 API 请求体的模型代码；请设为提供商期望的精确
+  字符串。将提示后缀保留在 `id` 上，`name` 只填写提供商要求的模型名称，可避免网关报“模型代码
+  不存在”。
 - `modelType`——`/model add|set --model-type` 校验的家族声明；默认
   `generic`。`/model types` 列出全部取值。
-- `modelOptions`——模型特性参数对象（如 glm-5.3 家族的
+- `modelOptions`——模型专属的选项对象（如 glm-5.3 家族的
   `{"reasoning_effort":"max"}`），并根据类型声明的特性进行校验。由
   `/model add|set --model-options` 写入；运行时读取的是 `modelOptions`
   键，手工编辑时必须使用这个精确名称。
@@ -121,8 +121,8 @@ chmod 为 0600（尽力而为——chmod 失败会被忽略；其他平台未必
 
 - `current`——共享注册表的默认项目指针（UUID）；`/project list` 用 `*`
 标记它，`/project set current` 修改它。`hk2 --project=<名称>` /
-  `--project-id=<id>` 只固定当前会话，不改写该指针；多个进程可以同时绑定不同
-  的会话项目。
+  `--project-id=<id>` 只为该会话固定项目，不改写该指针；多个进程可同时各自固定
+  不同的项目。
 - `sourcePath`——项目所在路径；`sourceRoot`——被索引的子目录（为空时整棵
   树）。
 - `includeGlobs` / `excludeGlobs`——`/kb init` 使用的 glob 集合；默认值
@@ -184,7 +184,7 @@ $HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
 └── backup/                   # 升级前知识快照
 ```
 
-解析器管理的文档条目使用 `doc:<relpath>` Eden 命名空间。磁盘文件名会被安全化，
+解析器管理的文档条目使用 `doc:<relpath>` Eden 命名空间。磁盘文件名会做清理处理，
 但条目 id 保留 `doc:` 前缀；文档变化、删除或排除后，`/kb init` 与 `/kb update`
 可能覆盖或移除这些条目。手工撰写的文档知识应使用其他 id。
 
@@ -197,17 +197,17 @@ $HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
 - **续接分类状态**——`lastCompletedTask` 的原始请求快照仅存在于当前进程内存，
   不写入磁盘。`/session new`、任何恢复操作以及切换到不同项目时会清理它；
   `/project set current` 指向本会话已经绑定的同一项目时是 no-op，不会清理。
-  恢复的会话会回退到确定性的 transcript 扫描。tier-2 continuation upgrade 由
+  恢复的会话会回退到确定性的会话记录扫描。tier-2 continuation upgrade 由
   `HK2_ENABLE_CONTINUATION_UPGRADE` 与
   `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` 控制。
 - **会话记录**——`~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。每个成功完成的
   工具轮次会先记录完整 assistant 消息，再记录关联的工具结果，以保留调用/结果
-  顺序；最终的不含工具调用答案是独立消息。回合还会记录元数据（`assess`、`rewrite`、
+  顺序；最终那条不含工具调用的回答是独立消息。回合还会记录元数据（`assess`、`rewrite`、
   `graph`、`codeReview`、`learned_knowledge`、用量统计）。中断时，已流式显示的
-  partial assistant 文本留在屏幕上，不作为完整 assistant 回合写入；悬空的 tool
-  call 会清理，中断任务状态单独写入 `taskstate.json`。`--resume` 重放 transcript
-  并恢复 task state。`session.lastAnswer` 与代码审查输入只使用最终的不含工具调用
-  答案；旧版扁平记录只能按其原有精度重放。
+  partial assistant 文本留在屏幕上，不作为完整 assistant 回合写入；悬空的工具调用
+  会被清理，中断任务状态单独写入 `taskstate.json`。`--resume` 重放会话记录
+  并恢复 task state。`session.lastAnswer` 与代码审查输入只使用最终那条不含工具调用
+  的回答；旧版扁平记录只能按原有保真度原样重放。
 - **会话事实**——`~/.hk2/sessions/<projectId>/<sessionId>.facts.json` 存放
   经 `/remember` / `remember` 工具记录的、免受压缩影响的事实（每会话上限
   100 条）。`/remember --project` 还会追加到项目级 Eden 条目 `env-facts`
@@ -220,7 +220,7 @@ $HK2_KB_DIR/<projectId>/  # 默认：$HK2_HOME/kb/<projectId>/
 advisory lockfile（`models.json.lock` 与 `projects.json.lock`）。它们会串行化同一
 进程的调用，并协调配合该协议的多个 hk2 进程。锁元数据包含 PID、Linux
 `/proc` 可用时的进程启动标识，以及随机所有权 token。释放时只有 token 仍匹配
-才删除锁；进程死亡、PID 复用与遗留的陈旧恢复门都可以回收。
+才删除锁；进程死亡、PID 复用与遗留的 recovery gate（恢复关卡）也可被回收。
 
 这层保护只覆盖使用 `withModels()` 或 `withProjects()` 的变更；它不是横跨两个
 注册表、知识库文件或手工编辑的事务。锁属于 advisory 机制；无法提供所需独占
@@ -236,9 +236,9 @@ Claude Code 首启导入会先做一次不加锁的快速 no-op 检查；真正�
 
 `setting.json`（全局）与 `settings/<project-id>/setting.json`（项目级）存放
 文件系统权限规则。完整语义——最长前缀解析、deny/allow 优先级、符号链接
-处理、智能体只读保证——在
-[安全与权限](../guides/security-and-permissions.md) 中只讲一次；带注释的
-示例见 `setting.example.json`。
+处理、智能体只读保证——统一在
+[安全与权限](../guides/security-and-permissions.md) 中说明，此处不再重复；带
+注释的示例见 `setting.example.json`。
 
 ## 相关文档
 

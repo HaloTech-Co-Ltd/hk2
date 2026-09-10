@@ -4,7 +4,7 @@
 
 **让项目知识成为下一次开发的起点。**
 
-hk2 是一个以知识库驱动的编码智能体。它将代码结构、设计知识与任务经验
+hk2 是一个以项目知识库驱动的编码智能体。它将代码结构、设计知识与任务经验
 组织成可检索的项目上下文，帮助你理解代码、推进修改，并将有价值的发现
 沉淀下来，供后续任务检索复用。
 
@@ -15,7 +15,7 @@ hk2 是一个以知识库驱动的编码智能体。它将代码结构、设计�
 ## 为什么是 hk2
 
 理解一个项目，需要知道代码如何连接、设计为何如此、修改应遵循哪些约定。
-这些认识值得跨越一次会话，成为项目持续积累的资产。
+这份理解不应随一次会话的结束而消失，而应成为项目持续积累的资产。
 
 hk2 将符号索引、代码知识图谱与可维护的知识条目结合起来，引导智能体优先
 检索项目知识，再结合源码核验并执行任务。你可以沿调用链探索陌生代码，
@@ -27,13 +27,13 @@ hk2 将符号索引、代码知识图谱与可维护的知识条目结合起来�
 
 ## 核心能力
 
-- **沿代码关系理解项目**——基于 Tree-sitter 的符号索引与代码知识图谱，
+- **理清代码中的关联关系**——基于 Tree-sitter 的符号索引与代码知识图谱，
   查询调用链、类继承和导入关系，将检索结果与源码关联起来。
 - **让知识跨任务复用**——Holy Space（稳定设计知识）、Eden Space（目录与
   摘要）、Index Space（检索索引与图谱）分层组织项目上下文；深度研读可从
   代码与文档中提炼可复用的知识条目。
 - **让项目约定进入工作流**——项目最高准则（Project Supreme Code）将已保存
-  的规则作为高优先级指引注入系统提示；模型遵从仍需核验。本地工具提供
+  的规则作为高优先级指引注入系统提示；模型是否遵从仍需核验。本地工具提供
   读、写、执行权限控制，详见[安全与权限](docs/zh-CN/guides/security-and-permissions.md)。
 - **让复杂任务有迹可循**——交互式计划确认、实时进度，以及可选的计划审查
   与代码审查，帮助你评估方案并检查完成结果。
@@ -42,10 +42,10 @@ hk2 将符号索引、代码知识图谱与可维护的知识条目结合起来�
 
 ## 环境要求
 
-- 软件包要求 Node.js >= 18；受支持版本的选择与原生绑定兼容性见
+- hk2 需要 Node.js >= 18；受支持版本的选择与原生绑定兼容性见
   [安装指南](docs/zh-CN/getting-started/installation.md)。
 - `npm install` 构建 Tree-sitter 原生绑定。绑定不可用时，多数语言可回退到
-  正则解析；C# 没有此回退。
+  正则解析；C# 除外。
 
 ## 安装
 
@@ -66,7 +66,7 @@ git clone https://github.com/HaloTech-Co-Ltd/hk2.git hk2 && cd hk2
 hk2
 ```
 
-在 REPL 中完成以下三步。将模型名称、服务地址、密钥与项目路径替换为你的
+在 REPL 中完成以下三步。将模型名称、API 端点、密钥与项目路径替换为你的
 实际配置；示例使用本地 OpenAI 兼容服务，`src` 表示项目的源码子目录。
 
 ```text
@@ -82,7 +82,7 @@ hk2
 登录是如何校验密码的？
 ```
 
-建库后即可提问。需要进一步提炼项目知识时，可选运行 `/kb knowledge learn`；
+索引完成后即可提问。需要进一步提炼项目知识时，也可以运行 `/kb knowledge learn`；
 处理大型项目可能需要更多时间与模型用量。`hk2 --tui` 也支持从 Claude Code
 导入模型配置，见[模型配置](docs/zh-CN/guides/models-projects-and-sessions.md)。
 
@@ -93,7 +93,7 @@ hk2(myapp|Eden/9 Holy/1|local/mymodel)> 登录是如何校验密码的？
 ✎ thinking …
 ⚡ kb_search("verify password login")
 ⚡ read(<检索命中的源码文件>)
-login() 将输入口令与已存哈希比对——相关符号与知识条目均来自知识库检索。
+login() 将用户提交的密码与已存储的哈希进行比对——相关符号与知识条目均来自知识库检索。
 ```
 
 更多见[快速开始](docs/zh-CN/getting-started/quick-start.md)。
@@ -102,7 +102,7 @@ login() 将输入口令与已存哈希比对——相关符号与知识条目均
 
 完整文档位于 `docs/`，中英文一一对应：
 
-- **快速开始**——[安装](docs/zh-CN/getting-started/installation.md) ·
+- **入门**——[安装](docs/zh-CN/getting-started/installation.md) ·
   [快速开始](docs/zh-CN/getting-started/quick-start.md)
 - **核心概念**——[知识库](docs/zh-CN/concepts/knowledge-base.md) ·
   [知识图谱与检索](docs/zh-CN/concepts/knowledge-graph-and-retrieval.md) ·
@@ -128,10 +128,11 @@ login() 将输入口令与已存哈希比对——相关符号与知识条目均
 ## 支持的语言
 
 C/C++、C#、JavaScript/TypeScript/TSX、Python、Go、Rust、Java、Kotlin、
-Scala、Ruby、PHP、Bash/Zsh 使用原生 Tree-sitter 解析；语法不可用时多数语言
-可回退到正则解析（C# 除外），Swift、lex/yacc 也有正则解析支持。
+Scala、Ruby、PHP、Bash/Zsh 使用原生 Tree-sitter 解析；缺少 Tree-sitter
+语法（grammar）时，多数语言可回退到正则解析（C# 除外），Swift、lex/yacc
+也有正则解析支持。
 Markdown、JSON、YAML、HTML、SGML、PDF、
-Word 与 PowerPoint 走文档解析。详见
+Word 与 PowerPoint 则由文档解析器处理。详见
 [CLI 与语言支持](docs/zh-CN/reference/cli-and-language-support.md)。
 
 ## 开发

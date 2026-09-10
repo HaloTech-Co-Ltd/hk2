@@ -9,7 +9,7 @@
 ## 1. 安装并启动
 
 ```bash
-./install.sh        # 在仓库根目录执行（见“安装”）
+./install.sh        # 在仓库根目录执行（见[安装](installation.md)）
 hk2                 # 进入交互式 REPL
 ```
 
@@ -31,7 +31,7 @@ TTY 终端；不满足条件时自动回退到 REPL）。
 导入其中的模型配置。不满足这些条件时，请手动配置模型。
 详见 [REPL 与 TUI](../guides/repl-and-tui.md#零配置首启)。
 
-`/model list` 查看注册表；`/model show` 查看解析后的默认模型。
+`/model list` 查看注册表；`/model show` 查看实际生效的默认模型。
 
 ## 3. 注册项目
 
@@ -77,8 +77,8 @@ BM25 符号索引与代码知识图谱。在已配置模型（第 2 步）且未
 登录是如何校验密码的？
 ```
 
-纯文本即发送给智能体的消息。智能体可以结合会话上下文、检索到的知识库上下文
-以及源码工具回答项目问题。详细的请求流程见[智能体工作流](../concepts/agent-workflow.md)。
+直接输入的纯文本会作为消息发送给智能体。智能体可以结合会话上下文、检索到的
+知识库上下文以及源码工具回答项目问题。详细的请求流程见[智能体工作流](../concepts/agent-workflow.md)。
 
 ## 7. 显式查询知识库
 
@@ -92,7 +92,7 @@ BM25 符号索引与代码知识图谱。在已配置模型（第 2 步）且未
 
 - `/kb search`——BM25 + 重排序的符号搜索
 - `/kb symbol`——按精确名称查找符号
-- `/kb neighbors <fileId>:<line>`——某符号 id 的调用图邻居
+- `/kb neighbors <fileId>:<line>`——某符号 ID 的调用图邻居
 - `/kb knowledge list` / `show`——浏览 Holy 与 Eden 知识条目
 
 上面的符号名、符号 ID 与知识条目 ID 均为示例；请使用你实际项目中搜索和
@@ -105,7 +105,7 @@ BM25 符号索引与代码知识图谱。在已配置模型（第 2 步）且未
 /project list
 /project set current otherapp      # 切换（当前会话保存到原项目下）
 /session list
-/session resume                    # 最近一次之前的会话
+/session resume                    # 恢复上一条会话
 /quit
 ```
 
@@ -115,5 +115,5 @@ BM25 符号索引与代码知识图谱。在已配置模型（第 2 步）且未
 ## 下一步
 
 - [知识库](../concepts/knowledge-base.md)——三空间模型与项目最高准则
-- [知识库工作流](../guides/knowledge-workflows.md)——日常工作流：更新、研读、整理
+- [知识库工作流](../guides/knowledge-workflows.md)——日常工作流：更新、研读、清理
 - [斜杠命令](../reference/slash-commands.md)——完整命令参考

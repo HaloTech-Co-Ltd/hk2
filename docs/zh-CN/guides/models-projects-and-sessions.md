@@ -26,11 +26,11 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 - `id`——`provider/id` 引用中的标识键；可携带末尾方括号形式的上下文窗口
   提示（如 `[1m]`）。
 - `name`——实际**发送到 API 请求体**的模型代码（请求中的 `model` 字段）。
-  请设为服务商期望的精确字符串（如 `mymodel`，而非 `MY MODEL`）。
+  请设为提供商期望的精确字符串（如 `mymodel`，而非 `MY MODEL`）。
 
-将提示后缀保留在 `id` 上，`name` 只填写服务商要求的模型名称，可避免部分网关拒绝
-`mymodel[1m]` 之类的 `model` 值而报"模型代码不存在"错误。`/model set
---id=NEW_ID` 只重命名引用键——发送给服务商的 `name` 不受影响。
+将提示后缀保留在 `id` 上，`name` 只填写提供商要求的模型名称，可避免部分网关拒绝
+`mymodel[1m]` 之类的 `model` 值而报“模型代码不存在”错误。`/model set
+--id=NEW_ID` 只重命名引用键——发送给提供商的 `name` 不受影响。
 
 ### 默认模型解析顺序
 
@@ -55,13 +55,13 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 | `--api=openai\|anthropic` | 提供商 API 方言（提供商级） |
 | `--base-url=URL` | API 端点 base URL（提供商级） |
 | `--api-key=KEY` | API 密钥（提供商级） |
-| `--name=NAME` | 发送给 API 的线上模型代码 |
+| `--name=NAME` | 实际发送到 API 请求中的模型代码 |
 | `--reasoning=on\|off` | 开启 / 关闭推理 |
 | `--context-window=N` | 上下文窗口大小（token 数） |
 | `--max-tokens=N` | 最大输出 token 数 |
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（`/model types` 列出全部取值） |
-| `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'` |
+| `--model-options=JSON` | 模型专属选项，如 `'{"enable_thinking":true}'` |
 
 `--model-type` 声明模型家族，hk2 据此应用家族专属行为。声明了特性的类型会
 校验 `--model-options` 取值——例如 `--model-type=glm-5.3`（与
@@ -94,18 +94,18 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 - **自动阶段**（`rewrite-query`、`request-assess` 以及自动的 `plan-review` /
   `code-review`）——分为三种结果：
   - **过期 / 无法解析的注册表引用**（未知提供商或模型——`resolveModelRef`
-    返回 null）：本次解析会**静默**视为没有覆盖。阶段使用会话模型，无告警、
-    也不产生 fallback/skip 审计事件。配置中的 ref 仍然保留；提供商 / 模型恢复
+    返回 null）：本次解析会**静默**视为没有覆盖。阶段使用会话模型，无警告、
+    也不产生 fallback/skip 审计事件。配置中的引用仍然保留；提供商 / 模型恢复
     后仍可能重新解析成功。
-  - **解析本身抛出异常**（例如注册表读取或解析异常）：调用方告警并使用会话
+  - **解析本身抛出异常**（例如注册表读取或解析异常）：调用方警告并使用会话
     模型，这不同于返回 `null` 的过期引用。
   - **已成功解析但实际调用失败**（传输 / HTTP / 超时）：`rewrite-query` /
-    `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认告警并用
-    会话模型重跑；`0` = 告警并跳过）；自动审查则告警并跳过，绝不静默替换
+    `request-assess` 按 `HK2_ENABLE_PHASEMODEL_FALLBACK` 处理（默认警告并用
+    会话模型重跑；`0` = 警告并跳过）；自动审查则警告并跳过，绝不静默替换
     审查者。只有这类 fallback/skip 结果会作为审计记录。
 - **手动 `/review code`**——显式无效或不存在的 `--model` 直接终止、绝不回退；
   无显式 `--model` 时，项目 `code-review` 阶段引用过期、或阶段引用解析抛出
-  异常，都会告警并使用会话模型；审查者一旦选定，实际调用失败时告警并跳过
+  异常，都会警告并使用会话模型；审查者一旦选定，实际调用失败时警告并跳过
   审查，不再换用另一个模型。
 
 见[规划与审查](planning-and-review.md#审查模型)中的模型解析对照表；自动阶段的
@@ -120,7 +120,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 若均未设置，导入器会填充 `claude-sonnet-4-6`）。欢迎卡下方会显示导入提示。
 
 - **仅填充**——已有默认模型或 `claude` 提供商时绝不覆盖。
-- **幂等**——第二次启动且没有 Claude 配置时不会产生任何操作。
+- **幂等**——第二次启动且没有 Claude 配置时不会再做任何导入。
 - **开关**——`HK2_AUTOIMPORT_CLAUDE=0` 禁用导入。
 
 Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
@@ -146,7 +146,7 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 
 项目记录存储在 `~/.hk2/projects.json`，并分配生成的 UUID。`current` 是共享注册表
 中的默认项目指针：`/project list` 用 `*` 标记，`/project set current` 修改它。
-`hk2 --project=<名称>` 与 `--project-id=<id>` 只固定当前会话，因此会话绑定可以
+`hk2 --project=<name>` 与 `--project-id=<id>` 只固定当前会话，因此会话绑定可以
 不同于共享指针，多个进程也可以使用不同的绑定。
 
 ```text
@@ -156,8 +156,8 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 /project set name new-name
 /project set source /new/path
 /project set source-root src
-/project set include <完整glob列表并加上你的新增项>
-/project set exclude <完整glob列表并加上你的新增项>   # 两者都会整体替换默认集合
+/project set include <完整 glob 列表并加上你的新增项>
+/project set exclude <完整 glob 列表并加上你的新增项>   # 两者都会整体替换默认集合
 /project show
 /project drop myapp
 ```
@@ -168,7 +168,7 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 |---|---|
 | `--name=<name>` | 显示名称（默认取目录名） |
 | `--source=<path>` | 源码路径（必填） |
-| `--source-root=<rel>` | 被索引的子目录（如 `src`）；默认整棵树 |
+| `--source-root=<rel>` | 被索引的子目录（如 `src`）；默认为整个目录树 |
 | `--include=<globs>` | 逗号分隔的 include globs——**整体替换默认集合**（见下方警告） |
 | `--exclude=<globs>` | 逗号分隔的 exclude globs——**整体替换默认集合**（见下方警告） |
 | `--extra=<name>:<rel>,...` | 命名的额外根，如 `docs:docs,spec:spec` |
@@ -182,12 +182,12 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
   `.git` / 构建产物排除项。要新增扩展名，请从
   [配置](../reference/configuration.md) 复制默认集合并自行追加。
 - **切换**——`/project set current` 把当前会话保存到原项目下，并在目标
-  项目上开启新会话（等同 `/quit` 后 `hk2 --project=<目标>`）；切换到当前已
-  选中的项目时不执行任何操作。
+  项目上开启新会话（等同 `/quit` 后 `hk2 --project=<target>`）；切换到当前已
+  选中的项目时不做任何操作。
 - **`/project drop`** 移除注册时**没有确认提示**。知识库目录会留在磁盘上，
   但它位于项目 UUID 对应的目录下——由于 `/project init` 每次生成**新的 UUID**，
   重新注册同一路径**不会**自动接回旧知识库，而是从新库开始。旧目录成为
-  `$HK2_KB_DIR/<旧 UUID>/` 下的孤立目录（默认根目录为 `$HK2_HOME/kb/`；如需删除请手动操作）。目前要复用
+  `$HK2_KB_DIR/<old-uuid>/` 下的孤立目录（默认根目录为 `$HK2_HOME/kb/`；如需删除请手动操作）。目前要复用
   旧库只能恢复带原 UUID 的原项目记录，CLI 尚无对应命令。
 
 同样的注册也可在 shell 中完成：
@@ -206,19 +206,19 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 `~/.hk2/sessions/<projectId>/<sessionId>.jsonl`。
 
 新会话记录会在同一循环回合的工具结果之前，持久化每个完整 assistant 消息。
-恢复时因此能重建原始 assistant/tool 顺序，包括工具调用前输出的 assistant 正文。
-失败的重试 attempt 与中断的 partial stream 不会作为完整 assistant 消息保存。
+因此恢复时能重建原始 assistant/tool 顺序，包括工具调用前输出的 assistant 正文。
+失败的重试尝试与中断的部分流式输出，不会作为完整的 assistant 消息保存。
 `session.lastAnswer` 与代码审查使用最后一个不含工具调用的 assistant 回合；之前
 工具轮次的正文仍属于对话历史，不会拼接进最终答案。旧的扁平会话记录仍会尽力
-恢复，但无法总是重建连续工具轮次原本的边界。
+恢复，但并不总能重建连续工具轮次原本的边界。
 
 ```text
 /session info
 /session list --limit=5
 /session new
-/session resume            # 最近一次之前的会话
+/session resume            # 恢复上一条会话
 /session resume 3f9c1a2e   # 按 id（支持唯一前缀匹配）
-/compact                   # 摘要压缩之前的对话
+/compact                   # 将之前的对话压缩为摘要
 ```
 
 - `hk2 --resume`（可选 `--resume <id>`）在启动时恢复会话，还原完整对话
@@ -227,19 +227,19 @@ Anthropic 适配器同时发送 `x-api-key` 与 `Authorization: Bearer`，因此
 - `/session compact` 与 `/compact` 把之前的对话总结为简短摘要以释放上下文
   空间；自动压缩默认开启（`HK2_ENABLE_AUTOCOMPACT`，见
   [环境变量](../reference/environment-variables.md)）。
-- `/remember <事实>` 成功持久化后，会在整个会话上下文中保留该环境事实，且按设计不受
+- `/remember <fact>` 成功持久化后，会在整个会话上下文中保留该环境事实，且不受
   压缩影响；`/forget` 删除它。见
   [斜杠命令](../reference/slash-commands.md#remember)。
 - `/clear` 只清空内存中的上下文——磁盘上的会话记录保留，之后可恢复。
 - `/session new` 保留当前项目与模型选择，创建新的会话记录，并清除当前会话的
   对话、任务、计划、审查快照、会话事实、计数器与冷却计时等状态。它会将旧会话记录
-  的缓冲内容写入磁盘，但不会直接删除可能属于其他进程的项目级 `taskstate.json`。
+  的缓冲内容写入磁盘，但不会直接删除项目级 `taskstate.json`。
 - `/session resume` 先从目标会话记录重建消息，再清除旧的任务 / 审查 / 计划状态，
   当保存的 `userRequest` 存在且 `sessionId` 与该会话记录匹配时恢复任务锚点；
   只有保存的计划仍有未完成步骤时才恢复进度面板。
-  `lastCompletedTask` 只存在进程内存：每次 resume 与 `/session new` 都会清除；切换到
-  不同项目也会清除；若共享指针设置的目标就是本会话已绑定的项目，则不执行任何操作。
-  恢复后的 `/review code` 通过确定性的 transcript 扫描推导原始需求。
+  `lastCompletedTask` 只存在进程内存：每次恢复与 `/session new` 都会清除；切换到
+  不同项目也会清除；若共享指针设置的目标就是本会话已绑定的项目，则有意不做任何操作。
+  恢复后的 `/review code` 通过确定性的会话记录扫描推导原始需求。
 
 ## 相关文档
 

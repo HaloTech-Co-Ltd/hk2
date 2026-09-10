@@ -7,11 +7,11 @@ CLI 的事实来源是 `src/cli.js`；语言相关事实来源是 `package.json`
 
 工具层的 `SOURCE_EXT_RE` 是启发式白名单，不是完整的解析器/索引器支持清单；
 它影响 bash/read 的 KB-first 提示分类、`read` 自动附加 outline/tag、`ast_grep`
-和 `ast_edit`。它不决定已经索引的文件能否由直接 `kb_outline` 查询。
+和 `ast_edit`。也不影响对已索引文件直接使用 `kb_outline` 查询。
 
 斜杠命令按输入格式识别；分发器、任务输入捕获和多行收集共用这套规则：只有符合
 `^/[A-Za-z][A-Za-z0-9_-]*$` 的单段 ASCII 命令头才视为命令尝试。`/path/to/project/file.c`
-等路径及路径粘连正文会继续作为普通输入。
+等路径及与路径连在一起的普通文字仍按普通输入处理。
 
 ## CLI
 
@@ -22,7 +22,7 @@ CLI 的事实来源是 `src/cli.js`；语言相关事实来源是 `package.json`
 
 ```bash
 hk2                          # 交互式 REPL（默认）
-hk2 --tui                    # Claude Code 风格内联 TUI（无 TTY 时回落 REPL）
+hk2 --tui                    # Claude Code 风格内联 TUI（无 TTY 时回退到 REPL）
 hk2 --repl                   # 强制经典行式 REPL
 ```
 
@@ -59,7 +59,7 @@ hk2 --mode=update-kb
 - `--mode=build-kb` 支持 `--source=<path>` 与 `--source-root=<rel>`。省略
   `--source` 时回退到一个较为特殊的默认值 `../../../`（相对当前工作目录
   解析）——建议显式传入，或改用交互式 REPL 中的 `/kb init`。这里的“当前
-  项目"含义是：仅当当前项目的知识库已构建时才使用其项目 ID，否则构建目标
+  项目”含义是：仅当当前项目的知识库已构建时才使用其项目 ID，否则构建目标
   是名为 `default` 的知识库（`HK2_KB_NAME` 可覆盖）。
 - `--mode=project-init` 还接受 `--include=<globs>` 与 `--exclude=<globs>`
   （逗号分隔），与 `/project init` 一致。
@@ -146,14 +146,14 @@ NOTICE、CHANGES、HISTORY……）可被解析器识别——但*默认* includ
 显式列出 README*/LICENSE*/CHANGELOG*/CONTRIBUTING*，AUTHORS/NOTICE/
 CHANGES/HISTORY 需加入 include globs 后才会被解析。PDF（`.pdf`）需要可选的 `pdf-parse` 包；Word（`.docx`）需要 `mammoth`。
 `.pptx` 经内置 OOXML ZIP/XML 读取器提取；更老的 `.doc` / `.ppt` 二进制经
-内置的尽力而为可打印文本启发式提取——内置提取不是完整的 Office 渲染器，
+内置的尽力而为的可打印文本提取启发式——内置提取不是完整的 Office 渲染器，
 不保证恢复复杂布局、图表、嵌入对象或全部文本。解析后的文档以
 `doc:<relpath>` 条目归入 Eden 空间。
 
-### 不覆盖
+### 未覆盖的扩展名
 
 没有语言映射的扩展名若被 include glob 命中仍会被扫描，但通用解析器对它
-返回空符号列表（非文档且无映射的文件进入文件注册表但零符号）。上文列出
+返回空符号列表（非文档且无映射的文件进入文件注册表且符号数为零）。上文列出
 的文档格式则交给文档解析器处理。确需从新扩展名产出符号时再添加显式映射。
 
 ## 相关文档
