@@ -96,6 +96,9 @@ export function createSession(pinnedProjectId = null) {
     transcript: null,
     messages: [],
     lastAnswer: null,
+    // Multimodal attachments staged via /attach; they ride the NEXT user
+    // message only (see runTurn's user-message assembly + attachments.js).
+    pendingAttachments: [],
     reloadFlags: { project: false, kb: false, model: false },
     rl: null,
     exiting: false,
@@ -345,12 +348,27 @@ export function resetConversationScopedState(session, {
 export function splitOutputUnits(messages) {
   const events = [];
   let sawUser = false; // defensive: replayTranscript never emits pre-user msgs
+  // Multimodal user turns carry content-block arrays; flatten them to text +
+  // short media placeholders for display (the Base64 payloads stay out).
+  const flatContent = (c) => {
+    if (typeof c === 'string') return c;
+    if (!Array.isArray(c)) return '';
+    const parts = [];
+    for (const b of c) {
+      if (b && b.type === 'text') parts.push(typeof b.text === 'string' ? b.text : '');
+      else if (b && b.type === 'image_url') parts.push(`[image: ${(b.image_url?.url || '').startsWith('data:') ? 'attached' : (b.image_url?.url || '')}]`);
+      else if (b && b.type === 'video_url') parts.push(`[video: ${(b.video_url?.url || '').startsWith('data:') ? 'attached' : (b.video_url?.url || '')}]`);
+      else if (b && b.type === 'input_audio') parts.push(`[audio: ${b.input_audio?.format || '?'}]`);
+    }
+    return parts.filter(p => p !== '').join('\n');
+  };
   for (const m of messages || []) {
     if (!m || typeof m !== 'object') continue;
     if (m.role === 'user') {
       sawUser = true;
-      if (typeof m.content === 'string' && m.content.trim()) {
-        events.push({ kind: 'user', text: m.content });
+      const text = flatContent(m.content);
+      if (text.trim()) {
+        events.push({ kind: 'user', text });
       }
       continue;
     }
@@ -1038,6 +1056,15 @@ export function buildBaseCtx(session, io) {
         ensureSessionFactsMessage(session, session.sessionFacts);
         return session.sessionFacts;
       },
+    },
+    /**
+     * Multimodal attachment staging for /attach: the staged list lives on
+     * the session and is consumed by runTurn when the NEXT user message is
+     * assembled (attachments ride one message, then clear).
+     */
+    getAttachments: () => session.pendingAttachments || [],
+    setAttachments: (list) => {
+      session.pendingAttachments = Array.isArray(list) ? list : [];
     },
     /**
      * Read-only view of the current conversation for the /review command:

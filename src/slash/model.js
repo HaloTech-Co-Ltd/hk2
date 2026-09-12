@@ -50,7 +50,7 @@
  *   /model set-default current --clear              Clear the project override (fall back to global)
  *   /model set <provider>/<model-id> [--name=...] [--id=NEW_ID] [--api=...] [--base-url=...] [--api-key=...]
  *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
- *                  [--model-options=JSON]
+ *                  [--model-options=JSON] [--multimodal=on|off]
  *                                                  Modify a model's persisted settings
  *   /model set-phase --phase=<name> <provider>/<model-id> [--clear]
  *                                                  Per-project model for one pipeline phase
@@ -72,6 +72,7 @@ import {
   validateModelOptionsForType,
   normalizeMcpServerType, normalizeMcpServerOptions,
   supportedMcpServerTypes, getModelMcpServers,
+  parseMultimodalFlag, validateMultimodalForType,
 } from '../../lib/config/home.js';
 import { subcommandHelp, printCommandHelp } from './help.js';
 
@@ -121,6 +122,14 @@ function listModelTypes(ctx) {
   ctx.print(`  ${types.join(', ')}`);
   ctx.print(``);
   ctx.print(`Default when omitted: ${DEFAULT_MODEL_TYPE}`);
+  // Capability annotations come from MODEL_TYPE_FEATURES declarations, so the
+  // listing can never drift from what validateMultimodalForType accepts.
+  const mmTypes = types.filter((t) => modelTypeFeatures(t)?.multimodal === true);
+  if (mmTypes.length > 0) {
+    ctx.print(`Multimodal input (image / video / audio via --multimodal=on): ${mmTypes.join(', ')}`);
+  } else {
+    ctx.print(`Multimodal input: no model type declares the capability yet`);
+  }
   ctx.print(`Used by: /model add <provider> <model-id> --model-type=<TYPE>`);
   ctx.print(`        /model set <provider>/<model-id> --model-type=<TYPE>`);
 }
@@ -158,7 +167,7 @@ async function listModels(ctx) {
       // ref key (id) and the wire code (name) side by side.
       const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
       ctx.print(`${marker} ${label}`);
-      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
+      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} multimodal=${m.multimodal ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
       printModelOptions(ctx, m.modelOptions);
       printMcpServers(ctx, m.mcpServers);
     }
@@ -326,7 +335,7 @@ async function setModel(rest, ctx) {
   if (!ref) {
     ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--id=NEW_ID] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]`);
-    ctx.print(`                        [--model-options=JSON]  e.g. --model-options='{"enable_thinking":true}'`);
+    ctx.print(`                        [--model-options=JSON] [--multimodal=on|off]  e.g. --model-options='{"enable_thinking":true}'`);
     return;
   }
   const split = splitModelRef(ref);
@@ -357,6 +366,18 @@ async function setModel(rest, ctx) {
     }
   }
 
+  // Validate --multimodal (on|off) before touching the registry; the
+  // capability check runs inside the locked section below where the entry's
+  // effective model type is known (new --model-type, else the stored one).
+  let multimodal;
+  if (flags.multimodal !== undefined) {
+    multimodal = parseMultimodalFlag(flags.multimodal);
+    if (multimodal === null) {
+      ctx.print(`Invalid --multimodal: expected on|off (got ${JSON.stringify(flags.multimodal)})`);
+      return;
+    }
+  }
+
   // Locked read-modify-write (issue #7): the whole load→validate→mutate→save
   // runs inside the cross-process models.json lock, so a concurrent
   // /model add|del|set in another hk2 process can't be clobbered by this
@@ -377,6 +398,14 @@ async function setModel(rest, ctx) {
       // (e.g. glm-5.3 reasoning_effort: max|high|low). Still before any write.
       const typeErr = validateModelOptionsForType(effectiveModelType, modelOptions);
       if (typeErr) return { error: `Invalid --model-options: ${typeErr}` };
+    }
+    // Multimodal capability gate: --multimodal=on is only valid for model
+    // types that declare the capability (currently glm-5.3-flash); off is
+    // always allowed. Checked against the EFFECTIVE type so
+    // `--model-type=glm-5.3-flash --multimodal=on` in one command works.
+    if (multimodal !== undefined) {
+      const mmErr = validateMultimodalForType(effectiveModelType, multimodal);
+      if (mmErr) return { error: mmErr };
     }
 
     // Optional id rename: /model set <provider>/<old-id> --id=<new-id>.
@@ -457,6 +486,10 @@ async function setModel(rest, ctx) {
     if (flags.reasoning !== undefined) {
       entry.reasoning = parseBoolFlag(flags.reasoning);
     }
+    // Multimodal input capability (default off). Stored as a boolean flag on
+    // the entry; resolveModelRef additionally requires the model type to
+    // declare the capability, so hand-edited records cannot fake it.
+    if (multimodal !== undefined) entry.multimodal = multimodal;
     if (modelType) entry.modelType = modelType;
     // Model-specific options: replace wholesale when the flag is present. An
     // explicit '{}' clears them (stored as an empty object = no options);
@@ -499,7 +532,7 @@ async function setModel(rest, ctx) {
   }
 
   ctx.print(`Updated: ${newRef}`);
-  ctx.print(`  id=${entry.id} name=${entry.name ?? '?'} contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
+  ctx.print(`  id=${entry.id} name=${entry.name ?? '?'} contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} multimodal=${entry.multimodal ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
   printModelOptions(ctx, entry.modelOptions);
   if (pinnedName) {
     ctx.print(`  (wire model code preserved: name=${entry.name}; use --name to change what is sent to the API)`);
@@ -517,7 +550,7 @@ async function addModel(rest, ctx) {
   if (rest.length < 2) {
     ctx.print(`Usage: /model add <provider> <model-id> [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME] [--model-type=TYPE]`);
-    ctx.print(`                        [--model-options=JSON]  e.g. --model-options='{"enable_thinking":true}'`);
+    ctx.print(`                        [--model-options=JSON] [--multimodal=on|off]  e.g. --model-options='{"enable_thinking":true}'`);
     return;
   }
   const providerName = rest[0];
@@ -537,28 +570,59 @@ async function addModel(rest, ctx) {
   }
 
   // Validate --model-options (must be a JSON object) before mutating anything.
-  // An explicit '{}' means "no options" (the default state).
+  // An explicit '{}' means "no options" (the default state). The per-type
+  // ENUM validation runs inside the locked section below, against the
+  // EFFECTIVE model type (the --model-type flag when given, else the existing
+  // entry's stored type): addModel UPSERTS existing entries, so an upsert
+  // that omits --model-type must still validate against what is stored.
   if (flags['model-options'] !== undefined) {
     const mo = normalizeModelOptions(flags['model-options']);
     if (!mo) {
       ctx.print(`Invalid --model-options: expected a JSON object, e.g. --model-options='{"enable_thinking":true}'`);
       return;
     }
-    // Enum validation against the model type's declared feature options
-    // (e.g. glm-5.3 reasoning_effort: max|high|low).
-    const typeErr = validateModelOptionsForType(flags['model-type'], mo);
-    if (typeErr) {
-      ctx.print(`Invalid --model-options: ${typeErr}`);
+    flags['model-options'] = mo;
+  }
+
+  // Parse --multimodal (on|off) before mutating anything; the capability
+  // check (on requires a multimodal-capable model type, currently
+  // glm-5.3-flash) runs inside the locked section below against the
+  // effective model type, for the same upsert reason as --model-options.
+  if (flags.multimodal !== undefined) {
+    const mm = parseMultimodalFlag(flags.multimodal);
+    if (mm === null) {
+      ctx.print(`Invalid --multimodal: expected on|off (got ${JSON.stringify(flags.multimodal)})`);
       return;
     }
-    flags['model-options'] = mo;
+    flags.multimodal = mm;
   }
 
   // Locked read-modify-write (issue #7): the whole add runs inside the
   // cross-process models.json lock, so a concurrent /model add|del|set in
   // another hk2 process can't be clobbered by this full-file write.
   let setAsDefault = false;
-  await withModels(async (data) => {
+  const addOutcome = await withModels(async (data) => {
+    // Pre-mutation validation against the EFFECTIVE model type: the
+    // --model-type flag when given, else the EXISTING entry's stored type.
+    // Without this fallback, re-adding an existing glm-5.3-flash entry with
+    // --multimodal=on but WITHOUT repeating --model-type was false-rejected
+    // ("generic does not support image/video/audio input"). Returning
+    // { error } before any mutation leaves the snapshot untouched.
+    const existingEntry = data.providers[providerName]
+      ? (data.providers[providerName].models || []).find(m => m.id === modelId)
+      : undefined;
+    const effectiveModelType = flags['model-type'] || existingEntry?.modelType || DEFAULT_MODEL_TYPE;
+    if (flags['model-options'] !== undefined) {
+      // Enum validation against the model type's declared feature options
+      // (e.g. glm-5.3 reasoning_effort: max|high|low).
+      const typeErr = validateModelOptionsForType(effectiveModelType, flags['model-options']);
+      if (typeErr) return { error: `Invalid --model-options: ${typeErr}` };
+    }
+    if (flags.multimodal !== undefined) {
+      const mmErr = validateMultimodalForType(effectiveModelType, flags.multimodal);
+      if (mmErr) return { error: mmErr };
+    }
+
     let prov = data.providers[providerName];
     if (!prov) {
       prov = {
@@ -594,12 +658,22 @@ async function addModel(rest, ctx) {
     // (no options). The field is left absent when the flag is omitted on a new
     // entry; resolveModelRef falls back to an empty object for such records.
     if (flags['model-options']) entry.modelOptions = flags['model-options'];
+    // Multimodal input capability (default off): /model add ... --multimodal=on
+    // enables image/video/audio attachments for this entry. The capability
+    // gate in the locked pre-mutation validation above already rejected
+    // on + non-capable effective-type combinations.
+    if (flags.multimodal !== undefined) entry.multimodal = flags.multimodal;
+    else if (entry.multimodal === undefined) entry.multimodal = false;
 
     if (!data.default) {
       data.default = `${providerName}/${modelId}`;
       setAsDefault = true;
     }
   });
+  if (addOutcome?.error) {
+    ctx.print(addOutcome.error);
+    return;
+  }
 
   if (setAsDefault) {
     ctx.print(`Added: ${providerName}/${modelId} (set as default)`);
@@ -724,6 +798,7 @@ async function showModel(ctx) {
     ctx.print(`  maxTokens: (unset - derived from contextWindow: ~${Math.min(32768, Math.max(256, Math.floor(cfg.maxChars / 4)))} tokens for openai-style APIs)`);
   }
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
+  ctx.print(`  multimodal: ${cfg.multimodal ? 'on' : 'off'}${cfg.multimodal ? ' (image / video / audio attachments accepted; see /attach)' : ''}`);
   ctx.print(`  temperature: ${cfg.temperature}`);
 }
 

@@ -26,6 +26,7 @@ spaces: `--title="SPI Extension Pattern"`.
 | [`/session`](#session) | Session management |
 | [`/resume`](#resume) | Resume a previous session (Claude Code convention) |
 | [`/remember`](#remember) / [`/forget`](#forget) | Record / remove session facts; successful saves survive compaction |
+| [`/attach`](#attach) | Stage image / video / audio for the next message (multimodal models) |
 | [`/review`](#review) | Manually review the completed task |
 | [`/theme`](#theme) | Customize tool-card colors |
 | [`/clear`](#clear) | Clear the in-memory conversation context |
@@ -56,7 +57,7 @@ Flags for `set` / `add`:
 | Flag | Meaning |
 |---|---|
 | `--api=openai\|anthropic` | Provider API dialect (provider-level) |
-| `--base-url=URL` | API endpoint base URL (provider-level) |
+| `--base-url=URL` | API endpoint base URL (provider-level); a URL already ending in `/chat/completions` (openai) or `/messages` (anthropic) is used as the full endpoint as-is |
 | `--api-key=KEY` | API key (provider-level) |
 | `--name=NAME` | Wire model code sent to the API |
 | `--id=NEW_ID` | (`set` only) Rename the model id / ref key — the wire code is unaffected |
@@ -66,6 +67,7 @@ Flags for `set` / `add`:
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (see `/model types`; default `generic`) |
 | `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; `'{}'` clears; validated against the type's declared features |
+| `--multimodal=on\|off` | Multimodal input (image / video / audio attachments via `/attach`); default `off`; `on` requires a multimodal-capable `--model-type` (currently `glm-5.3-flash`) — setting it on an incapable model is rejected |
 
 `set-phase` phases: `rewrite-query`, `request-assess`, `plan-review`,
 `code-review`.
@@ -261,6 +263,21 @@ Usage: `/forget [substring]` — remove session facts.
   removed and how many remain.
 - No args — remove **all** facts, after a y/N confirmation.
 - No match — prints the current facts list so you can pick a substring.
+
+## `/attach`
+
+Usage: `/attach <file-or-url> [<file-or-url> ...]` — stage image / video /
+audio attachment(s) for your **next** message.
+
+- Requires the session model to have multimodal input on:
+  `/model set <provider>/<model-id> --multimodal=on` on a capable type
+  (currently `glm-5.3-flash`); otherwise the command explains and refuses.
+- No args — list what is staged; `clear` — drop everything staged.
+- Local files are Base64-encoded as data URLs at send time (20 MB per file);
+  remote image / video http(s) URLs pass through. Supported: png / jpg /
+  jpeg / gif / webp / bmp, mp4 / mov / mkv / avi / webm / flv / m4v, wav /
+  mp3 / m4a / aac / ogg / flac / opus.
+- Attachments ride exactly one user message, then clear automatically.
 
 ## `/review`
 

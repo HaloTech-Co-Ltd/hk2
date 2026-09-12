@@ -27,14 +27,21 @@ const byName = (n) => {
 };
 const allText = (t) => `${t.snippet} ${t.description ?? ''} ${(t.guidelines ?? []).join(' ')}`;
 
-test('read: text-only, 5 MiB, NUL heuristic, line-boundary cap, no images claim', () => {
+test('read: text-only core, 5 MiB, NUL heuristic, line-boundary cap, multimodal media claim is accurate', () => {
   const t = byName('read');
   const d = t.description;
   assert.ok(/UTF-8 text/i.test(d), 'states UTF-8 text');
   assert.match(d, /5 MiB/);
   assert.match(d, /NUL/);
   assert.match(d, /first requested line/i, 'line-granular byte cap');
-  assert.doesNotMatch(allText(t), /\b(jpg|png|gif|webp|bmp)\b|supports.*images|Images are sent/i, 'no image-attachment claim (negative wording allowed)');
+  // Media files are NEVER read as text: multimodal sessions get attach
+  // markers (auto-injected content blocks); non-multimodal reads reject
+  // with a fix hint. The old blanket "no image support" claim is gone.
+  const text = allText(t);
+  assert.match(text, /multimodal/i, 'media path documented');
+  assert.match(text, /never read as text/i, 'never decodes media as text');
+  assert.match(text, /attach marker/i, 'attach marker documented');
+  assert.doesNotMatch(text, /no image or binary content support/i, 'the old absolute no-image claim is gone');
 });
 
 test('bash: no 2000-line claim; per-stream ~8 KiB; timeout semantics + negative caveat', () => {

@@ -31,6 +31,7 @@
  * any check failed.
  */
 import { readdir, readFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -216,7 +217,26 @@ async function targetExists(fromFile, target) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Main-module guard. The naive `import.meta.url === pathToFileURL(process.argv[1])`
+// comparison breaks on platforms whose argv paths go through symlinks macOS's
+// /var -> /private/var tmpdir is the daily case: ESM resolves the module to
+// its REAL path while argv[1] keeps the symlinked spelling, so the check
+// silently evaluates false and the whole body (including its exit codes)
+// never runs. Normalize argv[1] through realpathSync before comparing, and
+// keep the raw comparison as a fallback (realpath fails for deleted paths).
+function isMainModule() {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  const rawHref = pathToFileURL(argv1).href;
+  if (import.meta.url === rawHref) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
 /* ------------------------------------------------------------------ */
 /* 1. Bilingual structure parity                                       */
 /* ------------------------------------------------------------------ */

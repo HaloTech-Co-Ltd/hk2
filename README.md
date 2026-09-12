@@ -48,6 +48,12 @@ automatically remember every conversation. Learn
   and inspect the result.
 - **Choose your terminal experience** — a classic line REPL and an inline
   TUI (`hk2 --tui`) share agent capabilities, sessions, and commands.
+- **Attach images, video, and audio** — models configured with
+  `--multimodal=on` (e.g. glm-5.3-flash) see media automatically: the agent's
+  `read` of an image/video/audio file injects the real content into the
+  conversation (no manual step), and `/attach` stages explicit attachments;
+  local files are Base64-encoded on send. See
+  [Models, projects, sessions](docs/en/guides/models-projects-and-sessions.md).
 
 ## Requirements
 

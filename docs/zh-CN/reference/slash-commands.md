@@ -24,6 +24,7 @@
 | [`/session`](#session) | 会话管理 |
 | [`/resume`](#resume) | 恢复之前的会话（Claude Code 惯例） |
 | [`/remember`](#remember) / [`/forget`](#forget) | 记录 / 删除会话事实；成功保存后免受压缩影响 |
+| [`/attach`](#attach) | 为下一条消息暂存图片 / 视频 / 语音（多模态模型） |
 | [`/review`](#review) | 手动审查已完成的任务 |
 | [`/theme`](#theme) | 自定义工具卡片颜色 |
 | [`/clear`](#clear) | 清空内存中的对话上下文 |
@@ -54,7 +55,7 @@
 | 参数 | 含义 |
 |---|---|
 | `--api=openai\|anthropic` | 提供商 API 方言（提供商级） |
-| `--base-url=URL` | API 端点 base URL（提供商级） |
+| `--base-url=URL` | API 端点 base URL（提供商级）；以 `/chat/completions`（openai）或 `/messages`（anthropic）结尾的 URL 会作为完整端点原样使用 |
 | `--api-key=KEY` | API 密钥（提供商级） |
 | `--name=NAME` | 实际发送给 API 的模型代码（wire 名） |
 | `--id=NEW_ID` | （仅 `set`）重命名模型 id / 引用键——不影响实际发送的模型代码 |
@@ -64,6 +65,7 @@
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（见 `/model types`；默认 `generic`） |
 | `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'`；传 `'{}'` 即清空；按类型声明的特性校验 |
+| `--multimodal=on\|off` | 多模态输入（图片 / 视频 / 语音附件，经 `/attach` 暂存）；默认 `off`；设为 `on` 要求 `--model-type` 具备多模态能力（目前仅 `glm-5.3-flash`），不具备的模型会被拒绝 |
 
 `set-phase` 阶段：`rewrite-query`、`request-assess`、`plan-review`、
 `code-review`。
@@ -242,6 +244,21 @@
 - 带子串——删除所有包含该子串的事实；打印删除了多少条、剩多少条。
 - 无参数——y/N 确认后删除**全部**事实。
 - 无匹配——打印当前事实列表，便于选择子串。
+
+## `/attach`
+
+用法：`/attach <文件或URL> [<文件或URL> ...]`——为**下一条**消息暂存
+图片 / 视频 / 语音附件。
+
+- 要求会话模型已开启多模态输入：在具备能力的类型（目前为
+  `glm-5.3-flash`）上 `/model set <provider>/<model-id> --multimodal=on`；
+  否则命令会说明原因并拒绝。
+- 无参数——列出已暂存内容；`clear`——丢弃全部暂存附件。
+- 本地文件在发送时编码为 Base64 Data URL（单文件 20 MB）；远程
+  图片 / 视频 http(s) URL 原样传递。支持：png / jpg / jpeg / gif /
+  webp / bmp，mp4 / mov / mkv / avi / webm / flv / m4v，wav / mp3 /
+  m4a / aac / ogg / flac / opus。
+- 附件只随一条用户消息发送，之后自动清空。
 
 ## `/review`
 

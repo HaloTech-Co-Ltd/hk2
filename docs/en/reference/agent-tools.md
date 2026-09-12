@@ -24,7 +24,7 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 
 ### `read`
 
-Read **UTF-8 text** files — no image or binary content support. Files larger than **5 MiB** are
+Read **UTF-8 text** files. Files larger than **5 MiB** are
 rejected outright (`file too large: N bytes` — pagination cannot help).
 Below that, output is line-numbered and capped at 2000 lines or roughly
 256 KiB at line boundaries — except that the first requested line is still
@@ -32,7 +32,20 @@ emitted even when that one line exceeds the nominal byte cap; continue
 with `offset`/`limit`. Files whose first 8192
 decoded characters contain a NUL byte are rejected as binary
 (`binary file (NUL byte detected): … — read only supports text files`) —
-this is a NUL-scan heuristic, not full binary-format detection. For
+this is a NUL-scan heuristic, not full binary-format detection.
+
+**Media files (multimodal)**: image (png / jpg / jpeg / gif / webp / bmp),
+video (mp4 / mov / mkv / avi / webm / flv / m4v) and audio
+(wav / mp3 / m4a / aac / ogg / flac / opus) files are **never read as text** —
+they classify by extension up front. When the session's active model has
+`--multimodal=on`, `read` returns a compact `attach` marker (no Base64) and
+the turn pipeline automatically injects the real content blocks
+(`image_url` / `video_url` / `input_audio`) into the conversation at the round
+boundary — the model sees the actual pixels/audio, no manual `/attach`
+needed (20 MB per-file cap). Without multimodal input the read is rejected
+with a fix hint (`/model set <ref> --multimodal=on`).
+
+For
 eligible indexed source files, a structural `## Outline (from KB)` section is
 prepended (`outline=false` disables) and the result may carry a `tag` for
 stale-anchor protection (see [Stale-anchor protection](#stale-anchor-protection-tag)).

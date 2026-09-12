@@ -53,7 +53,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 | 参数 | 含义 |
 |---|---|
 | `--api=openai\|anthropic` | 提供商 API 方言（提供商级） |
-| `--base-url=URL` | API 端点 base URL（提供商级） |
+| `--base-url=URL` | API 端点 base URL（提供商级）；以 `/chat/completions`（openai）或 `/messages`（anthropic）结尾的 URL 会作为完整端点原样使用 |
 | `--api-key=KEY` | API 密钥（提供商级） |
 | `--name=NAME` | 实际发送到 API 请求中的模型代码 |
 | `--reasoning=on\|off` | 开启 / 关闭推理 |
@@ -62,12 +62,56 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（`/model types` 列出全部取值） |
 | `--model-options=JSON` | 模型专属选项，如 `'{"enable_thinking":true}'` |
+| `--multimodal=on\|off` | 多模态输入（默认 `off`）；`on` 后可附图片 / 视频 / 语音——见[多模态输入](#多模态输入) |
 
 `--model-type` 声明模型家族，hk2 据此应用家族专属行为。声明了特性的类型会
 校验 `--model-options` 取值——例如 `--model-type=glm-5.3`（与
 `glm-5.3-flash`）接受 `{"reasoning_effort":"max"}`，默认且推荐 max（深度
 推理），可选 high（增强推理）/ low（轻量推理）。省略该参数（或旧记录缺少该字段）
 默认 `generic`；传入**未知**类型会被命令拒绝。
+
+## 多模态输入
+
+配置了 `--multimodal=on` 的模型可以在文本之外接受图片 / 视频 / 语音输入。
+该参数默认 `off`，且只对具备多模态能力的模型类型开放——目前仅
+`glm-5.3-flash`（参见[智谱 glm-5.3-flash 官方文档](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)）。
+对不具备多模态能力的模型设置 `--multimodal=on` 会**报错拒绝**；
+`/model types` 会列出具备该能力的类型。
+
+```text
+/model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on
+/model set bigmodel/glm-5.3-flash --multimodal=on    （已存在的模型）
+```
+
+多模态模型处于会话激活状态时，最常见的用法是**什么都不用做**：直接让智能体
+分析媒体文件即可。智能体用 `read` 读取图片 / 视频 / 语音文件时，hk2 自动
+把真实内容（Base64 Data URL 内容块）注入对话，智能体下一轮就能真正"看到"
+图片内容，无需任何手动步骤（详见[智能体工具 — read](../reference/agent-tools.md#read)）：
+
+```text
+分析 ./screenshots/error.png 里报告了什么问题
+```
+
+也可用 `/attach` 手动暂存附件，随下一条消息发送（两种方式等价，均受单文件
+20 MB 上限约束）：
+
+```text
+/attach ./screenshots/error.png ./demo/trace.mp3
+这张图片里报告了什么问题？
+```
+
+- 支持的媒体：图片（png / jpg / jpeg / gif / webp / bmp）、视频
+  （mp4 / mov / mkv / avi / webm / flv / m4v）、语音
+  （wav / mp3 / m4a / aac / ogg / flac / opus）。
+- 本地文件在发送时读取并**编码为 Base64 Data URL**（单文件 20 MB 上限）；
+  远程图片 / 视频的 http(s) URL 原样传递。
+- `/attach` 附件只随**一条**用户消息发送，之后自动清空；`/attach` 列出已暂存
+  附件，`/attach clear` 全部丢弃。`read` 自动注入的媒体同理——只随注入的那条
+  消息发送，重复读取同一文件只注入一次。
+- 传输层上，hk2 将多模态消息作为 `messages[].content[]` 内容块发送
+  （OpenAI 风格端点用 `image_url` / `video_url` / `input_audio`；
+  anthropic 风格端点转换为 Anthropic image 块，视频 / 语音降级为
+  文本占位符）。
 
 除手动录入外，模型注册表文件**首次创建时**，环境中的 `ANTHROPIC_API_KEY`
 或 `OPENAI_API_KEY` 会用来初始化对应提供商——之后的启动不会重新扫描或追加。

@@ -58,7 +58,7 @@ Common flags (full list in [Slash commands](../reference/slash-commands.md)):
 | Flag | Meaning |
 |---|---|
 | `--api=openai\|anthropic` | Provider API dialect (provider-level) |
-| `--base-url=URL` | API endpoint base URL (provider-level) |
+| `--base-url=URL` | API endpoint base URL (provider-level); a URL already ending in `/chat/completions` (openai) or `/messages` (anthropic) is used as the full endpoint as-is |
 | `--api-key=KEY` | API key (provider-level) |
 | `--name=NAME` | Wire model code sent to the API |
 | `--reasoning=on\|off` | Enable/disable reasoning |
@@ -67,6 +67,7 @@ Common flags (full list in [Slash commands](../reference/slash-commands.md)):
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (`/model types` lists all values) |
 | `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'` |
+| `--multimodal=on\|off` | Multimodal input (default `off`); `on` enables image / video / audio attachments — see [multimodal input](#multimodal-input) |
 
 `--model-type` declares the model family so hk2 can apply family-specific
 behavior. Types with declared features validate `--model-options` — e.g.
@@ -75,6 +76,56 @@ behavior. Types with declared features validate `--model-options` — e.g.
 recommended, or high (enhanced) / low (light). Omitting the flag (or an old
 record missing the field) defaults to `generic`; passing an **unknown** type
 is rejected by the command.
+
+## Multimodal input
+
+A model configured with `--multimodal=on` accepts image / video / audio
+input alongside text. The flag defaults to `off` and is only accepted for
+multimodal-capable model types — currently `glm-5.3-flash` (see
+[BigModel's glm-5.3-flash docs](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)).
+Setting `--multimodal=on` on any other model type is **rejected with an
+error**;
+`/model types` lists the capable types.
+
+```text
+/model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on
+/model set bigmodel/glm-5.3-flash --multimodal=on    (existing model)
+```
+
+With a multimodal model active, the common path is to **do nothing special**:
+just ask the agent to analyze a media file. When the agent `read`s an image /
+video / audio file, hk2 automatically injects the real content (Base64 data
+URL content blocks) into the conversation, so the next model round actually
+"sees" the pixels/audio — no manual step needed (see
+[agent tools — read](../reference/agent-tools.md#read)):
+
+```text
+What problem does ./screenshots/error.png report?
+```
+
+You can also stage attachments manually with `/attach` and send them with
+your next message (both paths are equivalent and share the 20 MB per-file
+cap):
+
+```text
+/attach ./screenshots/error.png ./demo/trace.mp3
+这张图片里报告了什么问题？
+```
+
+- Supported media: images (png / jpg / jpeg / gif / webp / bmp), video
+  (mp4 / mov / mkv / avi / webm / flv / m4v), audio
+  (wav / mp3 / m4a / aac / ogg / flac / opus).
+- Local files are read and **Base64-encoded as data URLs** at send time
+  (20 MB per-file limit); remote image / video http(s) URLs pass through
+  untouched.
+- Attachments ride exactly **one** user message, then clear automatically;
+`/attach` lists what is staged and `/attach clear` drops it. Media injected
+via `read` behaves the same — it rides only the injected message, and
+re-reading the same file injects it once.
+- On the wire, hk2 sends multimodal turns as `messages[].content[]`
+content blocks (`image_url` / `video_url` / `input_audio` on OpenAI-style
+endpoints; converted to the Anthropic image block on anthropic-style
+endpoints, where video / audio degrade to text placeholders).
 
 As an alternative to manual entry, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
 in the environment seeds a matching provider **once, when the model registry

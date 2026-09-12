@@ -65,6 +65,7 @@ import { cmdSession, resumeDirect } from './session.js';
 import { cmdReview } from './review.js';
 import { cmdTheme } from './theme.js';
 import { cmdRemember, cmdForget } from './remember.js';
+import { cmdAttach } from './attach.js';
 import { printCommandHelp, HELP_TEXT } from './help.js';
 import { dynamicSlot, invalidateDynamicCache } from './completions.js';
 import { looksLikeSlashCommand, isPlausibleCommandName, suggestCommand } from '../../lib/slash_command.js';
@@ -81,6 +82,7 @@ export const SLASH_COMMANDS = [
   { name: '/compact', handler: cmdCompact, description: 'Summarize prior conversation into a short brief' },
   { name: '/remember', handler: cmdRemember, description: 'Record a session fact; after successful persistence it stays in scope and survives compaction — list with no args' },
   { name: '/forget',  handler: cmdForget,  description: 'Remove session fact(s): /forget <substring>, or all with confirmation' },
+  { name: '/attach',  handler: cmdAttach,  description: 'Stage image / video / audio file(s) for your NEXT message (needs a --multimodal=on model, e.g. glm-5.3-flash)' },
   { name: '/help',    handler: cmdHelp,    description: 'Show this help' },
   { name: '/quit',    handler: cmdQuit,    description: 'Exit (same as Ctrl+D)' },
   { name: '/exit',    handler: cmdQuit,    description: 'Exit (same as /quit)' },

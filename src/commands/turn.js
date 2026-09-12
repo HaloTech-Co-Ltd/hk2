@@ -998,6 +998,12 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     llm: session.llm,
     projectId: session.project?.id,
     guard: session.kbGuard,
+    // Multimodal input of the session's active model: when on, media reads
+    // (image/video/audio) return attach markers instead of binary-rejection
+    // errors, and the round-boundary injector turns them into real content
+    // blocks. Gated here (not read from models.json per call) so a mid-session
+    // /model switch takes effect on the next turn consistently.
+    multimodal: session.modelCfg?.multimodal === true,
     // Optional plan-confirmation interface: when the agent calls the `plan`
     // surface its proposed plan to the user for per-step strategy
     // selection (confirmPlan) and return the finalized plan. The progress
@@ -1292,8 +1298,36 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // without it, the recommended strategies are auto-accepted. Simple tasks
   // flow straight into execution.
 
-  session.messages.push({ role: 'user', content: userText });
-  await session.transcript?.logUser(userText);
+  // Multimodal attachments (staged via /attach): when the session's active
+  // model has multimodal input on and attachments are staged, read + encode
+  // them now and attach them to THIS user message as content blocks. The
+  // staged list is consumed here (attachments ride exactly one message).
+  // Any encode failure drops the whole batch with a clear notice instead of
+  // silently sending half the attachments.
+  let userContent = userText;
+  let usedAttachments = null;
+  {
+    const staged = Array.isArray(session.pendingAttachments) ? session.pendingAttachments : [];
+    session.pendingAttachments = [];   // consume regardless of outcome
+    if (staged.length > 0) {
+      if (session.modelCfg?.multimodal) {
+        const { buildAttachmentBlocks, buildMultimodalContent } = await import('../../lib/agent/attachments.js');
+        const out = await buildAttachmentBlocks(staged.map(a => a.source));
+        if (out.ok && out.blocks.length > 0) {
+          userContent = buildMultimodalContent(userText, out.blocks);
+          usedAttachments = staged.map(a => ({ media: a.media, source: a.source }));
+        } else {
+          const errs = (out.ok ? ['no usable attachments'] : out.errors);
+          ctx.print(`[attach] attachment(s) not sent: ${errs.join('; ')}`);
+        }
+      } else {
+        ctx.print(`[attach] ignored ${staged.length} staged attachment(s): the current model does not accept multimodal input (enable with /model set <ref> --multimodal=on on a capable model type, e.g. glm-5.3-flash)`);
+      }
+    }
+  }
+
+  session.messages.push({ role: 'user', content: userContent });
+  await session.transcript?.logUser(userContent, { attachments: usedAttachments });
 
   // Enter the model-wait phase for the agent loop. (Planning, if needed, is
   // now driven by the agent calling the `plan` tool mid-loop, not by a
@@ -1304,6 +1338,11 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
   // initialize the pair here (mirroring the original eager construction) —
   // every onTurnStart resets them fresh.
   ui.stream.reset();
+  // Media staged for round-boundary multimodal injection: entries are
+  // { source: <abs path>, media: 'image'|'video'|'audio', relPath } collected
+  // from `read` results carrying an `attach` marker (multimodal sessions).
+  // Deduped by absolute source; consumed by the onRoundBoundary injector below.
+  const pendingMediaAttach = [];
   const callbacks = {
     onTurnStart: (_turnIdx) => {
       // Each LLM stream call inside the agent loop starts a new "turn".
@@ -1416,6 +1455,17 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // The unwrapped tool payload (result.result when ok), used by the
       // kb_save_knowledge tracking below and the KB-hit-rate classifier.
       const payload = result && result.ok ? result.result : null;
+      // Multimodal media staging: a successful `read` of a media file in a
+      // multimodal session returns an `attach` marker (source + media class,
+      // NO Base64). Queue it here; the round-boundary injector re-reads the
+      // file and pushes real content blocks as a user message. Deduped by
+      // absolute source so re-reading the same image stages it once.
+      if (call.name === 'read' && payload && typeof payload === 'object'
+          && payload.attach && typeof payload.attach.source === 'string' && payload.attach.media) {
+        if (!pendingMediaAttach.some(m => m.source === payload.attach.source)) {
+          pendingMediaAttach.push({ source: payload.attach.source, media: payload.attach.media, relPath: payload.path });
+        }
+      }
       // Record bash search-like commands for end-of-turn KB update suggestion
       if (call.name === 'bash') {
         try {
@@ -1492,13 +1542,46 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
       // user sees their lines echoed (userMarkerLines) exactly like a normal
       // prompt, preserving the mental model of "I just said this".
       onRoundBoundary: async (_turnIdx) => {
-        if (!session.userInputQueue || session.userInputQueue.length === 0) return;
-        const lines = session.userInputQueue.splice(0);
-        const injected = buildMidTaskInjection(lines);
-        if (!injected) return;
-        ui.userEcho(lines);
-        session.messages.push({ role: 'user', content: injected });
-        await session.transcript?.logUser(injected);
+        // Multimodal media injection FIRST: media staged by `read` results this
+        // round becomes real content blocks (image_url / video_url /
+        // input_audio) in a user message, so the NEXT LLM call actually sees
+        // the pixels/audio instead of a text-only description. Merged with any
+        // queued mid-task user input so at most ONE user message is appended
+        // (Anthropic dialect dislikes consecutive user turns; the blocks and
+        // text ride together naturally). The payload-free `read` result kept
+        // transcripts/UI/fingerprints clean; the Base64 enters ONLY here, into
+        // the message array + transcript via logUser (the established
+        // multimodal-turn persistence path with verbatim replay).
+        let mediaBlocks = null;
+        let mediaAttachments = null;
+        if (pendingMediaAttach.length > 0 && session.modelCfg?.multimodal) {
+          const staged = pendingMediaAttach.splice(0);
+          const { buildAttachmentBlocks } = await import('../../lib/agent/attachments.js');
+          const out = await buildAttachmentBlocks(staged.map(m => m.source));
+          if (out.ok && out.blocks.length > 0) {
+            mediaBlocks = out.blocks;
+            mediaAttachments = staged.map(m => ({ media: m.media, source: m.relPath || m.source }));
+            ctx.print(style.dim(`[multimodal] attached ${staged.length} media file${staged.length > 1 ? 's' : ''}: ${staged.map(m => m.relPath || m.source).join(', ')}`));
+          } else {
+            const errs = out.ok ? ['no usable media'] : out.errors;
+            ctx.print(`[multimodal] media not attached: ${errs.join('; ')}`);
+          }
+        } else if (pendingMediaAttach.length > 0) {
+          // Model switched mid-session to a non-multimodal one: drop the staged
+          // media with a notice rather than sending text-only placeholders.
+          pendingMediaAttach.length = 0;
+          ctx.print('[multimodal] staged media dropped: the active model no longer accepts multimodal input');
+        }
+        const lines = (session.userInputQueue || []).length > 0 ? session.userInputQueue.splice(0) : [];
+        const injected = lines.length > 0 ? buildMidTaskInjection(lines) : null;
+        if (!mediaBlocks && !injected) return;
+        if (lines.length > 0) ui.userEcho(lines);
+        const textPart = injected
+          || '## Attached media\n\nThe following media files were read this round and are attached below as content blocks; analyze their actual content.';
+        const { buildMultimodalContent } = await import('../../lib/agent/attachments.js');
+        const content = mediaBlocks ? buildMultimodalContent(textPart, mediaBlocks) : injected;
+        session.messages.push({ role: 'user', content });
+        await session.transcript?.logUser(content, { attachments: mediaAttachments || undefined });
       },
       llmOpts: {
         maxChars: session.modelCfg.maxChars,

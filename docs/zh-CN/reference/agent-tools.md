@@ -23,13 +23,23 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 
 ### `read`
 
-读取 **UTF-8 文本**文件——不支持图片或二进制内容。超过 **5 MiB** 的文件直接拒绝
+读取 **UTF-8 文本**文件。超过 **5 MiB** 的文件直接拒绝
 （`file too large: N bytes`——分页读取也无济于事）。在此限内，输出带行号，
 按行边界截断到 2000 行或约 256 KiB——但第一条请求行即使本身超过名义
 字节上限也仍会返回；用 `offset`/`limit` 继续读取。
 前 8192 个解码字符中含 NUL 字节的文件会按二进制拒绝
 （`binary file (NUL byte detected): … — read only supports text files`）
 ——这是 NUL 扫描启发式，不是完整的二进制格式识别。
+
+**媒体文件（多模态）**：图片（png / jpg / jpeg / gif / webp / bmp）、视频
+（mp4 / mov / mkv / avi / webm / flv / m4v）与语音
+（wav / mp3 / m4a / aac / ogg / flac / opus）文件**永不作为文本读取**，
+按扩展名前置分类：会话激活模型开启了 `--multimodal=on` 时，`read` 返回一个
+紧凑的 `attach` 标记（不含 Base64），回合管线在回合边界自动把真实内容块
+（`image_url` / `video_url` / `input_audio`）注入对话——智能体读到的是真实像素/
+音频，无需手动 `/attach`（单文件 20 MB 上限）；未开启多模态时读取被拒绝，
+报错中附带修复提示（`/model set <ref> --multimodal=on`）。
+
 对符合条件的已索引源文件，内容前附带结构性
 `## Outline (from KB)` 章节（`outline=false` 禁用），且结果可能携带用于
 陈旧锚点保护的 `tag`（见[陈旧锚点保护](#陈旧锚点保护tag)）。`read` 自动

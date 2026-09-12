@@ -242,8 +242,12 @@ export async function collectWorkingTreeDiff(sourcePath) {
  */
 export async function summarizeConversation(llm, messages) {
   const parts = [];
+  // Multimodal user turns carry content-block arrays whose image/video/audio
+  // blocks hold Base64 payloads; flatten them to short placeholders so the
+  // summary prompt describes the media instead of dumping megabytes of data.
+  const { flattenMultimodalContent } = await import('../../lib/agent/attachments.js');
   for (const m of messages) {
-    let body = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '');
+    let body = flattenMultimodalContent(m.content);
     if (m.role === 'tool') {
       body = `tool_result(${m.tool_call_id || '?'}): ${body}`;
     } else if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
@@ -297,9 +301,12 @@ async function extractCompactedFacts(llm, messages) {
   if (!llm) return [];
   try {
     const parts = [];
+    const { flattenMultimodalContent } = await import('../../lib/agent/attachments.js');
     for (const m of messages) {
       if (m.role !== 'user' && m.role !== 'assistant') continue;
-      const body = typeof m.content === 'string' ? m.content : '';
+      // Multimodal content arrays flatten to text + media placeholders — the
+      // Base64 payloads are useless for fact extraction and huge.
+      const body = flattenMultimodalContent(m.content);
       if (!body.trim()) continue;
       parts.push(`${m.role.toUpperCase()}: ${body.slice(0, 2000)}`);
     }
@@ -461,9 +468,11 @@ export async function compactMessages(session) {
   }
   if (!summaryText) {
     // Naive fallback: concatenate + truncate, now including tool results so we
-    // don't silently drop them.
+    // don't silently drop them. Multimodal content arrays flatten to media
+    // placeholders (never the raw Base64) via flattenMultimodalContent.
+    const { flattenMultimodalContent } = await import('../../lib/agent/attachments.js');
     summaryText = toSummarize
-      .map(m => `${m.role.toUpperCase()}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`)
+      .map(m => `${m.role.toUpperCase()}: ${flattenMultimodalContent(m.content)}`)
       .join('\n\n');
   }
 
