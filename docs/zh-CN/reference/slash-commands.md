@@ -66,7 +66,7 @@
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（见 `/model types`；默认 `generic`） |
 | `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'`；传 `'{}'` 即清空；按类型声明的特性校验 |
-| `--multimodal=on\|off` | 多模态输入（图片 / 视频 / 语音附件，经 `/attach` 暂存）；默认 `off`；设为 `on` 要求 `--model-type` 具备多模态能力（目前仅 `glm-5.3-flash`），不具备的模型会被拒绝 |
+| `--multimodal=on\|off` | 多模态输入（图片 / 视频 / 语音附件，经 `/attach` 暂存）；默认 `off`；设为 `on` 要求 `--model-type` 具备多模态能力（目前为 `glm-5.3-flash` 和 `deepseek-flash`），不具备的模型会被拒绝 |
 
 `set-phase` 阶段：`rewrite-query`、`request-assess`、`plan-review`、
 `code-review`。
@@ -252,7 +252,7 @@
 图片 / 视频 / 语音附件。
 
 - 要求会话模型已开启多模态输入：在具备能力的类型（目前为
-  `glm-5.3-flash`）上 `/model set <provider>/<model-id> --multimodal=on`；
+  `glm-5.3-flash` 或 `deepseek-flash`）上 `/model set <provider>/<model-id> --multimodal=on`；
   否则命令会说明原因并拒绝。
 - 无参数——列出已暂存内容；`clear`——丢弃全部暂存附件。
 - 本地文件在发送时编码为 Base64 Data URL（单文件 20 MB）；远程

@@ -73,8 +73,9 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 ## 多模态输入
 
 配置了 `--multimodal=on` 的模型可以在文本之外接受图片 / 视频 / 语音输入。
-该参数默认 `off`，且只对具备多模态能力的模型类型开放——目前仅
-`glm-5.3-flash`（参见[智谱 glm-5.3-flash 官方文档](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)）。
+该参数默认 `off`，且只对具备多模态能力的模型类型开放——目前为
+`glm-5.3-flash`（参见[智谱 glm-5.3-flash 官方文档](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)）
+与 `deepseek-flash`。
 对不具备多模态能力的模型设置 `--multimodal=on` 会**报错拒绝**；
 `/model types` 会列出具备该能力的类型。
 

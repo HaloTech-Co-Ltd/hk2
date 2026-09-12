@@ -68,7 +68,7 @@ Flags for `set` / `add`:
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (see `/model types`; default `generic`) |
 | `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; `'{}'` clears; validated against the type's declared features |
-| `--multimodal=on\|off` | Multimodal input (image / video / audio attachments via `/attach`); default `off`; `on` requires a multimodal-capable `--model-type` (currently `glm-5.3-flash`) — setting it on an incapable model is rejected |
+| `--multimodal=on\|off` | Multimodal input (image / video / audio attachments via `/attach`); default `off`; `on` requires a multimodal-capable `--model-type` (currently `glm-5.3-flash` and `deepseek-flash`) — setting it on an incapable model is rejected |
 
 `set-phase` phases: `rewrite-query`, `request-assess`, `plan-review`,
 `code-review`.
@@ -272,7 +272,8 @@ audio attachment(s) for your **next** message.
 
 - Requires the session model to have multimodal input on:
   `/model set <provider>/<model-id> --multimodal=on` on a capable type
-  (currently `glm-5.3-flash`); otherwise the command explains and refuses.
+  (currently `glm-5.3-flash` or `deepseek-flash`); otherwise the command
+  explains and refuses.
 - No args — list what is staged; `clear` — drop everything staged.
 - Local files are Base64-encoded as data URLs at send time (20 MB per file);
   remote image / video http(s) URLs pass through. Supported: png / jpg /

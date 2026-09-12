@@ -67,13 +67,17 @@ function tmpFile(name, content) {
 /* 1. Config layer                                                     */
 /* ------------------------------------------------------------------ */
 
-test('multimodal capability is declared ONLY for glm-5.3-flash', () => {
+test('multimodal capability is declared for glm-5.3-flash and deepseek-flash', () => {
   assert.equal(modelTypeMultimodal('glm-5.3-flash'), true);
   assert.equal(modelTypeMultimodal('GLM-5.3-FLASH'), true, 'case-insensitive');
+  assert.equal(modelTypeMultimodal('deepseek-flash'), true);
+  assert.equal(modelTypeMultimodal('DeepSeek-Flash'), true, 'case-insensitive');
+  assert.equal(modelTypeMultimodal('deepseek-v4-flash'), false, 'deepseek-v4-flash is text-only');
   assert.equal(modelTypeMultimodal('glm-5.3'), false, 'glm-5.3 (non-flash) is text-only');
   assert.equal(modelTypeMultimodal('generic'), false);
   assert.equal(modelTypeMultimodal(undefined), false);
   assert.equal(modelTypeFeatures('glm-5.3-flash').multimodal, true);
+  assert.equal(modelTypeFeatures('deepseek-flash').multimodal, true);
   assert.equal(modelTypeFeatures('glm-5.3').multimodal ?? false, false);
 });
 
@@ -97,6 +101,7 @@ test('parseMultimodalFlag accepts on/off spellings and rejects junk', () => {
 
 test('validateMultimodalForType: on requires a capable type; off is always valid', () => {
   assert.equal(validateMultimodalForType('glm-5.3-flash', true), null);
+  assert.equal(validateMultimodalForType('deepseek-flash', true), null);
   assert.equal(validateMultimodalForType('glm-5.3-flash', false), null);
   assert.equal(validateMultimodalForType('glm-5.3', false), null);
   assert.equal(validateMultimodalForType('generic', false), null);

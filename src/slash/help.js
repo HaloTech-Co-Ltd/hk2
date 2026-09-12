@@ -471,7 +471,7 @@ export const HELP_TEXT = {
     `  /model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on ...`,
     `  /model set <provider>/<model-id> --multimodal=on   (on an added model)`,
     `Only multimodal-capable model types accept --multimodal=on (see`,
-    `/model types; currently glm-5.3-flash). Setting it on an incapable`,
+    `/model types; currently glm-5.3-flash, deepseek-flash). Setting it on an incapable`,
     `model is rejected with an error.`,
     ``,
     `Supported media: images (png jpg jpeg gif webp bmp), video`,

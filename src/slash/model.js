@@ -400,7 +400,8 @@ async function setModel(rest, ctx) {
       if (typeErr) return { error: `Invalid --model-options: ${typeErr}` };
     }
     // Multimodal capability gate: --multimodal=on is only valid for model
-    // types that declare the capability (currently glm-5.3-flash); off is
+    // types that declare the capability (currently glm-5.3-flash,
+    // deepseek-flash); off is
     // always allowed. Checked against the EFFECTIVE type so
     // `--model-type=glm-5.3-flash --multimodal=on` in one command works.
     if (multimodal !== undefined) {

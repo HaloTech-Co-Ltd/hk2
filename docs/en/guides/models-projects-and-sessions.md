@@ -82,7 +82,8 @@ is rejected by the command.
 A model configured with `--multimodal=on` accepts image / video / audio
 input alongside text. The flag defaults to `off` and is only accepted for
 multimodal-capable model types — currently `glm-5.3-flash` (see
-[BigModel's glm-5.3-flash docs](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash)).
+[BigModel's glm-5.3-flash docs](https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash))
+and `deepseek-flash`.
 Setting `--multimodal=on` on any other model type is **rejected with an
 error**;
 `/model types` lists the capable types.

@@ -41,7 +41,7 @@ test('supported model types are an exact, generic-terminated set', () => {
   assert.ok(types.includes('generic'), 'generic is present');
   assert.equal(new Set(types).size, types.length, 'no duplicates');
   // Spot-check a few vendors so a typo in the list is caught early.
-  for (const t of ['claude-fable-5', 'gpt-5.6-sol', 'deepseek-v4-pro', 'qwen-3.8-max', 'glm-5.3-flash', 'glm-5-turbo', 'kimi-k3']) {
+  for (const t of ['claude-fable-5', 'gpt-5.6-sol', 'deepseek-v4-pro', 'deepseek-flash', 'qwen-3.8-max', 'glm-5.3-flash', 'glm-5-turbo', 'kimi-k3']) {
     assert.ok(types.includes(t), `${t} is supported`);
   }
   assert.equal(DEFAULT_MODEL_TYPE, 'generic');
