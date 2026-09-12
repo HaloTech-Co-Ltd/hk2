@@ -226,6 +226,121 @@ test('L2 replaceAll: explicit escape hatch replaces every occurrence', async () 
   await fs.rm(tree, { recursive: true, force: true });
 });
 
+test('L2 replaceAll nested inside an edits[] entry is honored (incident: agent stuck retry loop)', async () => {
+  // Real-world shape: the model put replaceAll INSIDE the entry next to
+  // oldText/newText. The tool only read the TOP-LEVEL flag, silently dropped
+  // the nested one, and failed a non-unique anchor with "pass replaceAll:true"
+  // — advice the caller had already followed, baiting identical retries until
+  // the loop's stuck detector aborted the run (4 rounds, ~20 min lost).
+  const tree = await makeTree();
+  const f = path.join(tree, 'nested_ra.js');
+  const block = '                             resolve_n_predict(req, ggufmodel),\n                             req->output_think,\n                             ggufmrt_max_out_bytes(),';
+  const grown = '                             resolve_n_predict(req, ggufmodel),\n                             req->output_think,\n                             ggufmodel->sampling_cache.ignore_eos,\n                             ggufmrt_max_out_bytes(),';
+  await fs.writeFile(f, `void a(void) {
+  sched(m->sched,
+${block}
+                             0);
+}
+
+void b(void) {
+  sched(m->sched,
+${block}
+                             m->n_ctx);
+}
+`);
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({
+      path: f,
+      edits: [{ oldText: block, newText: grown, replaceAll: true }], // flag nested in the entry
+    });
+    assert.equal(r.error, undefined, `nested flag must be honored, got ${JSON.stringify(r)}`);
+    const after = await fs.readFile(f, 'utf8');
+    assert.equal(after.split('ignore_eos').length - 1, 2, 'both occurrences rewritten');
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
+test('L2 replaceAll: conflicting nested/top-level values are rejected, not guessed', async () => {
+  const tree = await makeTree();
+  const f = path.join(tree, 'conflict.js');
+  await fs.writeFile(f, 'foo();\nfoo();\n');
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    // entry true vs top-level false → disagreement → reject
+    const r = await edit.execute({
+      path: f,
+      replaceAll: false,
+      edits: [{ oldText: 'foo();', newText: 'bar();', replaceAll: true }],
+    });
+    assert.ok(r.error && /top-level boolean/.test(r.error), `clean rejection, got ${JSON.stringify(r)}`);
+    assert.equal(await fs.readFile(f, 'utf8'), 'foo();\nfoo();\n', 'file untouched');
+    // entry false vs top-level true → disagreement → reject
+    const r2 = await edit.execute({
+      path: f,
+      replaceAll: true,
+      edits: [{ oldText: 'foo();', newText: 'bar();', replaceAll: false }],
+    });
+    assert.ok(r2.error && /top-level boolean/.test(r2.error), `conflict rejected, got ${JSON.stringify(r2)}`);
+    assert.equal(await fs.readFile(f, 'utf8'), 'foo();\nfoo();\n', 'file untouched');
+    // mixed true/false INSIDE the batch → reject
+    const r3 = await edit.execute({
+      path: f,
+      edits: [
+        { oldText: 'foo();', newText: 'bar();', replaceAll: true },
+        { oldText: 'foo();', newText: 'baz();', replaceAll: false },
+      ],
+    });
+    assert.ok(r3.error && /top-level boolean/.test(r3.error), `mixed nested rejected, got ${JSON.stringify(r3)}`);
+    assert.equal(await fs.readFile(f, 'utf8'), 'foo();\nfoo();\n', 'file untouched');
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
+test('L2 replaceAll: all-false per-entry flags echo the default and are ignored', async () => {
+  // Models often re-emit explicit default flags per entry; that is not a
+  // conflict with anything — the strict default stands and the edit applies.
+  const tree = await makeTree();
+  const f = path.join(tree, 'echo_false.js');
+  await fs.writeFile(f, 'alpha();\nbeta();\n');
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({
+      path: f,
+      edits: [{ oldText: 'beta();', newText: 'BETA();', replaceAll: false }], // no top-level flag
+    });
+    assert.equal(r.error, undefined, `default echo must succeed, got ${JSON.stringify(r)}`);
+    assert.equal(await fs.readFile(f, 'utf8'), 'alpha();\nBETA();\n');
+    // Strict uniqueness still applies — a non-unique anchor keeps failing
+    // (the echoed false must NOT be read as a silent replaceAll opt-in).
+    const f2 = path.join(tree, 'echo_false_nu.js');
+    await fs.writeFile(f2, 'dup();\ndup();\n');
+    const r2 = await edit.execute({
+      path: f2,
+      edits: [{ oldText: 'dup();', newText: 'DUP();', replaceAll: false }],
+    });
+    assert.ok(r2.error && /not unique/.test(r2.error), `still strict, got ${JSON.stringify(r2)}`);
+    assert.equal(await fs.readFile(f2, 'utf8'), 'dup();\ndup();\n', 'file untouched');
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
+test('L2 not-unique diagnostic: line numbers, not raw byte offsets', async () => {
+  const tree = await makeTree();
+  const f = path.join(tree, 'diag_lines.js');
+  await fs.writeFile(f, 'pad line here\nfoo(1);\nfoo(1);\n');
+  await withWorkspace(tree, async () => {
+    const { edit } = getTools();
+    const r = await edit.execute({ path: f, old_string: 'foo(1);', new_string: 'bar(1);' });
+    assert.ok(r.error, 'non-unique anchor without replaceAll still fails');
+    assert.match(r.error, /line \d+, line \d+/, 'reports 1-based line numbers, not byte offsets');
+    assert.doesNotMatch(r.error, /matches at \d{2,}, \d{2,}/, 'no raw byte-offset pair like "matches at 69721, 71426"');
+    assert.match(r.error, /TOP level/, 'points at the top-level flag placement');
+    assert.equal(await fs.readFile(f, 'utf8'), 'pad line here\nfoo(1);\nfoo(1);\n', 'file untouched');
+  });
+  await fs.rm(tree, { recursive: true, force: true });
+});
+
 test('single-line oldText with indent drift learns the shift', async () => {
   const tree = await makeTree();
   const f = path.join(tree, 'single.js');
