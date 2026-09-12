@@ -195,3 +195,66 @@ test('resize invariant: a stale over-counted contentRows is clamped to the works
   f2.update();
   assert.equal(f2._lastTop, 11, 'unpinned: block right under the content');
 });
+
+function makeResizeFrame(blocks) {
+  // No opts rows: _rows() falls back to process.stdout.rows so the test can
+  // redefine it to simulate a terminal resize.
+  const writes = [];
+  const fakeStream = { isTTY: true, columns: 80, write: (s) => { writes.push(s); } };
+  const frame = new Frame(fakeStream, { blocks });
+  frame._started = true;
+  return { frame, all: () => writes.join('') };
+}
+
+/* ----- terminal resize: region re-derivation + cursor transparency ------- */
+
+test('pure-height resize re-derives the DECSTBM region (stack height unchanged)', () => {
+  // Regression: update() only re-emitted the region when the STACK height
+  // changed. A pure height resize (input box + status heights don't depend
+  // on the window) kept the STALE region reaching past the new screen
+  // bottom while the block repainted at the new bottom — streaming output
+  // then scrolled over the input box / status line.
+  const { frame, all } = makeResizeFrame([
+    { name: 'input', render: () => ['+--box--+', '| hi |', '+------+'] },
+    statusBlock('STATUS'),
+  ]);
+  frame.update(); // 24 rows, total 4 → region 1..20
+  assert.ok(all().includes('\x1b[1;20r'), 'precondition: 24-row region 1..20');
+  // Resize 24 → 12 rows. Stack height unchanged (still 4).
+  Object.defineProperty(process.stdout, 'rows', { value: 12, configurable: true });
+  Object.defineProperty(process.stderr, 'rows', { value: 12, configurable: true });
+  try {
+    frame.update();
+    const w = all();
+    assert.ok(w.includes('\x1b[1;8r'),
+      'region re-derived for the new height (12 - 4 = 8)');
+    // The region emission must sit AFTER the cursor save: DECSTBM homes the
+    // cursor to (1,1); saving after it would bank the homed position.
+    const i = w.lastIndexOf('\x1b[1;8r');
+    const save = w.lastIndexOf('\x1b7', i);
+    assert.ok(save >= 0 && save < i, 'new region emitted after the \\x1b7 save');
+    // Steady state after the resize: no further region emission on the next
+    // update (rows unchanged now).
+    const before = w.length;
+    frame.update();
+    assert.ok(!all().slice(before).includes('\x1b[1;8r'),
+      'steady state after resize does not re-emit the region');
+  } finally {
+    Object.defineProperty(process.stdout, 'rows', { value: 24, configurable: true });
+    Object.defineProperty(process.stderr, 'rows', { value: 24, configurable: true });
+  }
+});
+
+test('resize grows the window: region follows the new height too', () => {
+  const { frame, all } = makeResizeFrame([statusBlock('STATUS')]);
+  frame.update(); // 24 rows, total 1 → region 1..23
+  Object.defineProperty(process.stdout, 'rows', { value: 40, configurable: true });
+  Object.defineProperty(process.stderr, 'rows', { value: 40, configurable: true });
+  try {
+    frame.update();
+    assert.ok(all().includes('\x1b[1;39r'), 'region re-derived for 40 rows (1..39)');
+  } finally {
+    Object.defineProperty(process.stdout, 'rows', { value: 24, configurable: true });
+    Object.defineProperty(process.stderr, 'rows', { value: 24, configurable: true });
+  }
+});

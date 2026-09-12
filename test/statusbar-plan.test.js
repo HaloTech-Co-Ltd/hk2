@@ -186,3 +186,113 @@ test('partial shrink (N->M) also reflows and parks, not restores', () => {
   assert.ok(w.includes('\x1b[1;20r'), 'region set to new 1..20');
   assert.ok(!/\x1b8$/.test(w), 'partial shrink parks cursor, no stale restore');
 });
+
+/* ----- terminal resize: cursor transparency ---------------------------- */
+
+/**
+ * Minimal last-op-wins cursor model (same idea as tui_screen_model.test.js):
+ * track where the REAL terminal cursor ends up after replaying a byte
+ * stream, including the DECSTBM home-to-(1,1) side effect and DECSC/DECRC
+ * save/restore. Used to prove the resize sequence is cursor-transparent.
+ */
+function cursorAfter(buf, startCur) {
+  let cur = [...startCur];
+  let saved = [...startCur];
+  const re = /\x1b\[(\d+);(\d+)H|\x1b7|\x1b8|\x1b\[\d+;\d+r|\x1b\[\d+S|(\x1b\[[0-9;?]*[A-Za-z])|([^\x1b\n\r]+)/g;
+  let m;
+  while ((m = re.exec(buf))) {
+    if (m[1]) cur = [+m[1], +m[2]];
+    else if (m[0] === '\x1b7') saved = [...cur];
+    else if (m[0] === '\x1b8') cur = [...saved];
+    else if (/^\x1b\[\d+;\d+r$/.test(m[0])) {
+      // DECSTBM: the terminal homes the cursor to (1,1) as a side effect.
+      cur = [1, 1];
+    }
+    // 2K/K/S and plain text don't move the row; text advances the column but
+    // only H positions and save/restore matter for the assertions below.
+  }
+  return cur;
+}
+
+test('resize is cursor-transparent: a mid-screen typing cursor stays put', () => {
+  // Regression (the reported bug): resizing the window while the user's
+  // cursor sat mid-screen (e.g. row 12 of 24, typing) made the cursor jump
+  // to the TOP row and readline's next refresh (ED \x1b[0J ignores the
+  // scroll region) wipe the transcript from row 1 down. Root cause: the old
+  // resize handler (_applyScrollRegion(true)) emitted the DECSTBM BEFORE
+  // any cursor save, so update()'s entry \x1b7 re-saved the HOMED (1,1)
+  // position and the trailing \x1b8 restored it.
+  const { bar, all } = makeBar();
+  bar.update(); // first paint, steady 0-line block
+  // Simulate the handler start() wires (resize + SIGWINCH).
+  bar.handleResize();
+  const w = all().slice(all().indexOf('\x1b7\x1b[1;23r'));
+  // 1) The save must PRECEDE the region (DECSTBM homes the cursor).
+  assert.ok(w.startsWith('\x1b7\x1b[1;23r'),
+    'cursor saved BEFORE the DECSTBM that homes it');
+  // 2) Replaying from a mid-screen cursor must land back on it (the exact
+  //    "cursor jumps to the top" regression).
+  assert.deepEqual(cursorAfter(w, [12, 6]), [12, 6],
+    'mid-screen typing cursor restored, not homed to (1,1)');
+  assert.deepEqual(cursorAfter(w, [23, 40]), [23, 40],
+    'bottom-workspace cursor restored too');
+});
+
+test('resize with an active plan block re-derives the region from fresh counts', () => {
+  const { bar, all, setPlan } = makeBar();
+  setPlan(['Plan: x', '  > 1. a']);
+  bar.update(); // region 1..(24-1-2)=1..21
+  const seen = all().includes('\x1b[1;21r');
+  assert.ok(seen, 'precondition: plan block shrank the region to 1..21');
+  // Shrink the terminal mid-plan: 24 -> 16 rows. The handler must re-derive
+  // the region from the CURRENT counts (1..(16-1-2)=1..13), save the cursor
+  // first, and still restore it at the end.
+  Object.defineProperty(process.stdout, 'rows', { value: 16, configurable: true });
+  Object.defineProperty(process.stderr, 'rows', { value: 16, configurable: true });
+  try {
+    const before = all().length;
+    bar.handleResize();
+    const w = all().slice(before);
+    assert.ok(w.includes('\x1b[1;13r'), 'region re-derived for the new height (1..13)');
+    const tail = w.slice(w.indexOf('\x1b7\x1b[1;13r'));
+    assert.deepEqual(cursorAfter(tail, [8, 3]), [8, 3], 'cursor restored mid-plan resize');
+  } finally {
+    Object.defineProperty(process.stdout, 'rows', { value: 24, configurable: true });
+    Object.defineProperty(process.stderr, 'rows', { value: 24, configurable: true });
+  }
+});
+
+test('resize while docked keeps the DECSC slot and re-docks at the new row', () => {
+  // Mid-task input box armed: the DECSC slot belongs to the workspace
+  // continuation position — the resize prefix must NOT save over it. The
+  // tail must re-dock the visible cursor on the input row at its NEW row.
+  const writes = [];
+  const fakeStream = { isTTY: true, columns: 80, write: (s) => writes.push(s) };
+  Object.defineProperty(process.stdout, 'rows', { value: 24, configurable: true });
+  Object.defineProperty(process.stderr, 'rows', { value: 24, configurable: true });
+  let inputOn = true;
+  const bar = new StatusBar(fakeStream, {
+    formatter: () => 'STATUS',
+    inputRenderer: () => (inputOn ? ['» hello'] : []),
+  });
+  bar._started = true;
+  bar.setInputCursorFn(() => 8);
+  bar.update(); // grow 0->1: input row at 24-1-0=23, docked
+  const seq = writes.join('');
+  assert.ok(seq.includes('\x1b[23;8H'), 'precondition: docked at row 23 col 8');
+  // Resize 24 -> 30: the input row moves to 30-1-0=29.
+  Object.defineProperty(process.stdout, 'rows', { value: 30, configurable: true });
+  Object.defineProperty(process.stderr, 'rows', { value: 30, configurable: true });
+  try {
+    writes.length = 0;
+    bar.handleResize();
+    const w = writes.join('');
+    // No \x1b7 prefix: the slot holds the workspace continuation position.
+    assert.ok(!w.startsWith('\x1b7'), 'docked resize does not save over the DECSC slot');
+    // The tail re-docks on the NEW input row (29).
+    assert.ok(w.includes('\x1b[29;8H'), 're-docked at the new input row 29');
+  } finally {
+    Object.defineProperty(process.stdout, 'rows', { value: 24, configurable: true });
+    Object.defineProperty(process.stderr, 'rows', { value: 24, configurable: true });
+  }
+});

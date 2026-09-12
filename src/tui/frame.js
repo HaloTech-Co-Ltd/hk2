@@ -97,6 +97,9 @@ export class Frame {
     this._animTimer = null;
     this._renderQueued = false;
     this._renderTimer = null;
+    // Terminal rows the DECSTBM region was last derived from. A pure height
+    // resize (block-stack height unchanged) must re-derive the region.
+    this._regionRows = 0;
   }
 
   isEnabled() { return this.enabled; }
@@ -116,7 +119,10 @@ export class Frame {
     // process-wide fallback.
     this.stream.on?.('resize', this._resizeHandler);
     process.on('SIGWINCH', this._resizeHandler);
-    this._applyScrollRegion();
+    // No bare DECSTBM here: update()'s firstPaint path establishes the
+    // region AFTER the \x1b7 save (cursor-transparent). A bare region first
+    // would home the cursor and the following save would bank (1,1) — the
+    // same top-jump regression StatusBar had.
     this.update();
   }
 
@@ -146,6 +152,7 @@ export class Frame {
     this._contentRows = 0;
     this._lastTop = 0;
     this._lastTextRow = 0;
+    this._regionRows = 0;
     this._cursorIn = 'workspace';
   }
 
@@ -242,7 +249,18 @@ export class Frame {
       this._lastTop > 0 ? Math.min(this._lastTop, top) : top,
       (this._lastTextRow || 0) + 1,
     );
-    let seq = firstPaint ? `\x1b[1;${regionBottom}r` : '';
+    // Cursor-transparent region (re)establishment — the save ALWAYS precedes
+    // the DECSTBM: the region homes the cursor to (1,1) as a side effect, so
+    // emitting it before \x1b7 would bank the homed position and the tail
+    // \x1b8 would park the cursor at the top row (the StatusBar resize
+    // regression, same family). Re-emit on first paint, on stack-height
+    // changes, AND whenever the terminal ROWS changed since the last
+    // emission: a pure height resize keeps the stack height (input box /
+    // status line heights don't depend on the window) and without this the
+    // block repaints at the new bottom while the STALE region still reaches
+    // past it — streaming output then scrolls over the input box / status.
+    const rowsChanged = this._regionRows !== rows;
+    let seq = '';
     seq += '\x1b7';
     if (grew || shrank) seq += '\x1b[?25l'; // hide the cursor during reflow
     // GROW into a pinned position: scroll the OLD workspace up by the
@@ -254,9 +272,11 @@ export class Frame {
       seq += `\x1b[${growPush}S`;
       this._lastTextRow = Math.max(0, (this._lastTextRow || 0) - growPush);
     }
-    if (grew || shrank || firstPaint) {
-      // Height changed (or first paint): re-establish the region.
+    if (grew || shrank || firstPaint || rowsChanged) {
+      // Height/geometry changed (or first paint): (re)establish the region —
+      // always AFTER the \x1b7 save above.
       seq += `\x1b[1;${regionBottom}r`;
+      this._regionRows = rows;
     }
     for (let r = clearFrom; r <= rows; r++) {
       seq += `\x1b[${r};1H\x1b[2K`;
@@ -403,12 +423,6 @@ export class Frame {
 
   _stopAnimation() {
     if (this._animTimer) { clearInterval(this._animTimer); this._animTimer = null; }
-  }
-
-  _applyScrollRegion() {
-    const rows = this._rows();
-    const scrollBottom = Math.max(1, rows - this._total);
-    this._write(`\x1b[1;${scrollBottom}r`);
   }
 
   _rows() {
