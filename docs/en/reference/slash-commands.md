@@ -27,6 +27,7 @@ spaces: `--title="SPI Extension Pattern"`.
 | [`/resume`](#resume) | Resume a previous session (Claude Code convention) |
 | [`/remember`](#remember) / [`/forget`](#forget) | Record / remove session facts; successful saves survive compaction |
 | [`/attach`](#attach) | Stage image / video / audio for the next message (multimodal models) |
+| [`/tool`](#tool) | View / configure the multimodal vision tools (list / set-model / enable / ...) |
 | [`/review`](#review) | Manually review the completed task |
 | [`/theme`](#theme) | Customize tool-card colors |
 | [`/clear`](#clear) | Clear the in-memory conversation context |
@@ -278,6 +279,40 @@ audio attachment(s) for your **next** message.
   jpeg / gif / webp / bmp, mp4 / mov / mkv / avi / webm / flv / m4v, wav /
   mp3 / m4a / aac / ogg / flac / opus.
 - Attachments ride exactly one user message, then clear automatically.
+
+## `/tool`
+
+Usage: `/tool <subcommand> [args]` — view and configure the multimodal
+**vision tool suite** (8 agent tools that analyze images / video via a
+dedicated multimodal model, giving any session model multimodal
+capabilities).
+
+| Subcommand | Purpose |
+|---|---|
+| `list` | List the 8 vision tools with on/off status, the vision model and any per-tool overrides |
+| `show <name>` | Describe one tool (inputs, extra arguments, own model) |
+| `enable <name>` / `disable <name>` | Toggle a tool; disabled tools disappear from the agent |
+| `set-model <provider>/<model-id>` | Set the suite-wide default vision model (must resolve `--multimodal=on`) |
+| `set-model <tool> <provider>/<model-id>` | Set ONE tool's own vision model — wins over the default for that tool only |
+| `clear-model [tool]` | Drop the suite override, or one tool's override when a tool name is given |
+| `reset` | Re-enable every disabled tool |
+
+Setup: register a multimodal-capable model, then point the suite at it —
+optionally giving individual tools their own models:
+
+```text
+/model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on ...
+/tool set-model bigmodel/glm-5.3-flash
+/tool set-model video_analysis other/qwen-vl      # per-tool override
+```
+
+Settings persist in `~/.hk2/tools.json` (`visionModelRef` + `toolModels` +
+`disabled[]`). Every ref — suite-wide or per-tool — is re-validated at every
+turn: a stale or downgraded per-tool ref silently falls back to the suite
+default (then the session model); a stale suite ref falls back to the session
+model (or unregisters the uncovered tools when no multimodal session model
+exists). The 8 tools themselves are documented in
+[Agent tools — Vision tools](agent-tools.md#vision-tools-multimodal).
 
 ## `/review`
 

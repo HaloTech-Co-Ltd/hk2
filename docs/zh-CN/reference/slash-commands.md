@@ -25,6 +25,7 @@
 | [`/resume`](#resume) | 恢复之前的会话（Claude Code 惯例） |
 | [`/remember`](#remember) / [`/forget`](#forget) | 记录 / 删除会话事实；成功保存后免受压缩影响 |
 | [`/attach`](#attach) | 为下一条消息暂存图片 / 视频 / 语音（多模态模型） |
+| [`/tool`](#tool) | 查看 / 配置多模态视觉工具（list / set-model / enable / ...） |
 | [`/review`](#review) | 手动审查已完成的任务 |
 | [`/theme`](#theme) | 自定义工具卡片颜色 |
 | [`/clear`](#clear) | 清空内存中的对话上下文 |
@@ -259,6 +260,37 @@
   webp / bmp，mp4 / mov / mkv / avi / webm / flv / m4v，wav / mp3 /
   m4a / aac / ogg / flac / opus。
 - 附件只随一条用户消息发送，之后自动清空。
+
+## `/tool`
+
+用法：`/tool <子命令> [参数]`——查看与配置多模态**视觉工具集**
+（8 个通过专用多模态模型分析图片 / 视频的智能体工具，让任意会话模型
+获得多模态能力）。
+
+| 子命令 | 用途 |
+|---|---|
+| `list` | 列出 8 个视觉工具的启用状态、视觉模型与工具级覆盖 |
+| `show <name>` | 描述单个工具（输入参数、附加参数、专属模型） |
+| `enable <name>` / `disable <name>` | 启停单个工具；禁用后从智能体工具列表消失 |
+| `set-model <provider>/<model-id>` | 设置套件级默认视觉模型（必须解析为 `--multimodal=on`） |
+| `set-model <tool> <provider>/<model-id>` | 为单个工具设置专属视觉模型——仅对该工具优先于默认 |
+| `clear-model [tool]` | 清除套件级覆盖；带工具名时清除该工具的专属覆盖 |
+| `reset` | 重新启用全部被禁用的工具 |
+
+配置：先注册多模态能力模型，再指向它——可选地为单个工具指定专属模型：
+
+```text
+/model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on ...
+/tool set-model bigmodel/glm-5.3-flash
+/tool set-model video_analysis other/qwen-vl      # 工具级覆盖
+```
+
+设置持久化在 `~/.hk2/tools.json`（`visionModelRef` + `toolModels` +
+`disabled[]`）。所有 ref——套件级或工具级——每回合重新校验：失效或
+降级的工具级 ref 静默回退到套件默认（再到会话模型）；失效的套件 ref
+回退到会话模型（无多模态会话模型时未覆盖的工具被注销）。8 个工具
+本身的说明见
+[智能体工具 — 视觉工具](agent-tools.md#视觉工具多模态)。
 
 ## `/review`
 

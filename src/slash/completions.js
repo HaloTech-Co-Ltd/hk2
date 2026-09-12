@@ -47,7 +47,7 @@ const cache = new Map();
  * `tokens` follows slashCompletions' convention: tokens = line.split(/\s+/)
  * — the LAST token is the (possibly empty) fragment being completed.
  *
- * @returns {{kind: 'models'|'sessions'|'projects', index: number} | null}
+ * @returns {{kind: 'models'|'sessions'|'projects'|'visionTools', index: number} | null}
  */
 export function dynamicSlot(tokens) {
   if (!Array.isArray(tokens) || tokens.length < 2) return null;
@@ -84,6 +84,22 @@ export function dynamicSlot(tokens) {
     }
     return null;
   }
+  if (family === '/tool') {
+    const sub = tokens[1];
+    // /tool set-model <ref> | /tool set-model <tool> <ref> — model-ref slots
+    // (position 2 for the suite form, position 3 after a tool name).
+    if (sub === 'set-model') {
+      if (isFlagPos) return null;
+      if (last === 2) return { kind: 'models', index: 2 };
+      if (last === 3) return { kind: 'models', index: 3 };
+      return null;
+    }
+    // /tool show|enable|disable <name> — vision tool name slot.
+    if (sub === 'show' || sub === 'enable' || sub === 'disable') {
+      return (!isFlagPos && last === 2) ? { kind: 'visionTools', index: 2 } : null;
+    }
+    return null;
+  }
   if (family === '/session') {
     const sub = tokens[1];
     if ((sub === 'resume' || sub === 'info') && last === 2) return { kind: 'sessions', index: 2 };
@@ -104,7 +120,7 @@ export function dynamicSlot(tokens) {
 
 /**
  * Which dynamic data kind does this line's cursor position need?
- * @returns {'models'|'sessions'|'projects'|null}
+ * @returns {'models'|'sessions'|'projects'|'visionTools'|null}
  */
 export function dynamicContextKey(line) {
   if (typeof line !== 'string' || !line.startsWith('/')) return null;
@@ -173,10 +189,17 @@ async function loadProjectList() {
   });
 }
 
+/** Vision tool names for the /tool show|enable|disable completion slot. */
+async function loadVisionToolNames() {
+  const { VISION_TOOL_NAMES } = await import('../../lib/agent/vision_tools.js');
+  return VISION_TOOL_NAMES.map((name) => ({ id: name, desc: 'vision tool' }));
+}
+
 const LOADERS = {
   models: loadModelRefs,
   sessions: ({ projectId } = {}) => loadSessionIds(projectId),
   projects: loadProjectList,
+  visionTools: loadVisionToolNames,
 };
 
 /**

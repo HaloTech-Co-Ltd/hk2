@@ -18,6 +18,7 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 | KB query | `kb_search`, `kb_symbol`, `kb_outline`, `kb_neighbors`, `kb_callchain`, `kb_class`, `kb_refs`, `kb_implements` |
 | KB knowledge | `kb_knowledge`, `kb_search_knowledge`, `kb_save_knowledge` |
 | Session | `remember` |
+| Vision (multimodal) | `ui_to_artifact`, `extract_text_from_screenshot`, `diagnose_error_screenshot`, `understand_technical_diagram`, `analyze_data_visualization`, `ui_diff_check`, `image_analysis`, `video_analysis` |
 | MCP | `mcp__<server>__<tool>` |
 
 ## File tools
@@ -275,6 +276,42 @@ model via `/model add-mcpserver` (e.g. `mcp__web-reader__webReader`). Each
 agent turn attaches them after the built-ins; unreachable servers are
 skipped with a warning. See
 [Models, projects, and sessions](../guides/models-projects-and-sessions.md#mcp-servers).
+
+## Vision tools (multimodal)
+
+Eight specialized tools that give **any** session model multimodal analysis
+capabilities — including text-only ones. Each tool forwards the given
+image/video to a **dedicated multimodal model** and returns that model's
+textual analysis as the tool result; the session model itself never receives
+the media. Each tool may use its **own** model: `/tool set-model <tool>
+<provider>/<model-id>` sets a per-tool override that wins over the suite-wide
+default (`/tool set-model <provider>/<model-id>`, falling back to the session
+model when it has `--multimodal=on`).
+
+| Tool | Purpose |
+|---|---|
+| `ui_to_artifact` | UI screenshot → code / generative prompt / design spec / description |
+| `extract_text_from_screenshot` | OCR: code, terminal output, documents, general text |
+| `diagnose_error_screenshot` | error dialogs / stack traces / logs → location + fix advice |
+| `understand_technical_diagram` | architecture / flow / UML / ER diagrams → structured reading |
+| `analyze_data_visualization` | dashboards & charts → trends, anomalies, business takeaways |
+| `ui_diff_check` | design vs implementation screenshot diff (two images) |
+| `image_analysis` | general image understanding (question-driven) |
+| `video_analysis` | video scenes, key frames, events (local files ≤ 8 MB) |
+
+- Image tools accept a local path or an http(s) URL (png / jpg / jpeg /
+  gif / webp / bmp); `video_analysis` accepts mp4 / mov / m4v (and other
+  video extensions) with **local files capped at 8 MB**.
+- The suite is registered only when a vision model resolves for a tool:
+  tools.json `toolModels[<tool>]` (per-tool override) first, then
+  `visionModelRef` (suite default), then a multimodal session model. A tool
+  with no resolvable tier does not appear at all. Configure with
+  `/model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on`
+  followed by `/tool set-model bigmodel/glm-5.3-flash` (optionally
+  `/tool set-model video_analysis other/qwen-vl` for one tool).
+- `/tool list | show | enable | disable | set-model | clear-model | reset`
+  manage the suite; settings persist in `~/.hk2/tools.json`
+  (`visionModelRef` + `toolModels` + `disabled`).
 
 ## KB-first policy
 

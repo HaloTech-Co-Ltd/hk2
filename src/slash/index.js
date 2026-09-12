@@ -66,6 +66,7 @@ import { cmdReview } from './review.js';
 import { cmdTheme } from './theme.js';
 import { cmdRemember, cmdForget } from './remember.js';
 import { cmdAttach } from './attach.js';
+import { cmdTool } from './tool.js';
 import { printCommandHelp, HELP_TEXT } from './help.js';
 import { dynamicSlot, invalidateDynamicCache } from './completions.js';
 import { looksLikeSlashCommand, isPlausibleCommandName, suggestCommand } from '../../lib/slash_command.js';
@@ -83,6 +84,7 @@ export const SLASH_COMMANDS = [
   { name: '/remember', handler: cmdRemember, description: 'Record a session fact; after successful persistence it stays in scope and survives compaction — list with no args' },
   { name: '/forget',  handler: cmdForget,  description: 'Remove session fact(s): /forget <substring>, or all with confirmation' },
   { name: '/attach',  handler: cmdAttach,  description: 'Stage image / video / audio file(s) for your NEXT message (needs a --multimodal=on model, e.g. glm-5.3-flash)' },
+  { name: '/tool',    handler: cmdTool,    description: 'View / configure the multimodal vision tools (list / show / enable / disable / set-model / clear-model / reset)' },
   { name: '/help',    handler: cmdHelp,    description: 'Show this help' },
   { name: '/quit',    handler: cmdQuit,    description: 'Exit (same as Ctrl+D)' },
   { name: '/exit',    handler: cmdQuit,    description: 'Exit (same as /quit)' },
@@ -271,10 +273,14 @@ function prefixTo(tokens, upto) {
   return tokens.slice(0, upto).join(' ') + ' ';
 }
 
-/** HELP_TEXT keys that appear as a subcommand row of `key` (nested topics, e.g. kb → knowledge, code). */
+/** Nested topics of `key` that are NOT already a subcommand row of it. `help`
+ * is synthetically appended by helpSubcommands for every family, so treating
+ * it as a nested topic duplicated it in completions (e.g. two '/tool help').
+ * TRUE nested topics look like kb → knowledge (a subcommand that itself has
+ * a HELP_TEXT block); exclude the synthetic 'help' from that match. */
 function nestedTopics(key) {
   const subs = helpSubcommands(key);
-  return Object.keys(HELP_TEXT).filter(t => t !== key && subs.some(s => s.name === t));
+  return Object.keys(HELP_TEXT).filter(t => t !== key && t !== 'help' && subs.some(s => s.name === t));
 }
 
 /**
@@ -360,7 +366,10 @@ export function slashCompletions(line, dyn) {
       .filter(s => s.name.startsWith(fragment))
       .map(s => ({ label: `${family} ${s.name}`, description: s.description }));
     for (const topic of nestedTopics(key)) {
-      if (topic.startsWith(fragment)) {
+      // nestedTopics keys are subcommand names that carry their own HELP_TEXT
+      // block, so the sub row above already emitted each label — skip any
+      // label already present (duplicate menu entries otherwise).
+      if (topic.startsWith(fragment) && !items.some(i => i.label === `${family} ${topic}`)) {
         const row = subs.find(s => s.name === topic);
         items.push({ label: `${family} ${topic}`, description: row ? row.description : '' });
       }

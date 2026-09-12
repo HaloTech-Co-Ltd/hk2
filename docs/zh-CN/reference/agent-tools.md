@@ -17,6 +17,7 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 | 知识库查询 | `kb_search`、`kb_symbol`、`kb_outline`、`kb_neighbors`、`kb_callchain`、`kb_class`、`kb_refs`、`kb_implements` |
 | 知识库知识 | `kb_knowledge`、`kb_search_knowledge`、`kb_save_knowledge` |
 | 会话 | `remember` |
+| 视觉（多模态） | `ui_to_artifact`、`extract_text_from_screenshot`、`diagnose_error_screenshot`、`understand_technical_diagram`、`analyze_data_visualization`、`ui_diff_check`、`image_analysis`、`video_analysis` |
 | MCP | `mcp__<server>__<tool>` |
 
 ## 文件工具
@@ -226,6 +227,39 @@ discard，以及读取 / tag / 写入失败都会消费 proposal。权限被拒�
 MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智能体回合在
 内置工具之后挂载；不可达的服务器会被跳过并给出警告。见
 [模型、项目与会话](../guides/models-projects-and-sessions.md#mcp-服务器)。
+
+## 视觉工具（多模态）
+
+八个专项工具，让**任意**会话模型（包括纯文本模型）获得多模态分析能力：
+每个工具把图片 / 视频转发给一个**专用多模态模型**，并把该模型的文字
+分析作为工具结果返回——媒体本身不会发给会话模型。每个工具可以使用
+**自己的**模型：`/tool set-model <tool> <provider>/<model-id>` 设置的
+工具级覆盖优先于套件级默认（`/tool set-model <provider>/<model-id>`，
+未配置时回退到开了 `--multimodal=on` 的会话模型）。
+
+| 工具 | 用途 |
+|---|---|
+| `ui_to_artifact` | UI 截图 → 代码 / 生成式提示词 / 设计规范 / 描述 |
+| `extract_text_from_screenshot` | OCR：代码、终端输出、文档、通用文本 |
+| `diagnose_error_screenshot` | 错误弹窗 / 堆栈 / 日志 → 定位与修复建议 |
+| `understand_technical_diagram` | 架构图 / 流程图 / UML / ER 图 → 结构化解读 |
+| `analyze_data_visualization` | 仪表盘与统计图表 → 趋势、异常、业务要点 |
+| `ui_diff_check` | 设计稿 vs 实现截图对比（两张图） |
+| `image_analysis` | 通用图像理解（问题驱动） |
+| `video_analysis` | 视频场景解析：关键帧、事件（本地文件 ≤ 8 MB） |
+
+- 图片工具接受本地路径或 http(s) URL（png / jpg / jpeg / gif / webp /
+  bmp）；`video_analysis` 接受 mp4 / mov / m4v 等视频格式，**本地文件
+  上限 8 MB**。
+- 仅当某个工具能解析到视觉模型时才注册它：先看 tools.json 的
+  `toolModels[<tool>]`（工具级覆盖），再看 `visionModelRef`（套件默认），
+  最后看多模态会话模型；三者皆无则该工具完全不出现。配置方式：
+  `/model add bigmodel glm-5.3-flash --model-type=glm-5.3-flash --multimodal=on`
+  然后 `/tool set-model bigmodel/glm-5.3-flash`（可选
+  `/tool set-model video_analysis other/qwen-vl` 为单个工具指定模型）。
+- `/tool list | show | enable | disable | set-model | clear-model | reset`
+  管理该工具集；设置持久化在 `~/.hk2/tools.json`
+  （`visionModelRef` + `toolModels` + `disabled`）。
 
 ## 知识库优先策略
 

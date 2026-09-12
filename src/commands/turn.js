@@ -48,6 +48,7 @@
  * interrupt recovery, KB conflict sync, and the end-of-turn KB flows.
  */
 import { resolveModelRef, getPhaseModelRef, getCurrentProject } from '../../lib/config/home.js';
+import { resolveVisionRuntime, buildVisionTools } from '../../lib/agent/vision_tools.js';
 import { LLMClient } from '../../lib/llm/client.js';
 import { estimateTokensFromChars } from '../../lib/llm/client.js';
 import { runPhaseWithFallback, runPhaseWithSkipOnUnreachable } from '../phase_fallback.js';
@@ -993,11 +994,30 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     }
   }
 
+  // Multimodal vision tool suite runtime: per-tool overrides (tools.json
+  // `toolModels`, re-validated every turn) win for their tool; otherwise a
+  // dedicated suite-wide vision model configured via `/tool set-model <ref>`
+  // (tools.json, re-validated every turn) wins; otherwise the session's active
+  // model when it is multimodal; otherwise a tool is not registered this turn.
+  // The suite lets even non-multimodal session models analyze images/videos:
+  // each tool forwards the media to the vision model and returns its textual
+  // analysis.
+  let visionTools = [];
+  try {
+    const visionRt = await resolveVisionRuntime(session);
+    if (visionRt) {
+      const { loadToolSettings } = await import('../../lib/config/home.js');
+      const settings = await loadToolSettings().catch(() => ({ disabled: [] }));
+      visionTools = await buildVisionTools(visionRt, { disabled: settings.disabled || [] });
+    }
+  } catch { /* suite unavailable this turn — register nothing */ }
+
   const tools = buildTools(session.rt, {
     allowWrite: true,
     llm: session.llm,
     projectId: session.project?.id,
     guard: session.kbGuard,
+    visionTools,
     // Multimodal input of the session's active model: when on, media reads
     // (image/video/audio) return attach markers instead of binary-rejection
     // errors, and the round-boundary injector turns them into real content
