@@ -18,7 +18,7 @@ active model appear after the built-ins as `mcp__<server>__<tool>`.
 | KB query | `kb_search`, `kb_symbol`, `kb_outline`, `kb_neighbors`, `kb_callchain`, `kb_class`, `kb_refs`, `kb_implements` |
 | KB knowledge | `kb_knowledge`, `kb_search_knowledge`, `kb_save_knowledge` |
 | Session | `remember` |
-| Vision (multimodal) | `ui_to_artifact`, `extract_text_from_screenshot`, `diagnose_error_screenshot`, `understand_technical_diagram`, `analyze_data_visualization`, `ui_diff_check`, `image_analysis`, `video_analysis` |
+| Vision (multimodal) | `ui_to_artifact`, `extract_text_from_screenshot`, `diagnose_error_screenshot`, `understand_technical_diagram`, `analyze_data_visualization`, `ui_diff_check`, `image_analysis`, `capture_and_analyze`, `record_and_analyze`, `video_analysis` |
 | MCP | `mcp__<server>__<tool>` |
 
 ## File tools
@@ -279,7 +279,7 @@ skipped with a warning. See
 
 ## Vision tools (multimodal)
 
-Eight specialized tools that give **any** session model multimodal analysis
+Ten specialized tools that give **any** session model multimodal analysis
 capabilities — including text-only ones. Each tool forwards the given
 image/video to a **dedicated multimodal model** and returns that model's
 textual analysis as the tool result; the session model itself never receives
@@ -297,11 +297,25 @@ model when it has `--multimodal=on`).
 | `analyze_data_visualization` | dashboards & charts → trends, anomalies, business takeaways |
 | `ui_diff_check` | design vs implementation screenshot diff (two images) |
 | `image_analysis` | general image understanding (question-driven) |
+| `capture_and_analyze` | **LIVE screenshot** of the current screen → multimodal analysis (issue locating); macOS / Windows / Linux |
+| `record_and_analyze` | **LIVE 1-60 s screen recording** → video analysis; macOS; Windows/Linux need ffmpeg; Linux Wayland recording unsupported |
 | `video_analysis` | video scenes, key frames, events (local files ≤ 8 MB) |
 
 - Image tools accept a local path or an http(s) URL (png / jpg / jpeg /
   gif / webp / bmp); `video_analysis` accepts mp4 / mov / m4v (and other
   video extensions) with **local files capped at 8 MB**.
+- `capture_and_analyze` and `record_and_analyze` take **no media input** —
+  they grab the **live screen** themselves (`seconds` selects the recording
+  length, 1-60 s, default 10) and forward the capture through the same
+  analysis pipeline. The capture lands in a temporary file that is deleted
+  after the analysis. Platform support — macOS: built-in `screencapture`
+  (the terminal needs the **Screen Recording** permission: System Settings →
+  Privacy & Security → Screen Recording); Windows: PowerShell/System.Drawing
+  for screenshots, ffmpeg required for recording; Linux: any of
+  gnome-screenshot / spectacle / scrot / grim / ImageMagick `import` for
+  screenshots, ffmpeg + an X11 session for recording (Wayland recording is
+  unsupported with an explicit error). Recordings are also subject to the
+  8 MB analysis cap — prefer 10-15 s clips.
 - The suite is registered only when a vision model resolves for a tool:
   tools.json `toolModels[<tool>]` (per-tool override) first, then
   `visionModelRef` (suite default), then a multimodal session model. A tool

@@ -79,11 +79,11 @@ test('help: HELP_TEXT.tool lists every routed subcommand', () => {
   assert.ok(renderHelp('tool'), 'renderHelp(tool) resolves');
 });
 
-test('help: the 8 vision tool names are documented', () => {
+test('help: the 10 vision tool names are documented', () => {
   const text = HELP_TEXT.tool.join('\n');
   for (const n of ['ui_to_artifact', 'extract_text_from_screenshot', 'diagnose_error_screenshot',
     'understand_technical_diagram', 'analyze_data_visualization', 'ui_diff_check',
-    'image_analysis', 'video_analysis']) {
+    'image_analysis', 'capture_and_analyze', 'record_and_analyze', 'video_analysis']) {
     assert.ok(text.includes(n), `HELP_TEXT.tool must mention tool "${n}"`);
   }
 });
@@ -120,11 +120,11 @@ test('dispatch: unknown subcommand falls back to usage', async () => {
 
 // -- 2. behaviors --------------------------------------------------------------
 
-test('list: shows the 8 tools and the unconfigured state', async () => {
+test('list: shows the 10 tools and the unconfigured state', async () => {
   const { ctx, prints } = makeCtx();
   await dispatchSlash('/tool list', ctx);
   const text = prints.join('\n');
-  for (const n of ['ui_to_artifact', 'video_analysis']) assert.ok(text.includes(n));
+  for (const n of ['ui_to_artifact', 'video_analysis', 'capture_and_analyze', 'record_and_analyze']) assert.ok(text.includes(n));
   assert.ok(text.includes('Vision model'), 'vision model line present');
   assert.ok(!text.includes('✗'), 'no disabled tools yet');
 });

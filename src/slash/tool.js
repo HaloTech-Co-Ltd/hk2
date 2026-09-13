@@ -13,7 +13,7 @@
 /**
  * /tool — view and configure the multimodal vision tool suite.
  *
- *   /tool list                        list the 8 vision tools + status
+ *   /tool list                        list the 10 vision tools + status
  *   /tool show <name>                 describe one tool (params, inputs)
  *   /tool enable <name>               re-enable a disabled tool
  *   /tool disable <name>              disable a tool for this install
@@ -55,7 +55,7 @@ import {
 
 function printUsage(ctx) {
   ctx.print(`Usage: /tool <subcommand> [args]`);
-  ctx.print(`View and configure the multimodal vision tool suite (8 tools).`);
+  ctx.print(`View and configure the multimodal vision tool suite (10 tools).`);
   ctx.print(``);
   ctx.print(`Subcommands:`);
   ctx.print(`  list                        List the vision tools and their status`);
@@ -66,6 +66,13 @@ function printUsage(ctx) {
   ctx.print(`  set-model <tool> <p>/<id>   Set ONE tool's own multimodal model (overrides the default)`);
   ctx.print(`  clear-model [tool]          Remove the suite override, or one tool's override`);
   ctx.print(`  reset                       Re-enable every disabled tool`);
+  ctx.print(``);
+  ctx.print(`Two LIVE screen-capture tools (no input path — they grab the screen`);
+  ctx.print(`themselves, then analyze it via the configured multimodal model):`);
+  ctx.print(`  capture_and_analyze          live screenshot → analysis (macOS / Win / Linux)`);
+  ctx.print(`  record_and_analyze           live 1-60s screen recording → video analysis`);
+  ctx.print(`                               (macOS; Windows/Linux additionally need ffmpeg;`);
+  ctx.print(`                                Linux Wayland recording is unsupported)`);
   ctx.print(``);
   ctx.print(`The vision tools forward images/video to a DEDICATED multimodal model`);
   ctx.print(`and return its analysis as text — so any session model gains multimodal`);
@@ -110,12 +117,13 @@ async function toolList(ctx) {
   const runtime = await resolveVisionRuntime({ modelCfg: ctx.modelCfg }).catch(() => null);
   const perToolCfgs = runtime?.perTool || {};
 
-  ctx.print(`Multimodal vision tools (8):`);
+  ctx.print(`Multimodal vision tools (10):`);
   for (const t of VISION_TOOLS) {
     const flag = disabled.has(t.name) ? '✗ off' : '✓ on ';
     const media = t.media === 'video' ? 'video' : 'image';
+    const kind = t.capture ? (t.capture === 'recording' ? 'live-rec' : 'live-cap') : media;
     const override = settings.toolModels?.[t.name];
-    ctx.print(`  ${flag}  ${t.name.padEnd(32)} [${media}]  ${t.snippet}`);
+    ctx.print(`  ${flag}  ${t.name.padEnd(32)} [${kind}]  ${t.snippet}`);
     if (override) {
       const ok = perToolCfgs[t.name] != null;
       ctx.print(`         ↳ own model: ${override}${ok ? '' : '  (unresolvable as multimodal — falls back to the suite default / session model; re-run /tool set-model)'}`);

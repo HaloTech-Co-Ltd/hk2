@@ -284,13 +284,13 @@ audio attachment(s) for your **next** message.
 ## `/tool`
 
 Usage: `/tool <subcommand> [args]` — view and configure the multimodal
-**vision tool suite** (8 agent tools that analyze images / video via a
-dedicated multimodal model, giving any session model multimodal
-capabilities).
+**vision tool suite** (10 agent tools that analyze images / video — including
+two LIVE screen-capture tools — via a dedicated multimodal model, giving any
+session model multimodal capabilities).
 
 | Subcommand | Purpose |
 |---|---|
-| `list` | List the 8 vision tools with on/off status, the vision model and any per-tool overrides |
+| `list` | List the 10 vision tools with on/off status, the vision model and any per-tool overrides |
 | `show <name>` | Describe one tool (inputs, extra arguments, own model) |
 | `enable <name>` / `disable <name>` | Toggle a tool; disabled tools disappear from the agent |
 | `set-model <provider>/<model-id>` | Set the suite-wide default vision model (must resolve `--multimodal=on`) |
@@ -312,7 +312,7 @@ Settings persist in `~/.hk2/tools.json` (`visionModelRef` + `toolModels` +
 turn: a stale or downgraded per-tool ref silently falls back to the suite
 default (then the session model); a stale suite ref falls back to the session
 model (or unregisters the uncovered tools when no multimodal session model
-exists). The 8 tools themselves are documented in
+exists). The 10 tools themselves are documented in
 [Agent tools — Vision tools](agent-tools.md#vision-tools-multimodal).
 
 ## `/review`

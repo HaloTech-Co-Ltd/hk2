@@ -2,8 +2,8 @@
  *
  * Multimodal vision tool suite regression tests.
  *
- * Feature under test (8 vision tools + /tool configuration):
- *   1. registry shape: 8 tools, unique names, media classes, JSON schemas;
+ * Feature under test (10 vision tools + /tool configuration):
+ *   1. registry shape: 10 tools, unique names, media classes, JSON schemas;
  *   2. resolveVisionRuntime: tools.json visionModelRef (validated) →
  *      session multimodal model → null;
  *   3. runVisionTool argument validation: missing args, wrong media class,
@@ -58,13 +58,13 @@ before(async () => {
 
 // -- 1. registry shape ----------------------------------------------------
 
-test('registry: exactly the 8 required tools, unique names', () => {
-  assert.equal(VISION_TOOLS.length, 8);
-  assert.equal(new Set(VISION_TOOL_NAMES).size, 8);
+test('registry: exactly the 10 required tools, unique names', () => {
+  assert.equal(VISION_TOOLS.length, 10);
+  assert.equal(new Set(VISION_TOOL_NAMES).size, 10);
   const expected = ['ui_to_artifact', 'extract_text_from_screenshot',
     'diagnose_error_screenshot', 'understand_technical_diagram',
     'analyze_data_visualization', 'ui_diff_check', 'image_analysis',
-    'video_analysis'];
+    'capture_and_analyze', 'record_and_analyze', 'video_analysis'];
   for (const n of expected) assert.ok(visionToolByName(n), `missing ${n}`);
   assert.equal(visionToolByName('nope'), null);
 });
@@ -72,6 +72,7 @@ test('registry: exactly the 8 required tools, unique names', () => {
 test('registry: media classes and required input args', () => {
   for (const t of VISION_TOOLS) {
     assert.ok(t.media === 'image' || t.media === 'video', `${t.name} media`);
+    if (t.capture) continue; // live-capture tools take NO path input
     assert.ok(Array.isArray(t.inputs) && t.inputs.length >= 1, `${t.name} inputs`);
     assert.ok(t.parameters && t.parameters.type === 'object', `${t.name} schema`);
     for (const i of t.inputs) {
@@ -80,6 +81,25 @@ test('registry: media classes and required input args', () => {
   }
   assert.equal(visionToolByName('video_analysis').media, 'video');
   assert.equal(visionToolByName('ui_diff_check').inputs.length, 2);
+});
+
+test('registry: live-capture entries take no path input', () => {
+  const cap = visionToolByName('capture_and_analyze');
+  const rec = visionToolByName('record_and_analyze');
+  assert.equal(cap.capture, 'screenshot');
+  assert.equal(cap.media, 'image');
+  assert.deepEqual(cap.inputs, []);
+  assert.deepEqual(cap.parameters.required, []);
+  assert.equal(rec.capture, 'recording');
+  assert.equal(rec.media, 'video');
+  assert.deepEqual(rec.inputs, []);
+  assert.deepEqual(rec.parameters.required, []);
+  // Every OTHER tool still declares at least one required path input, so
+  // the capture entries are the only zero-input tools in the registry.
+  for (const t of VISION_TOOLS) {
+    if (t.capture) continue;
+    assert.ok(t.parameters.required.length >= 1, `${t.name} keeps a required input`);
+  }
 });
 
 // -- 2. runtime resolution --------------------------------------------------
@@ -180,7 +200,7 @@ test('per-tool: resolveVisionRuntime returns perTool and the override wins for i
   assert.equal(rt.perTool.image_analysis, undefined);
 
   const tools = await buildVisionTools(rt);
-  assert.equal(tools.length, 8);
+  assert.equal(tools.length, 10);
   const vid = tools.find(t => t.name === 'video_analysis');
   assert.ok(vid.guidelines.join(' ').includes('prov/mm2'), 'video tool description names its own model');
   const img = tools.find(t => t.name === 'image_analysis');
@@ -218,7 +238,7 @@ test('per-tool: stale override falls back to the suite default per tool', async 
   assert.equal(rt.cfg.ref, 'prov/mm');
   assert.equal(rt.perTool.image_analysis, undefined, 'stale per-tool ref dropped');
   const tools = await buildVisionTools(rt);
-  assert.equal(tools.length, 8, 'all tools register via the suite default');
+  assert.equal(tools.length, 10, 'all tools register via the suite default');
   await clearToolVisionModelRef();
 });
 
@@ -277,16 +297,21 @@ test('runVisionTool: nonexistent local file reported clearly', async () => {
 test('buildVisionTools: empty without a runtime; full with one', async () => {
   assert.equal((await buildVisionTools(null)).length, 0);
   const tools = await buildVisionTools(RT);
-  assert.equal(tools.length, 8);
+  assert.equal(tools.length, 10);
   for (const t of tools) {
     assert.ok(t.name && t.description && t.parameters && typeof t.execute === 'function');
   }
+  // Live-capture tools describe their platform support in the guidelines.
+  const cap = tools.find(t => t.name === 'capture_and_analyze');
+  assert.ok(cap.guidelines.join(' ').includes('LIVE screen'), 'capture tool mentions live capture');
+  const rec = tools.find(t => t.name === 'record_and_analyze');
+  assert.ok(rec.guidelines.join(' ').includes('1-60'), 'record tool states the 1-60 s bound');
 });
 
 test('buildVisionTools: disabled names excluded', async () => {
   const tools = await buildVisionTools(RT, { disabled: ['video_analysis', 'image_analysis'] });
   const names = tools.map(t => t.name);
-  assert.equal(tools.length, 6);
+  assert.equal(tools.length, 8);
   assert.ok(!names.includes('video_analysis'));
   assert.ok(!names.includes('image_analysis'));
 });
@@ -423,4 +448,99 @@ test('tool settings: enable/disable/reset persist and filter the suite', async (
   const bad = await setToolEnabled('not_a_tool', false, VISION_TOOL_NAMES);
   assert.ok(bad.error);
   await resetToolDisabled();
+});
+
+// -- 6. LIVE screen-capture tools (capture_and_analyze / record_and_analyze) --
+
+import {
+  normalizeSeconds, RECORD_MIN_SECONDS, RECORD_MAX_SECONDS, RECORD_DEFAULT_SECONDS,
+} from '../lib/agent/screen_capture.js';
+
+test('screen_capture: normalizeSeconds bounds and default', () => {
+  assert.equal(normalizeSeconds(undefined), RECORD_DEFAULT_SECONDS);
+  assert.equal(normalizeSeconds('12'), 12);
+  assert.equal(normalizeSeconds(2.4), 2);
+  assert.ok(normalizeSeconds(0).error);
+  assert.ok(normalizeSeconds(-5).error);
+  assert.ok(normalizeSeconds('abc').error);
+  assert.ok(normalizeSeconds(RECORD_MAX_SECONDS + 1).error);
+  assert.equal(normalizeSeconds(RECORD_MAX_SECONDS), RECORD_MAX_SECONDS);
+  assert.equal(RECORD_MIN_SECONDS, 1);
+  assert.equal(RECORD_MAX_SECONDS, 60);
+});
+
+test('capture tools: capture failure returns the actionable error, no LLM call', async (t) => {
+  const origComplete = LLMClient.prototype.complete;
+  let called = 0;
+  t.after(() => { LLMClient.prototype.complete = origComplete; });
+  LLMClient.prototype.complete = async () => { called += 1; return 'x'; };
+
+  const cap = visionToolByName('capture_and_analyze');
+  const origFn = cap.captureFn;
+  cap.captureFn = async () => ({ ok: false, error: 'screenshot produced no output — grant the Screen Recording permission' });
+  t.after(() => { cap.captureFn = origFn; });
+  const out = await runVisionTool(cap, {}, RT);
+  assert.ok(out.error.includes('Screen Recording permission'));
+  assert.equal(called, 0, 'no LLM call when the capture itself fails');
+});
+
+test('capture tools: successful capture flows through the analysis pipeline', async (t) => {
+  const calls = [];
+  const origComplete = LLMClient.prototype.complete;
+  t.after(() => { LLMClient.prototype.complete = origComplete; });
+  LLMClient.prototype.complete = async function (messages) {
+    calls.push({ cfg: this.config, messages });
+    return 'SCREEN ANALYSIS: 编译错误对话框';
+  };
+
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hk2-vis-cap-'));
+  const shot = path.join(dir, 'live.png');
+  await fs.promises.writeFile(shot, Buffer.from('89504e470d0a1a0a', 'hex'));
+
+  const cap = visionToolByName('capture_and_analyze');
+  const origFn = cap.captureFn;
+  cap.captureFn = async (args) => ({ ok: true, path: shot, kind: 'screenshot' });
+  t.after(() => { cap.captureFn = origFn; });
+  const out = await runVisionTool(cap, { context: '构建失败' }, RT);
+
+  assert.equal(out.error, undefined);
+  assert.equal(out.tool, 'capture_and_analyze');
+  assert.equal(out.model, 'prov/mm');
+  assert.equal(out.result, 'SCREEN ANALYSIS: 编译错误对话框');
+  const user = calls[0].messages.find(m => m.role === 'user');
+  const imgBlock = user.content.find(b => b.type === 'image_url');
+  assert.ok(imgBlock.image_url.url.startsWith('data:image/png;base64,'), 'screenshot attached as image block');
+  const textBlock = user.content.find(b => b.type === 'text');
+  assert.ok(textBlock.text.includes('LIVE screenshot'), 'prompt frames the live capture');
+  assert.ok(textBlock.text.includes('context=构建失败'), 'extra params forwarded');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('capture tools: recording seconds are validated before any capture runs', async () => {
+  const rec = visionToolByName('record_and_analyze');
+  const origFn = rec.captureFn;
+  rec.captureFn = undefined; // force the REAL recordScreen validation path
+  const out = await runVisionTool(rec, { seconds: 120 }, RT);
+  assert.ok(out.error.includes('between 1 and 60'), out.error);
+  rec.captureFn = origFn;
+});
+
+test('capture tools: temp capture file is deleted after the analysis', async (t) => {
+  const origComplete = LLMClient.prototype.complete;
+  t.after(() => { LLMClient.prototype.complete = origComplete; });
+  LLMClient.prototype.complete = async () => { throw new Error('connection refused'); };
+
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hk2-vis-cap-'));
+  const shot = path.join(dir, 'live.png');
+  await fs.promises.writeFile(shot, Buffer.from('89504e470d0a1a0a', 'hex'));
+
+  const cap = visionToolByName('capture_and_analyze');
+  const origFn = cap.captureFn;
+  cap.captureFn = async () => ({ ok: true, path: shot, kind: 'screenshot' });
+  t.after(() => { cap.captureFn = origFn; });
+  const out = await runVisionTool(cap, {}, RT);
+  assert.ok(out.error.includes('connection refused'));
+  // The temporary capture was cleaned up even though the analysis failed.
+  await assert.rejects(() => fs.promises.stat(shot), { code: 'ENOENT' });
+  fs.rmSync(dir, { recursive: true, force: true });
 });

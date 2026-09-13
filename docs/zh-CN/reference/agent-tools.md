@@ -17,7 +17,7 @@ hk2 智能体可在回合中途调用的工具参考（OpenAI / Anthropic 原生
 | 知识库查询 | `kb_search`、`kb_symbol`、`kb_outline`、`kb_neighbors`、`kb_callchain`、`kb_class`、`kb_refs`、`kb_implements` |
 | 知识库知识 | `kb_knowledge`、`kb_search_knowledge`、`kb_save_knowledge` |
 | 会话 | `remember` |
-| 视觉（多模态） | `ui_to_artifact`、`extract_text_from_screenshot`、`diagnose_error_screenshot`、`understand_technical_diagram`、`analyze_data_visualization`、`ui_diff_check`、`image_analysis`、`video_analysis` |
+| 视觉（多模态） | `ui_to_artifact`、`extract_text_from_screenshot`、`diagnose_error_screenshot`、`understand_technical_diagram`、`analyze_data_visualization`、`ui_diff_check`、`image_analysis`、`capture_and_analyze`、`record_and_analyze`、`video_analysis` |
 | MCP | `mcp__<server>__<tool>` |
 
 ## 文件工具
@@ -230,7 +230,7 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 
 ## 视觉工具（多模态）
 
-八个专项工具，让**任意**会话模型（包括纯文本模型）获得多模态分析能力：
+十个专项工具，让**任意**会话模型（包括纯文本模型）获得多模态分析能力：
 每个工具把图片 / 视频转发给一个**专用多模态模型**，并把该模型的文字
 分析作为工具结果返回——媒体本身不会发给会话模型。每个工具可以使用
 **自己的**模型：`/tool set-model <tool> <provider>/<model-id>` 设置的
@@ -246,11 +246,21 @@ MCP 服务器提供的工具（如 `mcp__web-reader__webReader`）。每个智�
 | `analyze_data_visualization` | 仪表盘与统计图表 → 趋势、异常、业务要点 |
 | `ui_diff_check` | 设计稿 vs 实现截图对比（两张图） |
 | `image_analysis` | 通用图像理解（问题驱动） |
+| `capture_and_analyze` | **实时截取当前屏幕** → 多模态分析（问题定位）；macOS / Windows / Linux |
+| `record_and_analyze` | **实时录制 1-60 秒屏幕** → 视频分析；macOS；Windows/Linux 需 ffmpeg；Linux Wayland 不支持录制 |
 | `video_analysis` | 视频场景解析：关键帧、事件（本地文件 ≤ 8 MB） |
 
 - 图片工具接受本地路径或 http(s) URL（png / jpg / jpeg / gif / webp /
   bmp）；`video_analysis` 接受 mp4 / mov / m4v 等视频格式，**本地文件
   上限 8 MB**。
+- `capture_and_analyze` 与 `record_and_analyze` **不需要媒体输入**——它们
+  自己实时抓取**当前屏幕**（`seconds` 指定录制时长，1-60 秒，默认 10），
+  再走同一套分析管线。捕获产物是临时文件，分析结束后即删除。平台支持：
+  macOS 使用内置 `screencapture`（终端需在 系统设置 → 隐私与安全性 →
+  屏幕录制 中授权）；Windows 截屏走 PowerShell/System.Drawing，录制需
+  ffmpeg；Linux 截屏依次尝试 gnome-screenshot / spectacle / scrot / grim /
+  ImageMagick `import`，录制需 ffmpeg 且仅限 X11 会话（Wayland 下录制会
+  返回明确错误）。录制同样受 8 MB 分析上限约束，建议 10-15 秒。
 - 仅当某个工具能解析到视觉模型时才注册它：先看 tools.json 的
   `toolModels[<tool>]`（工具级覆盖），再看 `visionModelRef`（套件默认），
   最后看多模态会话模型；三者皆无则该工具完全不出现。配置方式：
