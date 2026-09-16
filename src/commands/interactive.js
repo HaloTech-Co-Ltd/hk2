@@ -204,6 +204,18 @@ export async function interactive(opts = {}) {
   if (session.statusBar.setInputCursorFn) {
     session.statusBar.setInputCursorFn(() => inputBoxDockColumn(session));
   }
+  // In-run menu state: while a consumeNext menu (y/N save confirms, numeric
+  // plan choices, free-text prompts) owns the input, the StatusBar's resize
+  // path needs the live prompt (+draft) to re-emit it after the resize
+  // destroyed its row. See StatusBar.update()'s menu branch and
+  // patchReadlineRefresh's gate.
+  if (session.statusBar.setMenuStateFn) {
+    session.statusBar.setMenuStateFn(() => ({
+      active: !!session.consumeNext,
+      prompt: session.menuPromptText,
+      line: session.consumeNext ? String(session.rl?.line ?? '') : '',
+    }));
+  }
   if (session.statusBar.isEnabled()) {
     // Clear the visible screen so the previous session's last lines don't
     // bleed in around the welcome card on re-entry. Scrollback is preserved
@@ -381,7 +393,15 @@ export async function interactive(opts = {}) {
   // repair land in one terminal frame. Fails open on non-patched runtimes.
   // Installed right AFTER the _writeToOutput wrapper so both private-surface
   // overrides live together; uninstalled on the same shutdown path.
-  const unpatchRefresh = session.statusBar?.patchReadlineRefresh?.(session.rl) || (() => {});
+  const unpatchRefresh = session.statusBar?.patchReadlineRefresh?.(session.rl, {
+    // Gate the patch while an in-run menu owns the input or the mid-task
+    // input box is echoing: readline's native _refreshLine redraws the MAIN
+    // prompt behind an UNBOUNDED ED erase — and fires on the output stream's
+    // 'resize' event too, so a terminal resize during a y/N confirm wiped
+    // the prompt and everything below it. While gated, the menu row is
+    // redrawn BOUNDED (CR+EL, single row) with the menu prompt instead.
+    gate: () => session.consumeNext || session.inputEchoOn,
+  }) || (() => {});
   const refreshInputEcho = () => {
     if (!session.inputEchoOn || session.consumeNext) return;
     session.statusBar?.refreshInputLine();

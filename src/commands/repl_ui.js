@@ -66,9 +66,15 @@ function promptChoice(session, max) {
     if (!session.rl) { resolve({ index: -1, cancelled: true }); return; }
     const onClose = () => resolve({ index: -1, cancelled: true });
     session.rl.once('close', onClose);
-    const done = (val) => { session.rl.off('close', onClose); resolve(val); };
+    const done = (val) => {
+      session.rl.off('close', onClose);
+      if (session.menuPromptText !== null) session.menuPromptText = null;
+      resolve(val);
+    };
     const ask = () => {
-      process.stderr.write(style.accent(`  Choose [1-${max}]: `));
+      const text = style.accent(`  Choose [1-${max}]: `);
+      session.menuPromptText = text;
+      process.stderr.write(text);
       session.consumeNext = (ans) => {
         const v = (ans || '').trim();
         const n = parseInt(v, 10);
@@ -89,7 +95,12 @@ function promptLine(session, promptText) {
     if (!session.rl) { resolve({ text: '', cancelled: true }); return; }
     const onClose = () => resolve({ text: '', cancelled: true });
     session.rl.once('close', onClose);
-    const done = (val) => { session.rl.off('close', onClose); resolve(val); };
+    const done = (val) => {
+      session.rl.off('close', onClose);
+      if (session.menuPromptText !== null) session.menuPromptText = null;
+      resolve(val);
+    };
+    session.menuPromptText = promptText;
     process.stderr.write(promptText);
     session.consumeNext = (ans) => done({ text: (ans || '').trim(), cancelled: false });
   });

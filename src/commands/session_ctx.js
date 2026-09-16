@@ -212,6 +212,14 @@ export function createSession(pinnedProjectId = null) {
     // output). inputEchoOn gates the redirect; slash commands and in-run
     // menus flip it off so their own echo lands at the cursor.
     inputEchoOn: false,
+    // Live in-run-menu prompt tracker: set by replIo.confirm /
+    // confirmThreeWay / choose (and the turn-ui prompt helpers) while a
+    // consumeNext menu owns the input. The StatusBar's resize path re-emits
+    // it after a terminal resize destroyed the row it was printed on — the
+    // y/N save-knowledge confirm used to vanish on resize and the next Enter
+    // re-echoed it at a stale cursor, overwriting transcript rows. Null when
+    // no menu is active. (In-memory only; never persisted.)
+    menuPromptText: null,
     // Arm/disarm callbacks, installed by the REPL front-end once the status
     // bar + readline exist; optional-chained everywhere so headless sessions
     // and the TUI (which has its own input box) are unaffected.
@@ -664,9 +672,14 @@ export function confirmThreeWay(session, promptText) {
     session.rl.once('close', onClose);
     const done = (val) => {
       session.rl.off('close', onClose);
+      // Release the menu-prompt tracker (resize repaints stop re-emitting it).
+      if (session.menuPromptText === promptText) session.menuPromptText = null;
       resolve(val);
     };
     const ask = () => {
+      // Track the live prompt so StatusBar's resize path can re-emit it after
+      // the row it was printed on was destroyed by the resize.
+      session.menuPromptText = promptText;
       process.stderr.write(promptText);
       session.consumeNext = (ans) => {
         const v = (ans || '').trim().toLowerCase();
@@ -708,9 +721,13 @@ export function replIo(session) {
         session.rl.once('close', onClose);
         const done = (val) => {
           session.rl.off('close', onClose);
+          if (session.menuPromptText === promptText) session.menuPromptText = null;
           resolve(val);
         };
         const ask = () => {
+          // Track the live prompt so StatusBar's resize path can re-emit it
+          // after a terminal resize destroyed its row (see confirmThreeWay).
+          session.menuPromptText = promptText;
           process.stderr.write(promptText);
           session.consumeNext = (ans) => {
             const v = (ans || '').trim().toLowerCase();
@@ -743,9 +760,11 @@ export function replIo(session) {
         session.rl.once('close', onClose);
         const done = (val) => {
           session.rl.off('close', onClose);
+          if (session.menuPromptText === promptText) session.menuPromptText = null;
           resolve(val);
         };
         const ask = () => {
+          session.menuPromptText = promptText;
           process.stderr.write(promptText);
           session.consumeNext = (ans) => {
             const v = (ans || '').trim();
