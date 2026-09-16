@@ -153,12 +153,19 @@ tools. Guardrails:
 - **Tool result cache** — identical read-only tool calls within a `runLoop`
   reuse their results; the cache is cleared by bash/edit/write/ast_edit/
   resolve (not by `kb_save_knowledge` — see the tool reference).
-- **Stuck detection** — the loop aborts on the **fourth** consecutive round
-  with the same tool-call signature and result fingerprint (three repeats
-  beyond the initial occurrence), or at an absolute cap of 1000 rounds. A
-  coded `NO_PROGRESS_TURNS` 6-round no-progress guard exists but is currently unreachable (its
-  condition requires zero pending tool calls, which returns first) — do not
-  rely on it.
+- **Stuck detection & correction** — on the **fourth** consecutive round with
+  the same tool-call signature and result fingerprint (three repeats beyond
+  the initial occurrence) the loop injects a progressive **corrective system
+  message** telling the model to break the loop — diagnose the root cause of a
+  failing call, switch a not-yet-ready poll to a single longer wait, or stop
+  and answer with what is known — then resets the repeat window. A repeated
+  tool call is never fatal by itself: only after the whole corrective budget
+  (`HK2_STUCK_NUDGE_LIMIT`, default 10 nudges) is exhausted without the model
+  escaping does the loop abort. Any real progress (a different signature or
+  result) re-arms the full budget. An absolute cap of 1000 rounds remains as a
+  backstop. A coded `NO_PROGRESS_TURNS` 6-round no-progress guard exists but
+  is currently unreachable (its condition requires zero pending tool calls,
+  which returns first) — do not rely on it.
 - **Mid-task input queueing** — plain text typed while a turn runs is queued
   and injected as in-task guidance at the next round boundary (after the
   current action completes, before the next LLM call), batched into one

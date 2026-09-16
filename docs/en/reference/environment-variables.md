@@ -71,6 +71,12 @@ billed-total accounting.
 | `HK2_CONTINUATION_UPGRADE_MIN_CONFIDENCE` | Minimum assessor confidence for tier-2 continuation upgrade; parsed with `parseFloat()` and clamped to `0–1` | `0.6` | Non-numeric values fall back to `0.6`; no upgrade occurs without an active plan, `lastTask`, or conversation context |
 | `HK2_ENABLE_PHASEMODEL_FALLBACK` | Call failure after a `rewrite-query` or `request-assess` phase model was successfully resolved: `1` warns and re-runs the phase on the session model; `0` warns and skips. Review phases always skip (never substitute the reviewer). A stale ref that resolves to `null` is silently treated as no override; a resolution exception warns and uses the session model | `1` | |
 
+## Agent loop
+
+| Variable | Purpose | Default | Notes |
+|---|---|---|---|
+| `HK2_STUCK_NUDGE_LIMIT` | Corrective-nudge budget for the agent-loop stuck detector: on the 4th consecutive round with an identical tool-call signature AND identical results, a progressive corrective system message (root-cause it / switch to one longer wait / stop and answer) is injected and the repeat window resets; only after this many nudges are ignored without escape does the loop abort. Any real progress re-arms the budget. Resolved via `stuckNudgeLimit()` in `lib/agent/loop.js` | `10` | Explicit `0` restores legacy fail-fast (abort on the first trigger). Unset/invalid/negative fall back to the default |
+
 ## Plan review and code review
 
 | Variable | Purpose | Default | Notes |

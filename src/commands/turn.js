@@ -1530,6 +1530,26 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     onRetry: (evt) => {
       ui.retryNotice(evt);
     },
+    // Stuck-detector intervention: the loop injected a corrective system
+    // message into the conversation (progressive, budgeted — see
+    // HK2_STUCK_NUDGE_LIMIT, default 10) and CONTINUED. Never fatal by
+    // itself; the loop only aborts after the whole budget is ignored. We
+    // surface one visible warning line so the user knows correction is
+    // happening and audit it in the transcript for replay.
+    onStuckNudge: (info) => {
+      try {
+        ctx.print(style.warning(`${style.ICON.warn} loop correction ${info.nudgeNo}/${info.nudgeLimit}: ${info.repeats + 1} identical tool-call rounds (no progress) — corrective guidance injected; ${String(info.signature).slice(0, 120)}`));
+      } catch { /* display is best-effort */ }
+      try {
+        session.transcript?.logMeta('stuck-nudge', {
+          round: info.round,
+          nudgeNo: info.nudgeNo,
+          nudgeLimit: info.nudgeLimit,
+          repeats: info.repeats,
+          signature: String(info.signature).slice(0, 400),
+        });
+      } catch { /* transcript persistence is best-effort */ }
+    },
   };
 
   // ---- Overflow-recovery re-run loop --------------------------------------
@@ -1601,7 +1621,13 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         const { buildMultimodalContent } = await import('../../lib/agent/attachments.js');
         const content = mediaBlocks ? buildMultimodalContent(textPart, mediaBlocks) : injected;
         session.messages.push({ role: 'user', content });
-        await session.transcript?.logUser(content, { attachments: mediaAttachments || undefined });
+        // Transcript persistence here is best-effort (same contract as
+        // logToolCall above): a failing transcript write must never kill the
+        // agent loop mid-task — the message is already in `messages` for the
+        // model, and the on-disk transcript degrades to missing this line.
+        try {
+          await session.transcript?.logUser(content, { attachments: mediaAttachments || undefined });
+        } catch { /* best-effort */ }
       },
       llmOpts: {
         maxChars: session.modelCfg.maxChars,
@@ -1609,9 +1635,10 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
         enableReasoning: session.modelCfg.enableReasoning,
       },
       // No fixed maxTurns — the loop runs until a final text answer, the
-      // fourth identical signature/result round, the 1000-round absolute cap,
-      // abort, or an exception. The NO_PROGRESS_TURNS branch is currently
-      // unreachable; see lib/agent/loop.js.
+      // corrective-nudge budget being exhausted (see lib/agent/loop.js and
+      // HK2_STUCK_NUDGE_LIMIT), the 1000-round absolute cap, abort, or an
+      // exception. The NO_PROGRESS_TURNS branch is currently unreachable;
+      // see lib/agent/loop.js.
       });
         break; // task finished normally
       } catch (loopErr) {
