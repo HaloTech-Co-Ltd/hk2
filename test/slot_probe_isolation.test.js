@@ -276,3 +276,63 @@ test('user keystrokes around a fragmented answer: all keys replayed once', async
   cleanup();
   bar.stop();
 });
+
+test('ATOMICITY: the whole probe (restore + ask + re-save + park) is ONE tty write', () => {
+  // The "input-box cursor blinks every few seconds" regression: the probe
+  // used to leave the tty driver between two writes (restore+ask+re-save,
+  // then park). Terminals render per flush, so the frame between the flushes
+  // showed the cursor at the DECRC-restored WORKSPACE position — it visibly
+  // left the input box for a few ms every probe. One write = one parse pass,
+  // no intermediate frame.
+  const { bar, stdin, writes, cleanup } = makeRig();
+  const before = writes.length;
+  probeWith(bar, stdin);
+  const newWrites = writes.slice(before);
+  assert.ok(newWrites.length === 1, `probe must be a single write, got ${newWrites.length}: ${JSON.stringify(newWrites)}`);
+  const seq = String(newWrites[0]);
+  assert.ok(seq.startsWith('\x1b[?25l\x1b8\x1b[6n\x1b7'), `atomic write carries the full probe head (after DECTCEM hide), got: ${JSON.stringify(seq.slice(0, 16))}`);
+  assert.ok(seq.endsWith('\x1b[?25h'), 'DECTCEM show closes the bracket in the same write');
+  assert.ok(seq.includes('23;5H'), 'atomic write carries the park tail (re-dock)');
+  stdin.write('\x1b[10;1R'); // answer the probe; window closes cleanly
+  cleanup();
+  bar.stop();
+});
+
+test('SILENT BACKOFF: a DSR-deaf terminal doubles the probe period; any answer restores it', async () => {
+  // Companion to the atomicity fix: on a terminal that never answers DSR,
+  // every probe conservatively heals (full repaint + cursor jump) — the
+  // same "cursor blinks on a fixed cadence" complaint when the terminal is
+  // DSR-deaf. The cadence must back off exponentially (25 → 50 → 100 …)
+  // and snap back to base on the first real answer.
+  const { bar, stdin, rl, cleanup } = makeRig();
+  bar.poll(200); // define _slotTickForTest (the exact tick body the interval runs)
+  let probes = 0;
+  bar.setSlotProbeFn(() => { probes++; });
+  // Base cadence: first probe at tick 25.
+  for (let i = 0; i < 25; i++) bar._slotTickForTest();
+  assert.strictEqual(probes, 1, 'first probe at 25 ticks');
+  // Simulate a silent terminal (timeout heal): streak 1 → period 50.
+  bar.slotProbeResult(false, 24, { silent: true });
+  probes = 0;
+  for (let i = 0; i < 49; i++) bar._slotTickForTest();
+  assert.strictEqual(probes, 0, 'no probe before the backed-off period (50)');
+  bar._slotTickForTest();
+  assert.strictEqual(probes, 1, 'probe fires exactly at the backed-off period (50)');
+  // Streak 2 → period 100.
+  bar.slotProbeResult(false, 24, { silent: true });
+  probes = 0;
+  for (let i = 0; i < 100; i++) bar._slotTickForTest();
+  assert.strictEqual(probes, 1, 'probe fires exactly at the backed-off period (100)');
+  // A drift-PROVEN verdict (an answer arrived) restores the base cadence.
+  bar.slotProbeResult(false, 24);
+  probes = 0;
+  for (let i = 0; i < 25; i++) bar._slotTickForTest();
+  assert.strictEqual(probes, 1, 'answer-backed verdict restores base period (25)');
+  // A healthy verdict also restores base and resets the counter.
+  bar.slotProbeResult(true, 24);
+  probes = 0;
+  for (let i = 0; i < 25; i++) bar._slotTickForTest();
+  assert.strictEqual(probes, 1, 'healthy verdict keeps base period (25)');
+  cleanup();
+  bar.stop();
+});

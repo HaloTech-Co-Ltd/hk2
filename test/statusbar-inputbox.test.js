@@ -170,8 +170,8 @@ test('refreshInputLine rewrites ONLY the input row and restores the cursor', () 
   assert.ok(w.includes('\x1b[23;1H'), 'targets the input row');
   assert.ok(w.includes('hello wor'), 'shows the updated draft');
   assert.ok(!w.includes('STATUS'), 'does NOT repaint the whole block');
-  assert.ok(/\x1b8$/.test(w), 'ends with cursor-restore (save/restore pair)');
-  assert.ok(w.startsWith('\x1b7'), 'begins with cursor-save');
+  assert.ok(/\x1b8\x1b\[\?25h$/.test(w), 'ends with cursor-restore then DECTCEM show');
+  assert.ok(w.startsWith('\x1b[?25l\x1b7'), 'begins with DECTCEM hide + cursor-save');
 });
 
 test('refreshInputLine is a no-op when the box is inactive', () => {
@@ -391,10 +391,10 @@ test('refreshInputLine ends with the PARK (no DECRC) while docked', () => {
   draft = 'hello wor';
   bar.refreshInputLine();
   const w = all();
-  assert.ok(w.startsWith('\x1b[23;1H'), 'targets the input row directly');
-  assert.ok(!w.startsWith('\x1b7'), 'no leading DECSC while docked (slot owned by the router)');
-  assert.ok(/\\x1b\[23;\d+H$/.test(w) || /\x1b\[23;\d+H$/.test(w), 'ends with the park sequence');
-  assert.ok(!w.includes('\x1b8'), 'no DECRC emitted while docked');
+  assert.ok(w.startsWith('\x1b[?25l\x1b[23;1H'), 'targets the input row directly (DECTCEM hide leads)');
+  assert.ok(!w.startsWith('\x1b[?25l\x1b7'), 'no leading DECSC while docked (slot owned by the router)');
+  assert.ok(/\x1b\[23;\d+H\x1b\[\?25h$/.test(w), 'ends with the park sequence + DECTCEM show');
+  assert.ok(!w.slice(0, -6).includes('\x1b8'), 'no DECRC emitted while docked');
 });
 
 test('steady-state update() re-parks instead of restoring while docked', () => {
@@ -440,7 +440,7 @@ test('grow/shrink with dock: re-saves the stale slot then re-docks', () => {
   // And the re-saved slot is the ADJUSTED continuation (restore + CUU1 + save),
   // not a hard reset: the \x1b7 right before the park must be preceded by the
   // reflow adjustment.
-  assert.ok(/\x1b8\x1b\[1A\x1b7\x1b\[22;5H$/.test(w), 'dock tail = DECRC + CUU(reflow) + DECSC + park');
+  assert.ok(/\x1b8\x1b\[1A\x1b7\x1b\[22;5H\x1b\[\?25h$/.test(w), 'dock tail = DECRC + CUU(reflow) + DECSC + park (+ DECTCEM show)');
 });
 
 /* ---------- write-router protocol (interactive.js wiring) ---------- */

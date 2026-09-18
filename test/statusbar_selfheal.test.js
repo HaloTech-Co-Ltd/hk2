@@ -113,6 +113,82 @@ test('fullRepaint({heal}) re-banks the DECSC slot at the workspace bottom', () =
   assert.ok(w.includes('STATUS'), 'status line repainted');
 });
 
+test('heal repaint is ONE tty write (DECSTBM prefix + body atomic — no cursor blink frame)', () => {
+  const { bar, writes } = makeRig({ rows: 24 });
+  bar.update();
+  writes.length = 0;
+  bar.fullRepaint({ heal: true });
+  // The periodic input-box cursor blink ("a cursor flashes in blank space")
+  // was the resize/heal pass emitting DECSTBM (which homes the cursor per VT
+  // spec) as its OWN write: the tty driver flushes between writes and
+  // terminals render per flush, so the frame between them parked the cursor
+  // at the homed blank position before the repaint re-docked it. One write
+  // is parsed in one pass — the intermediate position is never rendered.
+  assert.equal(writes.length, 1, `heal must be a single write, got ${writes.length}: ${JSON.stringify(writes)}`);
+  const w = writes[0];
+  // Region assertion first, then the repaint body, in the SAME write.
+  assert.ok(w.startsWith('\x1b[?25l\x1b7\x1b[1;23r') || w.startsWith('\x1b[?25l\x1b[1;23r'),
+    `region assertion leads the single write (after DECTCEM hide), got: ${JSON.stringify(w.slice(0, 24))}`);
+  assert.ok(w.endsWith('\x1b[?25h'), 'DECTCEM show closes the bracket in the same write');
+  assert.ok(w.includes('\x1b[23;1H\x1b7'), 'slot re-bank inside the same write');
+  assert.ok(w.includes('STATUS'), 'status line inside the same write');
+});
+
+test('resize pass (no heal) is likewise ONE tty write', () => {
+  const { bar, writes } = makeRig({ rows: 24 });
+  bar.update();
+  writes.length = 0;
+  bar._resizePass();
+  assert.equal(writes.length, 1, `resize pass must be a single write, got ${writes.length}: ${JSON.stringify(writes)}`);
+});
+
+test('diff repaint with changed rows is DECTCEM-bracketed; an unchanged tick is not', () => {
+  // The residual "a cursor flashes by in blank space" report: even a SINGLE
+  // write is not guaranteed a single rendered frame — pty/ConPTY read
+  // chunking can split it, and the diff repaint's DECSTBM homes the cursor to
+  // (1,1) (a blank corner) before the changed-row writes return it. A split
+  // at that point rendered the caret in blank space. Bracket changed-row
+  // repaints with hide/show so every intermediate frame is cursor-less;
+  // leave STEADY ticks (nothing changed) unbracketed so the idle caret keeps
+  // its native blink phase instead of being phase-reset every 200ms.
+  const { bar, writes } = makeRig({ rows: 24 });
+  let status = 'idle 1s';
+  bar.formatter = () => status;
+  bar.update();
+  writes.length = 0;
+  bar.update(); // steady tick: nothing changed
+  let w = writes.join('');
+  assert.ok(!w.includes('\x1b[?25l'), 'steady tick must not hide the cursor (native blink preserved)');
+  status = 'idle 2s';
+  writes.length = 0;
+  bar.update(); // the status text changed → changed-row repaint
+  w = writes.join('');
+  assert.ok(w.startsWith('\x1b[?25l'), 'changed-row repaint is bracketed by DECTCEM hide');
+  assert.ok(w.endsWith('\x1b[?25h'), 'bracket closed by DECTCEM show in the same write');
+  // The homed (1,1) intermediate position is never rendered even if the
+  // transport splits the write anywhere between hide and show.
+  const hideAt = w.indexOf('\x1b[?25l');
+  const showAt = w.indexOf('\x1b[?25h');
+  assert.ok(hideAt === 0 && showAt > hideAt, 'hide leads, show trails');
+});
+
+test('heal while the input box is docked: still ONE write, cursor parked in-box', () => {
+  // The exact periodic path the live report traced: probe timeout (silent
+  // terminal / busy event loop) → slotProbeResult(false) → fullRepaint(heal)
+  // → the old two-write split → one rendered frame with the cursor in
+  // blank space. The docked heal must be one write ending in the park.
+  const { bar, writes } = makeRig({ rows: 24 });
+  bar.inputRenderer = () => ['> box'];
+  bar.setInputCursorFn(() => 5);
+  bar.update();
+  bar.parkInputCursor();
+  writes.length = 0;
+  bar.slotProbeResult(false, 24, { silent: true });
+  assert.equal(writes.length, 1, `docked heal must be a single write, got ${writes.length}: ${JSON.stringify(writes)}`);
+  const w = writes[0];
+  assert.ok(w.includes(';5H'), 'cursor re-docked into the input box inside the same write');
+});
+
 test('heal with an in-run menu re-emits the prompt with the model cursor parked', () => {
   const { bar, writes } = makeRig({ rows: 24 });
   bar.update();

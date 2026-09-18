@@ -141,7 +141,7 @@ test('height change with NO menu keeps the cursor-transparent restore', () => {
   const all = writes.join('');
   // resize emission: save BEFORE the region reset, restore at the end.
   assert.ok(all.indexOf('\x1b7') < all.indexOf('\x1b[1;29r'), 'save precedes the new region');
-  assert.ok(all.endsWith('\x1b8'), 'tail restores the saved cursor');
+  assert.ok(all.endsWith('\x1b8\x1b[?25h'), 'tail restores the saved cursor (then DECTCEM show)');
 });
 
 /* ---- 4. stale-geometry reserved rows are cleared on a height change ----- */

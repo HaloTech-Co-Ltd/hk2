@@ -379,7 +379,15 @@ export async function interactive(opts = {}) {
     // Caller-supplied drain callbacks must fire when the write drains.
     routedWrite.depth = 1;
     try {
-      return orig(`\x1b8${String(chunk)}\x1b7${park}`, ...rest);
+      // DECTCEM bracket (the blank-space flash law, see lib/agent/statusbar.js):
+      // the protocol's leading DECRC jumps the cursor to the workspace
+      // continuation row — usually BLANK — before the payload lands there and
+      // the trailing park returns it to the box. One write is still not
+      // guaranteed one frame (pty/ConPTY read chunking), and for a large
+      // payload the split is guaranteed: the frame right after the DECRC
+      // showed the caret standing alone on a blank row. Hidden, that frame
+      // renders no cursor at all; the show always re-emits in the SAME write.
+      return orig(`\x1b[?25l\x1b8${String(chunk)}\x1b7${park}\x1b[?25h`, ...rest);
     } finally {
       routedWrite.depth = 0;
     }
@@ -537,7 +545,7 @@ export async function interactive(opts = {}) {
       // CRLF there (CRLF, not bare LF — the tty may be raw with OPOST off),
       // save the advanced slot, and re-dock — mirroring the write router.
       const park = session.statusBar?.parkSeq?.();
-      if (park) session.statusBar?.rawWrite(`\x1b8\r\n\x1b7${park}`);
+      if (park) session.statusBar?.rawWrite(`\x1b[?25l\x1b8\r\n\x1b7${park}\x1b[?25h`);
     }
     // If we're mid-paste, buffer the line and wait for paste-end. Pasted
     // content otherwise arrives as one 'line' event per line and each would

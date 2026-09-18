@@ -60,6 +60,35 @@ test('LATE FRAGMENTED answer after timeout: (ESC[ | 24;1R) completes post-window
   cleanup(); bar.stop();
 });
 
+test('LATE 3-FRAGMENT answer after timeout: (ESC[ | 24;1 | R) all consumed, no digit/R leak', async () => {
+  const { bar, rl, stdin, cleanup } = makeRig();
+  bar._slotProbeFn?.();
+  await new Promise((r) => setTimeout(r, 220)); // timeout: filter armed
+  stdin.write('k1');
+  stdin.write('\x1b[');          // fragment 1: opener
+  stdin.write('24;1');           // fragment 2: digits — unambiguously answer-shaped, held
+  stdin.write('R');              // fragment 3: terminator — completes the answer in-filter
+  stdin.write('k2');             // honest keys after it must still arrive
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(rl.line, 'k1k2', `3-fragment straggler consumed, keys replayed: ${JSON.stringify(rl.line)}`);
+  assert.ok(!rl.line.includes('R') && !rl.line.includes('24'), `no digit/R leaked: ${JSON.stringify(rl.line)}`);
+  cleanup(); bar.stop();
+});
+
+test('straggler tail that never completes: bounded hunt gives the stream back', async () => {
+  const { bar, rl, stdin, cleanup } = makeRig();
+  bar._slotProbeFn?.();
+  await new Promise((r) => setTimeout(r, 220)); // timeout: filter armed
+  // `\x1b[5` looks like an answer opener but never completes — after the
+  // chunk bound the filter must stop owning the stream and replay the bytes.
+  stdin.write('\x1b[5');
+  for (let i = 0; i < 10; i++) stdin.write('.');   // plain chunks push past the bound
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(!rl.line.includes('\x1b'), 'held bytes eventually replayed, no control chars stuck');
+  assert.ok(rl.line.includes('.'), `stream returned to readline: ${JSON.stringify(rl.line)}`);
+  cleanup(); bar.stop();
+});
+
 test('no straggler in flight: post-timeout typing flows straight through (byte-exact)', async () => {
   const { bar, rl, stdin, cleanup } = makeRig();
   bar._slotProbeFn?.();

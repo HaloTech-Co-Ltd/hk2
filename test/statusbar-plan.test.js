@@ -37,7 +37,9 @@ test('StatusBar is enabled with a TTY stream', () => {
 test('no plan block -> status line written on the bottom row', () => {
   const { bar, all } = makeBar();
   bar.update();
-  assert.ok(all().endsWith('STATUS\x1b8'), 'status line written on the bottom row');
+  // Trailing DECTCEM show: full repaints bracket with hide/show so a split
+  // write can never render the cursor mid-sequence (blank-space flash).
+  assert.ok(all().endsWith('STATUS\x1b8\x1b[?25h'), 'status line written on the bottom row');
   assert.equal(bar._planLineCount, 0);
 });
 
