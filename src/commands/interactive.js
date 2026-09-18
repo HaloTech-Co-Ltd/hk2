@@ -473,6 +473,50 @@ export async function interactive(opts = {}) {
   session.armInputBox = armInputBox;
   session.disarmInputBox = disarmInputBox;
 
+  // ── Continuation-slot watchdog (fourth defect) ────────────────────────
+  // The write-router above trusts the DECSC slot blindly while the input
+  // box is docked. A live session proved the slot CAN drift into the
+  // reserved block with a healthy event loop (tool-card payloads replayed
+  // over the plan/status rows; the display froze mid-task until the user
+  // interrupted). Probe via Device Status Report: emit ESC[6n, then decode
+  // the terminal's ESC[r;cR answer on stdin. Cursor inside the scroll
+  // workspace => healthy; inside the reserved block => drift (heal); no
+  // answer within the window => unknown (heal conservatively — re-banking
+  // is always safe, it just moves the continuation to a fresh row).
+  if (session.statusBar?.setSlotProbeFn && session.rl?.input) {
+    const stdin = session.rl.input;
+    let slotProbeBuf = '';
+    let slotProbePending = 0;   // probes awaiting an answer
+    const onSlotData = (chunk) => {
+      slotProbeBuf += String(chunk);
+      let m;
+      // DSR replies arrive as ESC [ row ; col R — possibly several at once
+      const re = /\x1b\[(\d+);(\d+)R/g;
+      while ((m = re.exec(slotProbeBuf)) !== null) {
+        if (slotProbePending <= 0) continue; // stale answer, ignore
+        slotProbePending--;
+        const row = parseInt(m[1], 10);
+        // Reserved block rows = below the scroll workspace bottom. The bar
+        // recomputes geometry; hand it the raw row and let it judge.
+        session.statusBar?.slotProbeReport?.(row);
+      }
+      slotProbeBuf = slotProbeBuf.slice(-32);
+    };
+    stdin.on('data', onSlotData);
+    session.statusBar.setSlotProbeFn((rows) => {
+      slotProbePending++;
+      session.statusBar?.rawWrite('\x1b[6n');
+      setTimeout(() => {
+        if (slotProbePending > 0) {
+          slotProbePending = 0;          // silent terminal: unknown
+          session.statusBar?.slotProbeResult?.(false, rows);
+        }
+      }, 160);
+    });
+    // Cleanup on exit: the stdin listener must not outlive the REPL.
+    session._slotCleanup = () => { try { stdin.removeListener('data', onSlotData); } catch { /* gone */ } };
+  }
+
   // Heuristic fallback for terminals WITHOUT bracketed-paste support (older
   // emulators, some IDE consoles, multiplexers that strip the mode, non-TTY
   // piped input): coalesce a rapid burst of 'line' events into one message.
@@ -566,6 +610,7 @@ export async function interactive(opts = {}) {
 
   await new Promise((resolve) => { session.exitResolve = resolve; });
 
+  session._slotCleanup?.();
   unpatchRefresh();
   unrepairBursts();
   replHints?.dispose();
