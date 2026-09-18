@@ -114,15 +114,36 @@ test('a steady-state update restores the cursor (does not park it)', () => {
   assert.ok(/\x1b8$/.test(w), 'steady-state update ends with cursor-restore');
 });
 
-test('a steady-state update (no count change) does NOT re-emit the scroll region', () => {
+test('a steady-state update re-asserts the scroll region cursor-transparently and repaints ONLY changed rows', () => {
   const { bar, writes, all, setPlan } = makeBar();
   setPlan(['Plan: x', '  > 1. a']);
   bar.update(); // transition -> emits region
   writes.length = 0;
-  bar.update(); // steady state -> no region re-emit
-  const w = all();
-  assert.ok(!w.includes('\x1b[1;'), 'no scroll-region re-emit on steady-state update');
-  assert.ok(w.includes('STATUS'), 'status line still refreshed');
+  bar.update(); // steady state, identical content
+  let w = all();
+  // Self-heal contract (display-sleep / detach recovery): the region IS
+  // re-asserted on every paint — a terminal reset that silently cleared
+  // DECSTBM must not turn reserved rows into scroll workspace — but the
+  // emission is cursor-transparent (save precedes it, restore trails) and
+  // IDENTICAL rows are not rewritten (anti-flicker: the plan panel used to
+  // flash every 200ms tick while the spinner/elapsed changed).
+  assert.ok(w.includes('\x1b[1;'), 'scroll region re-asserted on steady-state update');
+  assert.ok(w.indexOf('\x1b7') < w.indexOf('\x1b[1;'), 'save precedes the region (cursor-transparent)');
+  assert.ok(w.endsWith('\x1b8'), 'restore trails the repaint');
+  const planRepaints = (w.match(/> 1\. a/g) || []).length;
+  assert.equal(planRepaints, 0, 'unchanged plan rows are NOT rewritten');
+  assert.ok(!w.includes('Plan: x'), 'unchanged plan header not rewritten');
+  // A CHANGED row is rewritten; unchanged ones still are not (the rig's
+  // formatter is static, so simulate the real 200ms poll whose status line
+  // changes every tick — exactly the spinner/elapsed case).
+  writes.length = 0;
+  bar.formatter = () => 'STATUS-2';
+  setPlan(['Plan: y', '  > 1. a']);
+  bar.update();
+  w = all();
+  assert.ok(w.includes('Plan: y'), 'changed row repainted');
+  assert.ok(w.includes('STATUS-2'), 'changed status line repainted');
+  assert.ok(!w.includes('> 1. a'), 'unchanged row still skipped');
 });
 
 test('setPlanRenderer re-establishes the region immediately', () => {

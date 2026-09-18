@@ -214,6 +214,10 @@ export async function interactive(opts = {}) {
       active: !!session.consumeNext,
       prompt: session.menuPromptText,
       line: session.consumeNext ? String(session.rl?.line ?? '') : '',
+      // The readline model cursor — the redraw parks the physical cursor at
+      // this column so mid-line edits / backspace land on the right cells
+      // (the plan-confirm custom-input corruption had them scattered).
+      cursor: session.consumeNext ? Number(session.rl?.cursor ?? 0) : 0,
     }));
   }
   if (session.statusBar.isEnabled()) {
@@ -249,6 +253,33 @@ export async function interactive(opts = {}) {
       process.exit(130);
     });
     process.once('SIGTERM', () => { restoreOnce(); process.exit(143); });
+
+    // Suspend / resume (Ctrl+Z, job-control backgrounding): terminal-side
+    // state (DECSTBM scroll region, DECSC slot, raw mode, cursor) belongs to
+    // the tty session — after SIGTSTP the tty may be reset or handed to
+    // another program, and our cached paint / slot is garbage. On SIGTSTP:
+    // restore the terminal, then take the REAL stop (default disposition).
+    // On SIGCONT: restart the bar if it was stopped and run a full HEAL —
+    // re-establish the region, repaint everything, re-bank the continuation
+    // slot at the workspace bottom, re-assert raw mode. Without this, resuming
+    // a long task left streaming output writing into a dead cursor (the
+    // "display stuck mid-task after backgrounding" regression).
+    const onTstp = () => {
+      try { session.statusBar?.stop(); } catch { /* best-effort */ }
+      process.removeListener('SIGTSTP', onTstp);
+      process.kill(process.pid, 'SIGTSTP'); // blocks until continued
+      process.on('SIGTSTP', onTstp);        // re-arm for the next suspend
+    };
+    process.on('SIGTSTP', onTstp);
+    process.on('SIGCONT', () => {
+      try {
+        if (!session.statusBar?._started) session.statusBar?.start();
+        if (session.rl?.input?.isTTY && typeof session.rl.input.setRawMode === 'function') {
+          session.rl.input.setRawMode(true);
+        }
+        session.statusBar?.fullRepaint({ heal: true });
+      } catch { /* best-effort */ }
+    });
   }
 
   // Install user theme overrides (tool-card frame colors) before any card
