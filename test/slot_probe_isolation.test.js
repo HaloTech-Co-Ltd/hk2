@@ -211,3 +211,68 @@ test('CLEANUP: uninstall removes the probe seam (poll ticks never probe again)',
   stdin.write('z');
   assert.equal(rl.line, 'z', 'readline alive after cleanup');
 });
+
+/* ---- fragmentation stress: the exact leak patterns from live evidence ---- */
+/* Live evidence: a byte-split answer leaked its ROW DIGITS and 'R' into the
+ * draft (`…RRRR0R2R4R6R8R0R2R…R7R7R7R…`). The isolation window must consume
+ * DSR answers however they fragment. */
+
+test('byte-by-byte fragmented answer: nothing leaks, verdict still lands', async () => {
+  const { bar, rl, stdin, writes, cleanup } = makeRig();
+  stdin.write('add inst');
+  const before = writes.length;
+  probeWith(bar, stdin);
+  for (const ch of '\x1b[10;1R') stdin.write(ch); // one BYTE per chunk
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rl.line, 'add inst', `draft untouched by byte-split answer, got: ${JSON.stringify(rl.line)}`);
+  assert.ok(!writes.slice(before).join('').includes(HEAL_ROW), 'healthy verdict landed (no heal)');
+  cleanup();
+  bar.stop();
+});
+
+test('digit-split answer (…[2 | 0;1R) and (…[10;1 | R): held-back prefixes consumed', async () => {
+  const { bar, rl, stdin, cleanup } = makeRig();
+  probeWith(bar, stdin);
+  stdin.write('\x1b[2');        // prefix split before a row digit
+  stdin.write('0;1R');          // completes 20;1R (healthy row)
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rl.line, '', `no digit/R leaked, got: ${JSON.stringify(rl.line)}`);
+  // Second window, split right before the R terminator.
+  probeWith(bar, stdin);
+  stdin.write('\x1b[10;1');
+  stdin.write('R');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rl.line, '', `no digit/R leaked on terminator split, got: ${JSON.stringify(rl.line)}`);
+  cleanup();
+  bar.stop();
+});
+
+test('answer storm in one window chunk: extra whole answers are consumed, not replayed', async () => {
+  const { bar, rl, stdin, cleanup } = makeRig();
+  probeWith(bar, stdin);
+  // Two whole answers in ONE chunk: the first yields the verdict, the second
+  // is terminal traffic sharing the chunk — it must never reach the draft.
+  stdin.write('\x1b[10;1R\x1b[10;1R');
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rl.line, '', `no storm bytes in draft, got: ${JSON.stringify(rl.line)}`);
+  cleanup();
+  bar.stop();
+});
+
+test('user keystrokes around a fragmented answer: all keys replayed once', async () => {
+  const { bar, rl, stdin, cleanup } = makeRig();
+  stdin.write('t');
+  probeWith(bar, stdin);
+  stdin.write('y');                 // user key inside the window, before the answer
+  stdin.write('\x1b[');             // answer fragment 1 (contiguous — a real
+  stdin.write('10;1R');             // fragment 2 — tty queues never split
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rl.line, 'ty', `key before the answer replayed, answer consumed, got: ${JSON.stringify(rl.line)}`);
+  stdin.write('z');                 // key after the window closed
+  assert.equal(rl.line, 'tyz', 'key after the window lands normally');
+  // NOTE: a key BETWEEN two fragments of ONE answer is byte-stream
+  // ambiguous (`\x1b[1` + '0' + ';1R' ≡ the answer `\x1b[10;1R` with no key)
+  // and cannot occur on a real tty input queue — not a contract here.
+  cleanup();
+  bar.stop();
+});
