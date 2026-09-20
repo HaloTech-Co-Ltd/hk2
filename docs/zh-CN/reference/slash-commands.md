@@ -65,7 +65,7 @@
 | `--max-tokens=N` | 最大输出 token 数 |
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（见 `/model types`；默认 `generic`） |
-| `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'`；传 `'{}'` 即清空；按类型声明的特性校验 |
+| `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'`；传 `'{}'` 即清空；按类型声明的特性校验。对 `--api=anthropic` 的模型，官方 Messages API 参数（`stop_sequences`、`metadata`、`service_tier`、`container`、`inference_geo`、`output_config`、`cache_control`、`tool_choice`、`top_p`、`top_k`、`thinking.display`）会被校验后透传到 `/v1/messages` 请求体；扩展思考开启时 `top_p`/`top_k` 会被丢弃（官方互斥约束） |
 | `--multimodal=on\|off` | 多模态输入（图片 / 视频 / 语音附件，经 `/attach` 暂存）；默认 `off`；设为 `on` 要求 `--model-type` 具备多模态能力（目前为 `glm-5.3-flash` 和 `deepseek-flash`），不具备的模型会被拒绝 |
 
 `set-phase` 阶段：`rewrite-query`、`request-assess`、`plan-review`、

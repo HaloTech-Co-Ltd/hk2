@@ -167,7 +167,7 @@ async function listModels(ctx) {
       // ref key (id) and the wire code (name) side by side.
       const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
       ctx.print(`${marker} ${label}`);
-      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} multimodal=${m.multimodal ? 'on' : 'off'} temperature=${m.temperature ?? 0.2} modelType=${m.modelType || 'generic'}`);
+      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} multimodal=${m.multimodal ? 'on' : 'off'} temperature=${m.temperature ?? 'unset'} modelType=${m.modelType || 'generic'}`);
       printModelOptions(ctx, m.modelOptions);
       printMcpServers(ctx, m.mcpServers);
     }
@@ -533,7 +533,7 @@ async function setModel(rest, ctx) {
   }
 
   ctx.print(`Updated: ${newRef}`);
-  ctx.print(`  id=${entry.id} name=${entry.name ?? '?'} contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} multimodal=${entry.multimodal ? 'on' : 'off'} temperature=${entry.temperature ?? 0.2} modelType=${entry.modelType || 'generic'}`);
+  ctx.print(`  id=${entry.id} name=${entry.name ?? '?'} contextWindow=${entry.contextWindow ?? '?'} maxTokens=${entry.maxTokens ?? '?'} reasoning=${entry.reasoning ? 'on' : 'off'} multimodal=${entry.multimodal ? 'on' : 'off'} temperature=${entry.temperature ?? 'unset'} modelType=${entry.modelType || 'generic'}`);
   printModelOptions(ctx, entry.modelOptions);
   if (pinnedName) {
     ctx.print(`  (wire model code preserved: name=${entry.name}; use --name to change what is sent to the API)`);
@@ -800,7 +800,7 @@ async function showModel(ctx) {
   }
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
   ctx.print(`  multimodal: ${cfg.multimodal ? 'on' : 'off'}${cfg.multimodal ? ' (image / video / audio attachments accepted; see /attach)' : ''}`);
-  ctx.print(`  temperature: ${cfg.temperature}`);
+  ctx.print(`  temperature: ${cfg.temperature ?? '(unset - 0.2 for openai-style APIs, provider default for anthropic)'}`);
 }
 
 /**

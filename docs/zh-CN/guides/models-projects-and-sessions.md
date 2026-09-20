@@ -61,7 +61,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 | `--max-tokens=N` | 最大输出 token 数 |
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（`/model types` 列出全部取值） |
-| `--model-options=JSON` | 模型专属选项，如 `'{"enable_thinking":true}'` |
+| `--model-options=JSON` | 模型专属选项，如 `'{"enable_thinking":true}'`；anthropic 方言模型可透传官方 Messages API 参数（`stop_sequences`、`tool_choice`、`cache_control`、`service_tier` 等）到请求体 |
 | `--multimodal=on\|off` | 多模态输入（默认 `off`）；`on` 后可附图片 / 视频 / 语音——见[多模态输入](#多模态输入) |
 
 `--model-type` 声明模型家族，hk2 据此应用家族专属行为。声明了特性的类型会

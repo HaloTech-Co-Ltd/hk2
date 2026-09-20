@@ -66,7 +66,7 @@ Common flags (full list in [Slash commands](../reference/slash-commands.md)):
 | `--max-tokens=N` | Max output tokens |
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (`/model types` lists all values) |
-| `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'` |
+| `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; for anthropic-dialect models, official Messages-API parameters (`stop_sequences`, `tool_choice`, `cache_control`, `service_tier`, ...) pass through to the request body |
 | `--multimodal=on\|off` | Multimodal input (default `off`); `on` enables image / video / audio attachments — see [multimodal input](#multimodal-input) |
 
 `--model-type` declares the model family so hk2 can apply family-specific

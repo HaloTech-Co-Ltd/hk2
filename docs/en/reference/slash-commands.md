@@ -67,7 +67,7 @@ Flags for `set` / `add`:
 | `--max-tokens=N` | Max output tokens |
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (see `/model types`; default `generic`) |
-| `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; `'{}'` clears; validated against the type's declared features |
+| `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; `'{}'` clears; validated against the type's declared features. For `--api=anthropic` models, recognized official Messages-API parameters (`stop_sequences`, `metadata`, `service_tier`, `container`, `inference_geo`, `output_config`, `cache_control`, `tool_choice`, `top_p`, `top_k`, `thinking.display`) are validated and forwarded onto the `/v1/messages` request body; `top_p`/`top_k` are dropped while extended thinking is on (official mutual exclusion) |
 | `--multimodal=on\|off` | Multimodal input (image / video / audio attachments via `/attach`); default `off`; `on` requires a multimodal-capable `--model-type` (currently `glm-5.3-flash` and `deepseek-flash`) — setting it on an incapable model is rejected |
 
 `set-phase` phases: `rewrite-query`, `request-assess`, `plan-review`,
