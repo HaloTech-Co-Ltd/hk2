@@ -62,6 +62,7 @@ Claude Code 首启导入与 MCP 服务器。完整参数参考见
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（`/model types` 列出全部取值） |
 | `--model-options=JSON` | 模型专属选项，如 `'{"enable_thinking":true}'`；anthropic 方言模型可透传官方 Messages API 参数（`stop_sequences`、`tool_choice`、`cache_control`、`service_tier` 等）到请求体 |
+| `--built-in-tools=on\|off` | 服务端内建工具声明（anthropic 方言）；默认 `on`——官方 ToolUnion 工具类型（网页搜索/抓取、代码执行等）在每个 `/v1/messages` 请求体中通告。`off` 按模型关闭；`--model-options` 的 `tools` 仍作为未来/未知变体与按家族版本覆盖的逃生舱 |
 | `--multimodal=on\|off` | 多模态输入（默认 `off`）；`on` 后可附图片 / 视频 / 语音——见[多模态输入](#多模态输入) |
 
 `--model-type` 声明模型家族，hk2 据此应用家族专属行为。声明了特性的类型会

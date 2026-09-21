@@ -67,6 +67,7 @@ Common flags (full list in [Slash commands](../reference/slash-commands.md)):
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (`/model types` lists all values) |
 | `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; for anthropic-dialect models, official Messages-API parameters (`stop_sequences`, `tool_choice`, `cache_control`, `service_tier`, ...) pass through to the request body |
+| `--built-in-tools=on\|off` | Server-side built-in tool declarations (anthropic dialect); default `on` — the official ToolUnion tool types (web search / fetch, code execution, ...) are advertised in every `/v1/messages` request body. `off` opts a model out; `--model-options` `tools` remains the escape hatch for future/unknown variants and per-family version overrides |
 | `--multimodal=on\|off` | Multimodal input (default `off`); `on` enables image / video / audio attachments — see [multimodal input](#multimodal-input) |
 
 `--model-type` declares the model family so hk2 can apply family-specific

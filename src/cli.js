@@ -152,7 +152,7 @@ Usage:
       Print this help.
 
 Interactive REPL commands (full list via /help; per-command usage via /help <command>):
-  /model list | add | set | set-default | set-phase | add-mcpserver | types | use | del | show
+  /model list | add | set | set-default | set-phase | add-mcpserver | del-mcpserver | types | use | del | show
   /project init | list | set | show | drop
   /kb init | update | status | search | symbol | neighbors | knowledge | code | transform | drop
   /session info | list | new | resume | compact

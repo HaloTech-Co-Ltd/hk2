@@ -60,7 +60,7 @@ export function dynamicSlot(tokens) {
     const sub = tokens[1];
     // <ref> is the sole positional for these subs; flags may follow, but a
     // flag token is never the ref itself.
-    if (sub === 'use' || sub === 'del' || sub === 'add-mcpserver') {
+    if (sub === 'use' || sub === 'del' || sub === 'add-mcpserver' || sub === 'del-mcpserver') {
       return (!isFlagPos && last === 2) ? { kind: 'models', index: 2 } : null;
     }
     if (sub === 'set') {

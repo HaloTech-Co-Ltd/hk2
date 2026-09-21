@@ -29,7 +29,7 @@
   pageup/pagedown 翻 5 项，Tab/Enter 采纳，唯一精确匹配时 Enter 直接提交，
   esc 关闭直到输入再次变化。菜单由注册命令派生（共用同一数据源），因此随命令变化保持一致。
 - **数据参数补全**——模型引用、会话 id 与项目 id 根据注册表实时提供补全：
-  `/model use|set|del|set-default|set-phase|add-mcpserver <ref>`、
+  `/model use|set|del|set-default|set-phase|add-mcpserver|del-mcpserver <ref>`、
   `/session resume|info <id>`、`/resume <id>`、
   `/project set current|drop <id>`。`/model set-phase --phase=` 补全阶段
   枚举。`HK2_REPL_HINTS=0` 恢复不带提示信息的原始提示符。

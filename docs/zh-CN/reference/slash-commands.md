@@ -47,6 +47,7 @@
 | `set-phase --phase=<名称> <provider>/<model-id>` | 为某个处理阶段配置项目级模型；`--clear` 清除覆盖 |
 | `add <provider> <model-id> [--参数]` | 添加模型（提供商不存在则创建） |
 | `add-mcpserver <provider>/<model-id> --type=<t> --name=<n> [--options=JSON]` | 为已有模型挂载 MCP 服务器 |
+| `del-mcpserver <provider>/<model-id> --name=<n> \| --all` | 从模型上移除 MCP 服务器 |
 | `del <provider>/<model-id>` | 删除模型 |
 | `types` | 列出所有支持的 `--model-type` 取值 |
 | `show` | 显示当前默认模型 |
@@ -65,7 +66,8 @@
 | `--max-tokens=N` | 最大输出 token 数 |
 | `--temperature=N` | 采样温度 |
 | `--model-type=TYPE` | 模型家族（见 `/model types`；默认 `generic`） |
-| `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'`；传 `'{}'` 即清空；按类型声明的特性校验。对 `--api=anthropic` 的模型，官方 Messages API 参数（`stop_sequences`、`metadata`、`service_tier`、`container`、`inference_geo`、`output_config`、`cache_control`、`tool_choice`、`top_p`、`top_k`、`thinking.display`）会被校验后透传到 `/v1/messages` 请求体；扩展思考开启时 `top_p`/`top_k` 会被丢弃（官方互斥约束） |
+| `--model-options=JSON` | 模型特性参数，如 `'{"enable_thinking":true}'`；传 `'{}'` 即清空；按类型声明的特性校验。对 `--api=anthropic` 的模型，官方 Messages API 参数（`stop_sequences`、`metadata`、`service_tier`、`container`、`inference_geo`、`output_config`、`cache_control`、`tool_choice`、`top_p`、`top_k`、`thinking.display`）会被校验后透传到 `/v1/messages` 请求体；扩展思考开启时 `top_p`/`top_k` 会被丢弃（官方互斥约束）。`tools`（built-in ToolUnion 条目数组，如 `{"tools":[{"type":"web_search_20250305"},{"type":"web_fetch_20250910","max_uses":3}]}`）用于声明**服务端**内建工具——网页搜索/抓取、代码执行等——由 Anthropic 自行执行，客户端不运行。**官方 Messages-API 参考所列的内建 tool 类型已在每个 `/v1/messages` 请求体中默认声明——无需任何配置**；可用 `--built-in-tools=off` 按模型关闭。`modelOptions.tools` 是针对**尚未默认支持**类型的逃生舱：hk2 还不认识的未来内建变体（一旦被识别即原样透传）与按家族覆盖——同一家族的条目（如 `{"type":"web_search_20260318"}`）会原地替换默认变体。显式声明会打印确认通知（`server-side built-in tools declared in the request body: …`）；形似内建家族但缺少日期后缀的条目（如 `{"type":"web_search"}`）会被丢弃并给出列出可用变体的警告，而真正的自定义工具条目则被静默忽略（它们属于客户端注册表）。对 `--api=openai` 的模型该键会被**显式拒绝**（OpenAI chat-completions 方言没有服务端内建工具——请在 Anthropic 风格端点上配置） |
+| `--built-in-tools=on\|off` | `--api=anthropic` 模型的服务端内建工具声明（见上方 `--model-options`）；默认 `on`——官方 ToolUnion 类型在每个请求体中通告。`off` 关闭**默认**声明（显式 `modelOptions.tools` 条目仍然生效） |
 | `--multimodal=on\|off` | 多模态输入（图片 / 视频 / 语音附件，经 `/attach` 暂存）；默认 `off`；设为 `on` 要求 `--model-type` 具备多模态能力（目前为 `glm-5.3-flash` 和 `deepseek-flash`），不具备的模型会被拒绝 |
 
 `set-phase` 阶段：`rewrite-query`、`request-assess`、`plan-review`、
@@ -76,6 +78,10 @@
 `{"url":"...","headers":{"Authorization":"Bearer $APIKEY"}}`——`$APIKEY`
 在使用时替换为该提供商的 `--api-key`；存储的配置只保留占位符，绝不保存
 密钥。
+
+`del-mcpserver`：对应的移除命令——`--name=<n>` 精确移除同名服务器，
+`--all`（或 `--name=all`）移除模型上的全部服务器；移除最后一个服务器后会
+直接删掉 `mcpServers` 键。
 
 示例：
 
@@ -88,6 +94,8 @@
 /model set local/mymodel --temperature=0.5 --max-tokens=8192
 /model set local/mymodel --id=mymodel-v2        # 重命名引用键
 /model set-phase --phase=rewrite-query local/mymodel
+/model del-mcpserver local/mymodel --name=web-reader
+/model del-mcpserver local/mymodel --all
 /model del local/mymodel
 ```
 

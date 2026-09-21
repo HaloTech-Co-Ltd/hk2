@@ -1530,6 +1530,19 @@ export async function runTurn(userText, session, ctx, ui, opts = {}) {
     onRetry: (evt) => {
       ui.retryNotice(evt);
     },
+    // Non-fatal adapter notice (e.g. an Anthropic modelOptions passthrough key
+    // that LOOKED like an official parameter but failed validation and was
+    // dropped from the request body). One dim warning line so the model owner
+    // hears why a configured option never reached the wire; also audited in
+    // the transcript for replay.
+    onNotice: (evt) => {
+      try {
+        ui.notice?.(style.warning(`${style.ICON.warn} ${evt.message}`));
+      } catch { /* display is best-effort */ }
+      try {
+        session.transcript?.logMeta('llm-notice', { message: String(evt.message || '').slice(0, 400) });
+      } catch { /* transcript is best-effort */ }
+    },
     // Stuck-detector intervention: the loop injected a corrective system
     // message into the conversation (progressive, budgeted — see
     // HK2_STUCK_NUDGE_LIMIT, default 10) and CONTINUED. Never fatal by

@@ -39,7 +39,7 @@ stream).
   shared data source), which keeps it from drifting as commands change.
 - **Data-argument completion** — model refs, session ids, and project ids
   complete live from the registries: `/model use|set|del|set-default|
-  set-phase|add-mcpserver <ref>`, `/session resume|info <id>`,
+  set-phase|add-mcpserver|del-mcpserver <ref>`, `/session resume|info <id>`,
   `/resume <id>`, `/project set current|drop <id>`. `/model set-phase
   --phase=` completes the phase enum. `HK2_REPL_HINTS=0` restores the plain
   prompt without hints.

@@ -50,7 +50,7 @@
  *   /model set-default current --clear              Clear the project override (fall back to global)
  *   /model set <provider>/<model-id> [--name=...] [--id=NEW_ID] [--api=...] [--base-url=...] [--api-key=...]
  *                  [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]
- *                  [--model-options=JSON] [--multimodal=on|off]
+ *                  [--model-options=JSON] [--multimodal=on|off] [--built-in-tools=on|off]
  *                                                  Modify a model's persisted settings
  *   /model set-phase --phase=<name> <provider>/<model-id> [--clear]
  *                                                  Per-project model for one pipeline phase
@@ -60,6 +60,8 @@
  *   /model show                                    Show current default
  *   /model add-mcpserver <provider>/<model-id> --type=TYPE --name=NAME [--options=JSON]
  *                                                  Attach an MCP server to an existing model
+ *   /model del-mcpserver <provider>/<model-id> --name=NAME | --all
+ *                                                  Remove MCP server(s) from a model
  */
 import {
   loadModels, saveModels, splitModelRef, resolveModelRef,
@@ -70,9 +72,10 @@ import {
   normalizeModelType, supportedModelTypes, DEFAULT_MODEL_TYPE,
   normalizeModelOptions, modelTypeFeatures, modelTypeDefaultReasoning,
   validateModelOptionsForType,
-  normalizeMcpServerType, normalizeMcpServerOptions,
+  normalizeMcpServerType, normalizeMcpServerOptions, removeModelMcpServer,
   supportedMcpServerTypes, getModelMcpServers,
   parseMultimodalFlag, validateMultimodalForType,
+  parseBuiltinToolsFlag,
 } from '../../lib/config/home.js';
 import { subcommandHelp, printCommandHelp } from './help.js';
 
@@ -88,6 +91,7 @@ export async function cmdModel(args, ctx) {
     case 'add': return addModel(rest, ctx);
     case 'del': case 'rm': return delModel(rest, ctx);
     case 'add-mcpserver': return addMcpServer(rest, ctx);
+    case 'del-mcpserver': case 'rm-mcpserver': return delMcpServer(rest, ctx);
     case 'show': return showModel(ctx);
     case 'types': return listModelTypes(ctx);
     case 'help': case '?': case undefined:
@@ -167,7 +171,7 @@ async function listModels(ctx) {
       // ref key (id) and the wire code (name) side by side.
       const label = (m.name && m.name !== m.id) ? `${m.id.padEnd(28)} -> ${m.name}` : m.id.padEnd(28);
       ctx.print(`${marker} ${label}`);
-      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} multimodal=${m.multimodal ? 'on' : 'off'} temperature=${m.temperature ?? 'unset'} modelType=${m.modelType || 'generic'}`);
+      ctx.print(`    contextWindow=${m.contextWindow || '?'} maxTokens=${m.maxTokens || '?'} reasoning=${m.reasoning ? 'on' : 'off'} multimodal=${m.multimodal ? 'on' : 'off'} built-in-tools=${m.builtinTools === false ? 'off' : 'on'} temperature=${m.temperature ?? 'unset'} modelType=${m.modelType || 'generic'}`);
       printModelOptions(ctx, m.modelOptions);
       printMcpServers(ctx, m.mcpServers);
     }
@@ -335,7 +339,7 @@ async function setModel(rest, ctx) {
   if (!ref) {
     ctx.print(`Usage: /model set <provider>/<model-id> [--name=NAME] [--id=NEW_ID] [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning=on|off] [--context-window=N] [--max-tokens=N] [--temperature=N] [--model-type=TYPE]`);
-    ctx.print(`                        [--model-options=JSON] [--multimodal=on|off]  e.g. --model-options='{"enable_thinking":true}'`);
+    ctx.print(`                        [--model-options=JSON] [--multimodal=on|off] [--built-in-tools=on|off]  e.g. --model-options='{"enable_thinking":true}'`);
     return;
   }
   const split = splitModelRef(ref);
@@ -374,6 +378,18 @@ async function setModel(rest, ctx) {
     multimodal = parseMultimodalFlag(flags.multimodal);
     if (multimodal === null) {
       ctx.print(`Invalid --multimodal: expected on|off (got ${JSON.stringify(flags.multimodal)})`);
+      return;
+    }
+  }
+
+  // Validate --built-in-tools (on|off) before touching the registry. There
+  // is no per-type capability gate (every current type declares the official
+  // server-side built-in tools by default); `off` is the per-model opt-out.
+  let builtinTools;
+  if (flags['built-in-tools'] !== undefined) {
+    builtinTools = parseBuiltinToolsFlag(flags['built-in-tools']);
+    if (builtinTools === null) {
+      ctx.print(`Invalid --built-in-tools: expected on|off (got ${JSON.stringify(flags['built-in-tools'])})`);
       return;
     }
   }
@@ -491,6 +507,11 @@ async function setModel(rest, ctx) {
     // the entry; resolveModelRef additionally requires the model type to
     // declare the capability, so hand-edited records cannot fake it.
     if (multimodal !== undefined) entry.multimodal = multimodal;
+    // Server-side built-in tools (anthropic dialect) declared by default;
+    // --built-in-tools=off is the per-model opt-out. The effective value
+    // (resolveModelRef) still requires the model type to declare the
+    // capability, so hand-edited records cannot force it on.
+    if (builtinTools !== undefined) entry.builtinTools = builtinTools;
     if (modelType) entry.modelType = modelType;
     // Model-specific options: replace wholesale when the flag is present. An
     // explicit '{}' clears them (stored as an empty object = no options);
@@ -551,7 +572,7 @@ async function addModel(rest, ctx) {
   if (rest.length < 2) {
     ctx.print(`Usage: /model add <provider> <model-id> [--api=openai|anthropic] [--base-url=URL] [--api-key=KEY]`);
     ctx.print(`                        [--reasoning] [--context-window=N] [--max-tokens=N] [--temperature=N] [--name=NAME] [--model-type=TYPE]`);
-    ctx.print(`                        [--model-options=JSON] [--multimodal=on|off]  e.g. --model-options='{"enable_thinking":true}'`);
+    ctx.print(`                        [--model-options=JSON] [--multimodal=on|off] [--built-in-tools=on|off]  e.g. --model-options='{"enable_thinking":true}'`);
     return;
   }
   const providerName = rest[0];
@@ -596,6 +617,18 @@ async function addModel(rest, ctx) {
       return;
     }
     flags.multimodal = mm;
+  }
+
+  // Parse --built-in-tools (on|off) before mutating anything; default on.
+  // Every current model type declares the official server-side built-in
+  // tools by default, so there is no capability gate — `off` is the opt-out.
+  if (flags['built-in-tools'] !== undefined) {
+    const bit = parseBuiltinToolsFlag(flags['built-in-tools']);
+    if (bit === null) {
+      ctx.print(`Invalid --built-in-tools: expected on|off (got ${JSON.stringify(flags['built-in-tools'])})`);
+      return;
+    }
+    flags['built-in-tools'] = bit;
   }
 
   // Locked read-modify-write (issue #7): the whole add runs inside the
@@ -665,6 +698,10 @@ async function addModel(rest, ctx) {
     // on + non-capable effective-type combinations.
     if (flags.multimodal !== undefined) entry.multimodal = flags.multimodal;
     else if (entry.multimodal === undefined) entry.multimodal = false;
+    // Server-side built-in tools (anthropic dialect) declared by default:
+    // absent on new entries → default on at resolve time; an explicit
+    // --built-in-tools=off stores false as the per-model opt-out.
+    if (flags['built-in-tools'] !== undefined) entry.builtinTools = flags['built-in-tools'];
 
     if (!data.default) {
       data.default = `${providerName}/${modelId}`;
@@ -800,6 +837,7 @@ async function showModel(ctx) {
   }
   ctx.print(`  reasoning: ${cfg.enableReasoning ? 'on' : 'off'}`);
   ctx.print(`  multimodal: ${cfg.multimodal ? 'on' : 'off'}${cfg.multimodal ? ' (image / video / audio attachments accepted; see /attach)' : ''}`);
+  ctx.print(`  built-in-tools: ${cfg.builtinTools ? 'on' : 'off'}${cfg.builtinTools ? ' (anthropic dialect: official server-side built-in tools are declared in every request body; --built-in-tools=off to opt out)' : ''}`);
   ctx.print(`  temperature: ${cfg.temperature ?? '(unset - 0.2 for openai-style APIs, provider default for anthropic)'}`);
 }
 
@@ -952,6 +990,83 @@ async function addMcpServer(rest, ctx) {
   ctx.print(`MCP server added: ${nameRaw} (type=${type}) -> ${ref}`);
   if (JSON.stringify(savedServer).includes('$APIKEY')) {
     ctx.print(`  ($APIKEY will be substituted with this provider's api key at use time)`);
+  }
+  ctx.noteReloadModels?.();
+}
+
+/**
+ * /model del-mcpserver <provider>/<model-id> --name=NAME | --all
+ *
+ * Remove MCP server config(s) from an EXISTING model entry's `mcpServers`
+ * array — the counterpart of /model add-mcpserver.
+ *
+ *   --name=NAME  remove the single server with that exact name
+ *   --all        remove every server attached to the model (--name=all
+ *                is accepted as the same thing)
+ *
+ * Scope guarantee (mirror of add): only ever removes from the addressed
+ * model's mcpServers array; never creates or deletes providers/models and
+ * never touches any other model field. Removing the last server drops the
+ * `mcpServers` key entirely so the entry returns to its pre-add shape.
+ */
+async function delMcpServer(rest, ctx) {
+  const flags = parseFlags(rest);
+  // Positional model ref: the first non-flag token that wasn't consumed as a
+  // value of a space-separated flag (same approach as addMcpServer).
+  const usedValues = new Set();
+  const refCandidates = [];
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    if (t.startsWith('--')) {
+      if (!t.includes('=')) {
+        const next = rest[i + 1];
+        if (next !== undefined && !next.startsWith('--')) usedValues.add(next);
+      }
+      continue;
+    }
+    if (usedValues.has(t)) continue;
+    refCandidates.push(t);
+  }
+  const ref = refCandidates.find(t => t.includes('/')) || refCandidates[0];
+
+  const nameRaw = typeof flags.name === 'string' ? flags.name.trim() : '';
+  const wantAll = flags.all !== undefined || nameRaw === 'all';
+
+  const usage = () => {
+    ctx.print(`Usage: /model del-mcpserver <provider>/<model-id> --name=<MCPSERVER_NAME>`);
+    ctx.print(`                       [--all]`);
+    ctx.print(``);
+    ctx.print(`Remove MCP server(s) attached to a model by /model add-mcpserver.`);
+    ctx.print(`--name  remove the single server with that exact name (--name=all = --all)`);
+    ctx.print(`--all   remove every MCP server on the model`);
+    ctx.print(``);
+    ctx.print(`Example:`);
+    ctx.print(`  /model del-mcpserver bigmodel2/glm-5.3[1m] --name=web-reader`);
+    ctx.print(`  /model del-mcpserver bigmodel2/glm-5.3[1m] --all`);
+  };
+
+  const refSplit = ref ? splitModelRef(ref) : null;
+  if (!refSplit || (!nameRaw && !wantAll)) { usage(); return; }
+
+  const outcome = await removeModelMcpServer(ref, { name: nameRaw, all: wantAll });
+  if (outcome.error) {
+    ctx.print(outcome.error);
+    if (outcome.error.startsWith('Model not found')) {
+      ctx.print(`(use /model list to see available refs)`);
+    }
+    return;
+  }
+  if (outcome.removed.length === 0) {
+    if (wantAll) {
+      ctx.print(`No MCP servers on ${ref} (nothing removed)`);
+    } else {
+      ctx.print(`No MCP server named "${nameRaw}" on ${ref} (nothing removed)`);
+    }
+    ctx.print(`(use /model show or /model list to see attached servers)`);
+    return;
+  }
+  for (const s of outcome.removed) {
+    ctx.print(`MCP server removed: ${s?.name || nameRaw} (type=${s?.type || '?'}) -> ${ref}`);
   }
   ctx.noteReloadModels?.();
 }

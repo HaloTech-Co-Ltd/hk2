@@ -49,6 +49,7 @@ Usage: `/model <subcommand> [args]` — manages `~/.hk2/models.json`.
 | `set-phase --phase=<name> <provider>/<model-id>` | Per-project model for one pipeline phase; `--clear` removes the override |
 | `add <provider> <model-id> [--flags]` | Add a model (creates the provider if needed) |
 | `add-mcpserver <provider>/<model-id> --type=<t> --name=<n> [--options=JSON]` | Attach an MCP server to an existing model |
+| `del-mcpserver <provider>/<model-id> --name=<n> \| --all` | Remove MCP server(s) from a model |
 | `del <provider>/<model-id>` | Delete a model |
 | `types` | List all supported `--model-type` values |
 | `show` | Show the current default model |
@@ -67,7 +68,8 @@ Flags for `set` / `add`:
 | `--max-tokens=N` | Max output tokens |
 | `--temperature=N` | Sampling temperature |
 | `--model-type=TYPE` | Model family (see `/model types`; default `generic`) |
-| `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; `'{}'` clears; validated against the type's declared features. For `--api=anthropic` models, recognized official Messages-API parameters (`stop_sequences`, `metadata`, `service_tier`, `container`, `inference_geo`, `output_config`, `cache_control`, `tool_choice`, `top_p`, `top_k`, `thinking.display`) are validated and forwarded onto the `/v1/messages` request body; `top_p`/`top_k` are dropped while extended thinking is on (official mutual exclusion) |
+| `--model-options=JSON` | Model-specific options, e.g. `'{"enable_thinking":true}'`; `'{}'` clears; validated against the type's declared features. For `--api=anthropic` models, recognized official Messages-API parameters (`stop_sequences`, `metadata`, `service_tier`, `container`, `inference_geo`, `output_config`, `cache_control`, `tool_choice`, `top_p`, `top_k`, `thinking.display`) are validated and forwarded onto the `/v1/messages` request body; `top_p`/`top_k` are dropped while extended thinking is on (official mutual exclusion). `tools` (array of built-in ToolUnion entries, e.g. `{"tools":[{"type":"web_search_20250305"},{"type":"web_fetch_20250910","max_uses":3}]}`) declares SERVER-SIDE built-in tools — web search / fetch, code execution, etc. — that Anthropic executes itself and the client never runs. **The built-in tool types documented by the official Messages-API reference are declared BY DEFAULT in every `/v1/messages` request body — no configuration needed**; use `--built-in-tools=off` to opt a model out. `modelOptions.tools` is the escape hatch for what is NOT yet default-declared: future built-in variants hk2 does not know (forwarded verbatim once recognized) and per-family overrides — a same-family entry (e.g. `{"type":"web_search_20260318"}`) replaces the default variant in place. An explicit declaration prints a confirmation notice (`server-side built-in tools declared in the request body: …`); entries that LOOK like a built-in family but miss the dated suffix (e.g. `{"type":"web_search"}`) are dropped with a warning listing the recognized variants, while genuine custom-tool entries are ignored silently (they belong to the client registry). For `--api=openai` models this key is REJECTED fail-loud (the OpenAI chat-completions dialect has no server-side built-in tools — configure it on an Anthropic-style endpoint instead) |
+| `--built-in-tools=on\|off` | Server-side built-in tool declarations for `--api=anthropic` models (see `--model-options` above); default `on` — the official ToolUnion types are advertised in every request body. `off` disables the DEFAULT declarations (explicit `modelOptions.tools` entries still apply) |
 | `--multimodal=on\|off` | Multimodal input (image / video / audio attachments via `/attach`); default `off`; `on` requires a multimodal-capable `--model-type` (currently `glm-5.3-flash` and `deepseek-flash`) — setting it on an incapable model is rejected |
 
 `set-phase` phases: `rewrite-query`, `request-assess`, `plan-review`,
@@ -78,6 +80,10 @@ unique per model (re-adding replaces). `--options` for http:
 `{"url":"...","headers":{"Authorization":"Bearer $APIKEY"}}` — `$APIKEY` is
 substituted with the provider's `--api-key` at use time; the stored config
 keeps the placeholder, never the key.
+
+`del-mcpserver`: the removal counterpart — `--name=<n>` removes the single
+server with that exact name, `--all` (or `--name=all`) removes every server
+on the model. Removing the last server drops the `mcpServers` key entirely.
 
 Examples:
 
@@ -90,6 +96,8 @@ Examples:
 /model set local/mymodel --temperature=0.5 --max-tokens=8192
 /model set local/mymodel --id=mymodel-v2        # rename the ref key
 /model set-phase --phase=rewrite-query local/mymodel
+/model del-mcpserver local/mymodel --name=web-reader
+/model del-mcpserver local/mymodel --all
 /model del local/mymodel
 ```
 

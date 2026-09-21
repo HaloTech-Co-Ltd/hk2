@@ -13,6 +13,11 @@
  * the /v1/messages request body. Invalid shapes are dropped (never sent)
  * so a misconfigured model cannot 400 the request.
  *
+ * The official server-side built-in tool types are declared BY DEFAULT in
+ * every request body (no modelOptions needed); modelOptions.tools is the
+ * escape hatch for future variants and per-family overrides, and the
+ * per-model --built-in-tools=off flag opts an entry out.
+ *
  * Also covers the usage-side cache_creation OBJECT form
  * ({ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}) that the current
  * official API returns in message_start / message_delta usage snapshots.
@@ -84,7 +89,7 @@ function makeRespWithEvents(events) {
   };
 }
 
-async function captureBody({ modelOptions, tools, enableReasoning, temperature } = {}) {
+async function captureBody({ modelOptions, tools, enableReasoning, temperature, builtinTools } = {}) {
   let captured = null;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (_url, init) => {
@@ -102,6 +107,7 @@ async function captureBody({ modelOptions, tools, enableReasoning, temperature }
       tools,
       enableReasoning,
       temperature,
+      builtinTools,
     })) { /* drain */ }
   } finally {
     globalThis.fetch = originalFetch;
@@ -109,8 +115,51 @@ async function captureBody({ modelOptions, tools, enableReasoning, temperature }
   return captured;
 }
 
-test('baseline: no modelOptions → none of the passthrough keys present, tool_choice defaults absent without tools', async () => {
-  const body = await captureBody({ enableReasoning: false });
+/** Capture the request body AND the notice events yielded before the fetch. */
+async function captureBodyAndNotices({ modelOptions, builtinTools } = {}) {
+  let captured = null;
+  const notices = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    captured = JSON.parse(init.body);
+    return makeResp();
+  };
+  try {
+    for await (const evt of streamAnthropic({
+      baseUrl: 'https://example.com',
+      apiKey: 'k',
+      model: 'm',
+      messages: [{ role: 'user', content: 'hi' }],
+      maxChars: 8192,
+      modelOptions,
+      builtinTools,
+      enableReasoning: false,
+    })) {
+      if (evt?.type === 'notice') notices.push(evt.message);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  return { body: captured, notices };
+}
+
+// Mirrors ANTHROPIC_DEFAULT_BUILTIN_TOOLS in the adapter. The computer/browser
+// toolsets are deliberately NOT defaulted: their `name` is FORBIDDEN by the
+// official API while strict gateways (BigModel) REQUIRE `name` on every entry —
+// a defaulted toolset 400s on one side or the other (regression: the
+// "body.tools.34.name / body.tools.39.name: Field required" incident).
+const DEFAULT_BUILTIN_TYPES = [
+  'bash_20250124',
+  'code_execution_20250522',
+  'text_editor_20250124',
+  'web_search_20250305',
+  'web_fetch_20250910',
+  'memory_20250818',
+  'tool_search_tool_regex_20251119',
+];
+
+test('baseline: no modelOptions → none of the passthrough keys present (default built-ins declared; see below)', async () => {
+  const body = await captureBody({ enableReasoning: false, builtinTools: false });
   for (const k of ['stop_sequences', 'metadata', 'service_tier', 'container',
     'inference_geo', 'output_config', 'cache_control', 'tool_choice', 'top_p', 'top_k']) {
     assert.equal(body[k], undefined, `${k} must be absent`);
@@ -222,10 +271,12 @@ test('tool_choice forwards all four types + disable_parallel_tool_use; bare "aut
 });
 
 test('tool_choice validation: bare non-auto string, missing name, bad disable_parallel', async () => {
-  assert.equal((await captureBody({ modelOptions: { tool_choice: 'any' } })).tool_choice, undefined);
-  assert.equal((await captureBody({ modelOptions: { tool_choice: { type: 'tool' } } })).tool_choice, undefined);
+  // builtinTools:false isolates tool_choice validation from the default
+  // built-in declaration (which sets tool_choice itself when it fires).
+  assert.equal((await captureBody({ builtinTools: false, modelOptions: { tool_choice: 'any' } })).tool_choice, undefined);
+  assert.equal((await captureBody({ builtinTools: false, modelOptions: { tool_choice: { type: 'tool' } } })).tool_choice, undefined);
   assert.equal(
-    (await captureBody({ modelOptions: { tool_choice: { type: 'auto', disable_parallel_tool_use: 'yes' } } })).tool_choice,
+    (await captureBody({ builtinTools: false, modelOptions: { tool_choice: { type: 'auto', disable_parallel_tool_use: 'yes' } } })).tool_choice,
     undefined
   );
 });
@@ -305,7 +356,9 @@ test('built-in tool with native shape (type at top level) forwards config fields
 
 test('bash_20250124 / web_fetch_20250910 / web_fetch_20260309 recognized via function.name', async () => {
   for (const t of ['bash_20250124', 'web_fetch_20250910', 'web_fetch_20260309', 'code_execution_20250825', 'text_editor_20250728', 'memory_20250818']) {
-    const body = await captureBody({ tools: [{ type: 'function', function: { name: t, parameters: { type: 'object' } } }] });
+    // builtinTools:false isolates the TRANSLATOR behavior under test from the
+    // default declarations (which would append more tools entries).
+    const body = await captureBody({ builtinTools: false, tools: [{ type: 'function', function: { name: t, parameters: { type: 'object' } } }] });
     assert.equal(body.tools[0].type, t, `${t} recognized`);
     assert.equal(body.tools.length, 1);
   }
@@ -371,7 +424,7 @@ test('custom tools keep the {name, description, input_schema} mapping and omit e
 });
 
 test('malformed tool entries are dropped instead of sending garbage', async () => {
-  const body = await captureBody({ tools: [null, { type: 'function' }, { type: 'function', function: {} }] });
+  const body = await captureBody({ builtinTools: false, tools: [null, { type: 'function' }, { type: 'function', function: {} }] });
   assert.deepEqual(body.tools, []);
 });
 
@@ -379,6 +432,150 @@ test('unknown modelOptions keys are never forwarded', async () => {
   const body = await captureBody({ modelOptions: { enable_thinking: true, reasoning_effort: 'max', custom_thing: { a: 1 } } });
   assert.equal(body.enable_thinking, undefined);
   assert.equal(body.custom_thing, undefined);
+});
+
+/* ------------------------------------------------------------------ */
+/* modelOptions.tools: DECLARING server-side built-in tools             */
+/* ------------------------------------------------------------------ */
+
+test('official server-side built-in tool types are declared BY DEFAULT in the request body', async () => {
+  // The tool types listed in the official Messages-API reference must work
+  // out of the box, WITHOUT per-model modelOptions configuration. Every
+  // anthropic-dialect request advertises the GA variant of each built-in
+  // family (ANTHROPIC_DEFAULT_BUILTIN_TOOLS in the adapter).
+  const body = await captureBody({});
+  assert.ok(Array.isArray(body.tools), 'tools array present with no configuration');
+  assert.deepEqual(
+    body.tools.map(t => t.type),
+    DEFAULT_BUILTIN_TYPES,
+    'every default built-in family declared exactly once',
+  );
+  // REGRESSION (tools.N.name: Field required): every DEFAULT entry must carry
+  // a canonical `name`. The toolsets are exempt on the official API but hard-
+  // rejected by strict gateways, which is exactly why they must never be
+  // defaulted — this loop guards against a name-less entry sneaking back in.
+  for (const t of body.tools) {
+    assert.equal(typeof t.name, 'string', `${t.type} carries the canonical name`);
+    assert.ok(t.name, `${t.type} name is non-empty`);
+  }
+  assert.ok(
+    !body.tools.some(t => t.type === 'computer_toolset_20260801' || t.type === 'browser_toolset_20260801'),
+    'toolsets are never declared by default',
+  );
+  assert.deepEqual(body.tool_choice, { type: 'auto' }, 'tool_choice defaults with declared built-ins');
+  const names = body.tools.map(t => t.name).filter(Boolean);
+  assert.equal(new Set(names).size, names.length, 'no two declared built-ins share a canonical name');
+});
+
+test('builtinTools=false disables the default declarations entirely', async () => {
+  const body = await captureBody({ builtinTools: false });
+  assert.equal(body.tools, undefined, 'no default built-ins declared');
+  assert.equal(body.tool_choice, undefined, 'tool_choice not fabricated');
+});
+
+test('default declarations never collide with client-side tool names', async () => {
+  // hk2 registers a client tool literally named `bash` (and `edit`); the
+  // built-in bash_20250124 carries the SAME canonical name "bash". Anthropic
+  // rejects two definitions with the same name, so the two worlds must never
+  // meet in one request body.
+  const body = await captureBody({ tools: [{ type: 'function', function: { name: 'bash', description: 'client bash', parameters: { type: 'object' } } }] });
+  const names = body.tools.map(t => t.name);
+  assert.equal(names.filter(n => n === 'bash').length, 1, 'exactly one bash definition (the client tool)');
+  assert.equal(body.tools[0].type, undefined, 'client tool keeps the custom shape');
+  assert.equal(body.tools.length, DEFAULT_BUILTIN_TYPES.length, 'all other default families still declared (bash family skipped)');
+  assert.ok(!body.tools.some(t => t.type === 'bash_20250124'), 'the built-in bash family is NOT additionally declared');
+});
+
+test('same-family modelOptions entry REPLACES the default variant (no double declaration)', async () => {
+  const body = await captureBody({
+    modelOptions: { tools: [{ type: 'web_search_20260318', max_uses: 5 }] },
+  });
+  const ws = body.tools.filter(t => (t.type || '').startsWith('web_search'));
+  assert.equal(ws.length, 1, 'one web_search entry total');
+  assert.equal(ws[0].type, 'web_search_20260318', 'modelOptions variant wins over the default');
+  assert.equal(ws[0].max_uses, 5, 'config field forwarded');
+  assert.equal(body.tools.length, DEFAULT_BUILTIN_TYPES.length, 'family count unchanged — replaced, not appended');
+});
+
+test('modelOptions.tools: recognized built-ins still reach the body and override their own default', async () => {
+  const body = await captureBody({
+    modelOptions: {
+      tools: [
+        { type: 'web_search_20250305' },
+        { type: 'web_fetch_20250910', max_uses: 3 },
+      ],
+    },
+  });
+  assert.ok(Array.isArray(body.tools), 'tools array present');
+  assert.equal(body.tools.length, DEFAULT_BUILTIN_TYPES.length, 'same-family entries replace defaults in place');
+  const ws = body.tools.find(t => t.type === 'web_search_20250305');
+  assert.equal(ws.name, 'web_search', 'canonical name filled');
+  const wf = body.tools.find(t => t.type === 'web_fetch_20250910');
+  assert.equal(wf.max_uses, 3, 'config field forwarded');
+  assert.deepEqual(body.tool_choice, { type: 'auto' }, 'tool_choice set when builtins declared');
+});
+
+test('default declaration is quiet; explicit modelOptions declarations still notify', async () => {
+  const quiet = await captureBodyAndNotices({});
+  assert.equal(quiet.body.tools.length, DEFAULT_BUILTIN_TYPES.length);
+  assert.equal(quiet.notices.length, 0, 'no notice for the default declaration');
+
+  const explicit = await captureBodyAndNotices({ modelOptions: { tools: [{ type: 'web_fetch_20260318' }] } });
+  assert.ok(
+    explicit.notices.some(m => m.includes('server-side built-in tools declared') && m.includes('web_fetch_20260318')),
+    'explicit modelOptions declaration still announces itself',
+  );
+  const wf = explicit.body.tools.filter(t => (t.type || '').startsWith('web_fetch'));
+  assert.equal(wf.length, 1, 'future dated variant replaces the default in place');
+  assert.equal(wf[0].type, 'web_fetch_20260318');
+});
+
+test('modelOptions.tools built-ins merge with client tools (no clobber)', async () => {
+  const client = { type: 'function', function: { name: 'read', description: 'd', parameters: { type: 'object' } } };
+  const body = await captureBody({
+    tools: [client],
+    modelOptions: { tools: [{ type: 'web_search_20250305', name: 'web_search' }] },
+  });
+  assert.equal(body.tools.length, DEFAULT_BUILTIN_TYPES.length + 1, 'client tool + one built-in per family (no name collisions here)');
+  assert.equal(body.tools[0].name, 'read', 'client tool first (envelope→custom mapping)');
+  assert.equal(body.tools[0].type, undefined, 'client tool has no built-in type');
+  assert.ok(body.tools.some(t => t.type === 'web_search_20250305'), 'built-in present');
+});
+
+test('modelOptions.tools dedupes a built-in type already declared in the tools parameter', async () => {
+  const body = await captureBody({
+    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+    modelOptions: { tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 9 }] },
+  });
+  const ws = body.tools.filter(t => t.type === 'web_search_20250305');
+  assert.equal(ws.length, 1, 'duplicate built-in dropped (API rejects repeats)');
+  assert.equal(ws[0].max_uses, undefined, 'tools-parameter entry kept, modelOptions dup ignored');
+});
+
+test('modelOptions.tools drops non-built-in entries (custom tools live in the client registry)', async () => {
+  const body = await captureBody({
+    builtinTools: false,
+    modelOptions: {
+      tools: [
+        { type: 'function', function: { name: 'read', parameters: { type: 'object' } } },
+        { type: 'not_a_real_builtin_type' },
+        null,
+      ],
+    },
+  });
+  // Nothing merged → body.tools stays unset (no client tools were passed).
+  assert.equal(body.tools, undefined, 'non-built-in declarations dropped wholesale');
+  assert.equal(body.tool_choice, undefined, 'tool_choice not fabricated');
+});
+
+test('modelOptions.tools envelope form gets the canonical name', async () => {
+  const body = await captureBody({
+    builtinTools: false,
+    modelOptions: { tools: [{ type: 'function', function: { name: 'web_fetch_20260318' } }] },
+  });
+  assert.equal(body.tools.length, 1);
+  assert.equal(body.tools[0].type, 'web_fetch_20260318');
+  assert.equal(body.tools[0].name, 'web_fetch', 'canonical literal filled from the name table');
 });
 
 test('usage: message_start reports cache_creation OBJECT form as a scalar total', async () => {

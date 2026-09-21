@@ -337,3 +337,129 @@ test('/model list and /model show display attached MCP servers', async () => {
   await dispatchSlash('/model show', ctx);
   assert.ok(prints.some((p) => p.includes('mcpServer: web-reader (type=http)')), 'show displays the server');
 });
+
+/* -------------------- /model del-mcpserver -------------------- */
+
+/** Seed two servers on the seeded model, returning the stored entry. */
+async function seedTwoServers() {
+  await seedRegistry();
+  await dispatchSlash(
+    `/model add-mcpserver bigmodel2/glm-5.3[1m] --type=http --name=web-reader ` +
+    `--options='{"url":"https://w/mcp","headers":{"Authorization":"Bearer T"}}'`,
+    makeCtx().ctx,
+  );
+  await dispatchSlash(
+    `/model add-mcpserver bigmodel2/glm-5.3[1m] --type=http --name=other ` +
+    `--options='{"url":"https://o/mcp"}'`,
+    makeCtx().ctx,
+  );
+  const { providers } = await loadModels();
+  return providers.bigmodel2.models[0];
+}
+
+test('/model del-mcpserver --name removes only the named server', async () => {
+  await seedTwoServers();
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver bigmodel2/glm-5.3[1m] --name=web-reader', ctx);
+
+  assert.ok(prints.some((p) => p.includes('MCP server removed: web-reader (type=http)')), 'prints removal');
+  const { providers } = await loadModels();
+  const m = providers.bigmodel2.models[0];
+  assert.equal(m.mcpServers.length, 1, 'sibling server kept');
+  assert.equal(m.mcpServers[0].name, 'other');
+});
+
+test('/model del-mcpserver --name removes the last server and drops the mcpServers key', async () => {
+  await seedRegistry();
+  await dispatchSlash(
+    `/model add-mcpserver bigmodel2/glm-5.3[1m] --type=http --name=web-reader --options='{"url":"https://w/mcp"}'`,
+    makeCtx().ctx,
+  );
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver bigmodel2/glm-5.3[1m] --name=web-reader', ctx);
+
+  assert.ok(prints.some((p) => p.includes('MCP server removed: web-reader')), 'prints removal');
+  const { providers } = await loadModels();
+  const m = providers.bigmodel2.models[0];
+  assert.equal(m.mcpServers, undefined, 'mcpServers key dropped entirely');
+  const after = await getModelMcpServers('bigmodel2/glm-5.3[1m]');
+  assert.deepEqual(after, [], 'read accessor sees no servers');
+});
+
+test('/model del-mcpserver --all removes every server', async () => {
+  await seedTwoServers();
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver bigmodel2/glm-5.3[1m] --all', ctx);
+
+  assert.ok(prints.some((p) => p.includes('MCP server removed: web-reader')), 'first removal line');
+  assert.ok(prints.some((p) => p.includes('MCP server removed: other')), 'second removal line');
+  const { providers } = await loadModels();
+  assert.equal(providers.bigmodel2.models[0].mcpServers, undefined, 'all servers gone, key dropped');
+});
+
+test('/model del-mcpserver --name=all works the same as --all', async () => {
+  await seedTwoServers();
+  const { ctx } = makeCtx();
+  await dispatchSlash('/model del-mcpserver bigmodel2/glm-5.3[1m] --name=all', ctx);
+  const { providers } = await loadModels();
+  assert.equal(providers.bigmodel2.models[0].mcpServers, undefined, 'everything removed');
+});
+
+test('/model del-mcpserver with an unknown server name is a no-op and persists nothing', async () => {
+  await seedTwoServers();
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver bigmodel2/glm-5.3[1m] --name=ghost', ctx);
+
+  assert.ok(prints.some((p) => p.includes('No MCP server named "ghost"')), 'clear no-op message');
+  const { providers } = await loadModels();
+  assert.equal(providers.bigmodel2.models[0].mcpServers.length, 2, 'registry untouched');
+});
+
+test('/model del-mcpserver with no --name / --all prints usage', async () => {
+  await seedRegistry();
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver bigmodel2/glm-5.3[1m]', ctx);
+  assert.ok(prints.some((p) => p.includes('Usage: /model del-mcpserver')), 'usage printed');
+  await dispatchSlash('/model del-mcpserver', ctx);
+  assert.ok(prints.filter((p) => p.includes('Usage: /model del-mcpserver')).length >= 2, 'usage printed again');
+});
+
+test('/model del-mcpserver on an unknown model fails and persists nothing', async () => {
+  await seedRegistry();
+  const { providers: before } = await loadModels();
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver nosuch/glm --name=x', ctx);
+  assert.ok(prints.some((p) => p.includes('Model not found: nosuch/glm')), 'model-not-found message');
+  const { providers } = await loadModels();
+  assert.deepEqual(Object.keys(providers), Object.keys(before), 'no provider created');
+  assert.equal(providers.bigmodel2.models.length, before.bigmodel2.models.length, 'no model touched');
+});
+
+test('/model del-mcpserver removes only from the addressed model (scope guard)', async () => {
+  await seedRegistry();
+  // Attach to a second model on a sibling provider to verify isolation.
+  await saveModels({
+    providers: {
+      bigmodel2: (await loadModels()).providers.bigmodel2,
+      otherprov: {
+        api: 'openai',
+        baseUrl: 'https://api.example.com',
+        apiKey: 'k2',
+        models: [{ id: 'other-model', name: 'other-model', modelType: 'generic' }],
+      },
+    },
+    default: 'bigmodel2/glm-5.3[1m]',
+  });
+  await dispatchSlash(
+    `/model add-mcpserver bigmodel2/glm-5.3[1m] --type=http --name=web-reader --options='{"url":"https://w/mcp"}'`,
+    makeCtx().ctx,
+  );
+
+  const { ctx, prints } = makeCtx();
+  await dispatchSlash('/model del-mcpserver otherprov/other-model --all', ctx);
+  assert.ok(prints.some((p) => p.includes('No MCP servers on otherprov/other-model')), 'clear empty-target message');
+
+  const { providers } = await loadModels();
+  assert.equal(providers.bigmodel2.models[0].mcpServers?.length, 1, 'sibling model untouched');
+  assert.equal(providers.otherprov.models[0].mcpServers, undefined, 'target stays serverless');
+});
