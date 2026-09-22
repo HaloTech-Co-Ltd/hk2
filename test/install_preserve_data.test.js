@@ -28,6 +28,11 @@ import { execFileSync } from 'node:child_process';
 
 const REPO_ROOT = path.resolve(new URL('.', import.meta.url).pathname, '..');
 const INSTALL_SH = path.join(REPO_ROOT, 'install.sh');
+const TOOL_SETTINGS = {
+  visionModelRef: 'provider/vision',
+  toolModels: { video_analysis: 'provider/video' },
+  disabled: ['ui_to_artifact'],
+};
 
 async function mkdtemp(prefix) {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -84,6 +89,7 @@ async function seedUserData(root) {
     'models.json': JSON.stringify({ providers: {}, default: null, marker: 'user-models' }),
     'projects.json': JSON.stringify({ projects: [], current: null, marker: 'user-projects' }),
     'theme.json': JSON.stringify({ theme: 'dark', marker: 'user-theme' }),
+    'tools.json': JSON.stringify(TOOL_SETTINGS),
     'setting.json': JSON.stringify({ permissions: [{ path: '/secret', deny: 'rwx' }] }),
     'history.jsonl': '{"ts":"x","text":"important command"}\n',
     'welcome-seen': '1\n',
@@ -113,6 +119,7 @@ test('reinstall preserves all user-data items in the default install dir', async
   assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'models.json'), 'utf8')).marker, 'user-models');
   assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'projects.json'), 'utf8')).marker, 'user-projects');
   assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'theme.json'), 'utf8')).marker, 'user-theme');
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(installDir, 'tools.json'), 'utf8')), TOOL_SETTINGS);
   assert.ok((await fs.readFile(path.join(installDir, 'setting.json'), 'utf8')).includes('/secret'));
   assert.ok((await fs.readFile(path.join(installDir, 'history.jsonl'), 'utf8')).includes('important command'));
   assert.equal(await fs.readFile(path.join(installDir, 'welcome-seen'), 'utf8'), '1\n');
@@ -211,6 +218,7 @@ for (const failAt of ['after-stage-copy', 'after-data-move', 'after-old-tree-mov
     }));
     await runInstall(src, { HOME: home, HK2_INSTALL_DIR: installDir, HK2_PREFIX: prefix });
     assert.equal(JSON.parse(await fs.readFile(path.join(installDir, 'models.json'), 'utf8')).marker, 'user-models');
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(installDir, 'tools.json'), 'utf8')), TOOL_SETTINGS);
     assert.ok((await fs.readFile(path.join(installDir, 'setting.json'), 'utf8')).includes('/secret'));
     assert.ok((await fs.readFile(path.join(installDir, 'history.jsonl'), 'utf8')).includes('important command'));
     assert.equal(await fs.readFile(path.join(installDir, 'kb/proj/holy/supreme.md'), 'utf8'), '# Supreme\n');

@@ -2,6 +2,7 @@
 models.json
 projects.json
 theme.json
+tools.json
 setting.json
 history.jsonl
 welcome-seen
