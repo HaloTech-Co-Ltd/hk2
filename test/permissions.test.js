@@ -520,6 +520,49 @@ test('P3: in-project symlink to outside file is denied (realpath re-check)', asy
   }
 });
 
+test('new targets through symlinks retain file and subtree restrictions', async () => {
+  const env = await setupEnv();
+  const { resetPermissionService, getPermissionService } = await import('../lib/config/setting.js');
+  try {
+    const realDir = path.join(env.src, 'real');
+    const alias = path.join(env.src, 'alias');
+    await fs.mkdir(realDir);
+    await fs.symlink(realDir, alias);
+    await writeManaged(env, [
+      { path: path.join(realDir, 'blocked.txt'), deny: 'w' },
+      { path: path.join(realDir, 'new-subtree'), deny: 'w' },
+    ]);
+    resetPermissionService();
+    const { buildTools } = await import('../lib/agent/tools.js');
+    const write = buildTools(null, {}).find(t => t.name === 'write');
+    for (const relative of ['blocked.txt', 'new-subtree/deep/file.txt']) {
+      const result = await write.execute({ path: path.join(alias, relative), content: 'blocked' });
+      assert.match(result.error, /permission denied/);
+      await assert.rejects(fs.stat(path.join(realDir, relative)), { code: 'ENOENT' });
+    }
+    const good = await write.execute({ path: path.join(alias, 'allowed/deep/file.txt'), content: 'allowed' });
+    assert.equal(good.error, undefined);
+    assert.equal(await fs.readFile(path.join(realDir, 'allowed/deep/file.txt'), 'utf8'), 'allowed');
+
+    const external = path.join(env.home, 'new-secret.txt');
+    const dangling = path.join(env.src, 'dangling.txt');
+    await fs.symlink(external, dangling);
+    const bad = await write.execute({ path: dangling, content: 'blocked' });
+    assert.match(bad.error, /permission denied/);
+    await assert.rejects(fs.stat(external), { code: 'ENOENT' });
+
+    // Missing protected settings must remain protected through an alias,
+    // even when a broad rule grants access to the data directory.
+    await fs.symlink(env.home, path.join(env.src, 'home-link'));
+    await writeManaged(env, [{ path: env.home, allow: 'rwx' }]);
+    resetPermissionService();
+    assert.equal((await getPermissionService().checkReal(path.join(env.src, 'home-link/setting.json'), 'w')).ok, false);
+  } finally {
+    resetPermissionService();
+    await cleanup(env);
+  }
+});
+
 test('symlinked workspace root does not over-deny (canonical roots fallback)', async () => {
   // macOS /tmp → /private/tmp: an ordinary in-project file's realpath
   // differs from its lexical path. checkReal must still allow it.
