@@ -53,7 +53,7 @@ sibling staging and backup directories and resumes an interrupted upgrade on
 the next run. This protects the upgrade process, but it is not a substitute
 for an external backup of important data:
 
-- **Preserved**: `models.json`, `projects.json`, `theme.json`, `setting.json`,
+- **Preserved**: `models.json`, `projects.json`, `theme.json`, `tools.json`, `setting.json`,
   `history.jsonl`, `welcome-seen`, `settings/`, `kb/`, `sessions/`, and
   `logs/`. The checked-in manifest is the authoritative list.
 

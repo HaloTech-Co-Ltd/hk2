@@ -45,7 +45,7 @@ PATH 中创建 `hk2` 符号链接（默认 `/usr/local/bin/hk2`——写入该�
 目录；升级一旦中断，下次运行会接着完成升级。这能保护升级过程，但不能
 代替重要数据的外部备份：
 
-- **保留**：`models.json`、`projects.json`、`theme.json`、`setting.json`、
+- **保留**：`models.json`、`projects.json`、`theme.json`、`tools.json`、`setting.json`、
   `history.jsonl`、`welcome-seen`、`settings/`、`kb/`、`sessions/` 与
   `logs/`。仓库内的清单文件是权威列表。
 

@@ -31,10 +31,10 @@ hk2 对所有内置本地路径工具（`read` / `write` / `edit` / `find` /
 `setting.json` 与 `settings/**` 的智能体写入都被硬拒绝**，模型无法修改
 约束自身沙箱的规则：
 
-> **重装警告**：当安装目录同时也是 `~/.hk2`（默认）时，从外部源码检出后重新运行
-> `install.sh` 会**删除 `setting.json` 与 `settings/`**——它们不在安装器的
-> 保留清单里（只保留 models/projects/theme/kb/sessions/logs）。请先备份，
-> 或用独立的 `HK2_INSTALL_DIR` 安装；见[安装](../getting-started/installation.md)。
+> **重装保留**：`install.sh` 默认保留安装目录中的 `setting.json`、`settings/`
+> 和 `tools.json`，以及数据清单中的其他条目。只有同时传入
+> `--preserve-data=off` 与 `--confirm-data-loss` 才会主动丢弃这些数据。
+> 完整清单与中断恢复行为见[安装](../getting-started/installation.md)。
 
 - `~/.hk2/setting.json`——全局基线
 - `~/.hk2/settings/<project-id>/setting.json`——项目级覆盖

@@ -38,12 +38,12 @@ is different: **writes to `setting.json` and `settings/**` are hard-denied
 for the agent no matter where they live**, so the model cannot rewrite the
 rules that bound its own sandbox:
 
-> **Reinstall warning**: when the install dir is also `~/.hk2` (the
-> default), re-running `install.sh` from an outside checkout **deletes
-> `setting.json` and `settings/`** — they are not on the installer's
-> preserve list (only models/projects/theme/kb/sessions/logs are). Back them
-> up first or install with a separate `HK2_INSTALL_DIR`; see
-> [Installation](../getting-started/installation.md).
+> **Reinstall preservation**: `install.sh` preserves `setting.json`,
+> `settings/`, `tools.json`, and the other manifest-listed entries inside
+> the install directory by default. Discarding these data explicitly requires
+> both `--preserve-data=off` and `--confirm-data-loss`. See
+> [Installation](../getting-started/installation.md) for the full list and
+> interrupted-upgrade recovery behavior.
 
 - `~/.hk2/setting.json` — global baseline
 - `~/.hk2/settings/<project-id>/setting.json` — per-project override
