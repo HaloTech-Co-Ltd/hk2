@@ -38,10 +38,9 @@ import { streamAnthropic } from '../lib/llm/anthropic_adapter.js';
 
 let networkCalls = 0;
 
-function makeResp() {
-  // A minimal valid SSE stream for either dialect (contents don't matter —
-  // these tests assert on request bodies / pre-request throws only).
-  const sse = [
+function makeResp(openai) {
+  // A minimal completed stream in the dialect requested by the adapter.
+  const sse = openai ? 'data: [DONE]\n\n' : [
     'event: message_start\ndata: {"message":{"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
     'event: message_stop\ndata: {}\n\n',
   ].join('');
@@ -73,7 +72,7 @@ function installFetchProbe() {
   globalThis.fetch = async (_url, init) => {
     networkCalls++;
     requests.push(JSON.parse(init.body));
-    return makeResp();
+    return makeResp(_url.includes('/chat/completions'));
   };
   return {
     requests,

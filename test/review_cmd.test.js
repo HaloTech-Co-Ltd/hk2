@@ -287,9 +287,10 @@ test('/review code --model wins over the phase config', async () => {
   const origFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     seenUrls.push(String(url));
-    return new Response(JSON.stringify({
-      choices: [{ message: { content: '{"ok": true, "issues": []}' } }],
-    }), { status: 200 });
+    const sse = 'data: ' + JSON.stringify({
+      choices: [{ delta: { content: '{"ok": true, "issues": []}' } }],
+    }) + '\n\ndata: [DONE]\n\n';
+    return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   try {
     await dispatchSlash('/review code --model=provA/model-a', ctx);
