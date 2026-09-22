@@ -642,6 +642,10 @@ test('KBRuntime doc APIs: findTables / getSymbolDocRefs / referencedBy + request
     ].join('\n'),
     'src/net.js': 'export function connect(host) { return host; }\n',
   });
+  const { resetPermissionService } = await import('../lib/config/setting.js');
+  const previousSource = process.env.HK2_PROJECT_SOURCE;
+  process.env.HK2_PROJECT_SOURCE = dir;
+  resetPermissionService();
   try {
     const { getRuntime } = await import('../lib/retrieval/kb_runtime.js');
     const rt = await getRuntime(p.id);
@@ -668,6 +672,9 @@ test('KBRuntime doc APIs: findTables / getSymbolDocRefs / referencedBy + request
     assert.match(rendered, /## Doc ↔ code symbol references/);
     assert.match(rendered, /connect/);
   } finally {
+    if (previousSource === undefined) delete process.env.HK2_PROJECT_SOURCE;
+    else process.env.HK2_PROJECT_SOURCE = previousSource;
+    resetPermissionService();
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
